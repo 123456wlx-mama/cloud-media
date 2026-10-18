@@ -1,0 +1,47 @@
+# ---------- Qt / IDE 本地配置 ----------
+*.pro.user
+*.pro.user.*
+*.qmlc
+*.jsc
+
+# ---------- 编译产物 ----------
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.Debug
+*.Release
+Makefile
+Makefile.Debug
+Makefile.Release
+object_script.*
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+build-*/
+build-*/
+debug/
+release/
+
+# ---------- 运行期数据（数据库/日志/缓存） ----------
+*.db
+*.log
+database/
+NetDeskServer.db
+
+# ---------- 备份文件 ----------
+*.bak
+*.bak-*
+*~
+
+# ---------- 临时目录 ----------
+.tmp/
+
+# ---------- 系统文件 ----------
+.DS_Store
+Thumbs.db
+desktop.ini

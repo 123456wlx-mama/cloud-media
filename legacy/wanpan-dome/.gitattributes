@@ -1,0 +1,25 @@
+# 源码统一使用 LF，避免 Linux 服务端在 Windows 上被转成 CRLF
+* text=auto
+*.c        text eol=lf
+*.cpp      text eol=lf
+*.h        text eol=lf
+*.hpp      text eol=lf
+*.pro      text eol=lf
+*.pri      text eol=lf
+*.ui       text eol=lf
+*.qrc      text eol=lf
+makefile   text eol=lf
+Makefile   text eol=lf
+*.sql      text eol=lf
+*.md       text eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.PNG binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.mp3 binary
+*.webm binary
+*.pdf binary
+*.docx binary

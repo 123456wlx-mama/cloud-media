@@ -1,0 +1,33 @@
+# build output
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# runtime data
+/data/
+/logs/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.user
+*.pro.user
+*.autosave
+Thumbs.db
+.DS_Store
+
+# legacy binaries: keep source only
+/legacy/**/ffmpeg-*/
+/legacy/**/SDL2-*/
+/legacy/**/dll/
+/legacy/**/*.dll
+/legacy/**/*.lib
+/legacy/**/*.a
+/legacy/**/build/
+/legacy/**/.git/
