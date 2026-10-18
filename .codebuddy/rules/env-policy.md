@@ -55,3 +55,10 @@
 2. **字节序函数在 cm 命名空间，不在 cm::protocol。**
    - writeU16BE/readU16BE、writeU32BE/readU32BE、writeU64BE/readU64BE 定义于 cm/base/byte_order.h。
    - 调用时写 cm::writeU32BE / cm::readU32BE（或 using 后使用），不得在 cm::protocol 中重复定义同名函数。
+
+## Linux 目标环境约束（Ubuntu 16.04 / g++ 5.4 / cmake 3.5）
+1. 所有 CMakeLists.txt 的 cmake_minimum_required 不得高于 3.5。
+2. 不得使用 cmake 3.6+ 才有的特性/命令：target_link_options、add_compile_definitions、include(GoogleTest)、gtest_discover_tests、cmake_path 等。测试一律用 add_test 注册。
+3. C++ 标准必须显式 -std=c++11（g++ 5.4 默认按 gnu++98 编译，不指定会全量报错）。
+4. 可执行文件统一输出到 build/bin（项目已设置 CMAKE_RUNTIME_OUTPUT_DIRECTORY=bin），新增 target 不要另设输出目录。
+5. std::string 取 data()/&s[0] 后若再 append/resize，指针可能失效，必须重新取址后再使用（曾因该 UB 导致 Windows 通过、Linux 崩溃）。

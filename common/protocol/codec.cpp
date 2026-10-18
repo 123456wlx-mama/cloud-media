@@ -28,8 +28,9 @@ ErrorCode Codec::encode(std::uint16_t type, std::uint32_t seq,
 
     // CRC 覆盖 version(1)+type(2)+len(4)+seq(4) 共 11 字节 + payload，
     // 跳过 CRC 字段本身（offset 15~18），否则解码侧永远校验失败。
+    // 注意：必须在 append 之后重新取 data()，header 指针可能因扩容而失效。
     cm::Crc32 checksum;
-    checksum.update(header + 4, 11);
+    checksum.update(reinterpret_cast<const std::uint8_t*>(encoded.data()) + 4, 11);
     if (!payload.empty()) {
         checksum.update(payload.data(), payload.size());
     }

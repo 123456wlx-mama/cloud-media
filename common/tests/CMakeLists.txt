@@ -10,5 +10,5 @@ add_executable(cm_common_tests
 )
 target_link_libraries(cm_common_tests PRIVATE cm_common cm_protocol GTest::gtest GTest::gtest_main)
 
-include(GoogleTest)
-gtest_discover_tests(cm_common_tests)
+# gtest_discover_tests 需要 CMake 3.9+，目标环境 3.5，用 add_test 整体注册
+add_test(NAME cm_common_tests COMMAND cm_common_tests)

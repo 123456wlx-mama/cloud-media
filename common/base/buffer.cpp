@@ -3,6 +3,12 @@
 #include <algorithm>
 #include <cstring>
 
+#ifndef _WIN32
+#include <cerrno>
+#include <sys/uio.h>
+#include <unistd.h>
+#endif
+
 namespace cm {
 
 const std::size_t Buffer::kMaxBytes = 16 * 1024 * 1024;
@@ -71,6 +77,10 @@ std::string Buffer::retrieveAsString(std::size_t len) {
     return out;
 }
 
+std::string Buffer::retrieveAllAsString() {
+    return retrieveAsString(readableBytes());
+}
+
 void Buffer::retrieveAll() {
     retrieve(readableBytes());
 }
@@ -124,5 +134,28 @@ void Buffer::reset() {
     readerIndex_ = 0;
     writerIndex_ = 0;
 }
+
+#ifndef _WIN32
+ssize_t Buffer::readFd(int fd, int* savedErrno) {
+    char extrabuf[65536];
+    struct iovec vec[2];
+    const std::size_t writable = writableBytes();
+    vec[0].iov_base = storage_.data() + writerIndex_;
+    vec[0].iov_len = writable;
+    vec[1].iov_base = extrabuf;
+    vec[1].iov_len = sizeof(extrabuf);
+    const int iovcnt = (writable < sizeof(extrabuf)) ? 2 : 1;
+    const ssize_t n = ::readv(fd, vec, iovcnt);
+    if (n < 0) {
+        *savedErrno = errno;
+    } else if (static_cast<std::size_t>(n) <= writable) {
+        writerIndex_ += static_cast<std::size_t>(n);
+    } else {
+        writerIndex_ = storage_.size();
+        append(extrabuf, static_cast<std::size_t>(n) - writable);
+    }
+    return n;
+}
+#endif
 
 }  // namespace cm

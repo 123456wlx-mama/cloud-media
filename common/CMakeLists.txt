@@ -6,6 +6,7 @@ add_library(cm_common STATIC
     base/time_util.cpp
     base/buffer.cpp
     base/crc32.cpp
+    base/thread_pool.cpp
     config/ini_config.cpp
     config/server_config.cpp
     log/logger.cpp
