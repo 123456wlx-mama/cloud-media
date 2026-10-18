@@ -37,6 +37,11 @@ enum class MessageType : std::uint16_t {
     ContinueUploadRq = 10028,
     ContinueUploadRs = 10029,
 
+    // Phase 5：业务语义别名。与既有号段同值，Wire 格式不变，只为可读性。
+    // 10006 是唯一的 bulk 帧类型（4MB 分片数据），CRC 由业务线程校验。
+    UploadChunkRq = 10006,
+    UploadChunkRs = 10007,
+
     HelloReq = 11000,
     HelloRs = 11001,
     ErrorRs = 11002,

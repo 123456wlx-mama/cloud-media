@@ -56,6 +56,35 @@ std::size_t Buffer::writableBytes() const {
     return storage_.size() - writerIndex_;
 }
 
+std::size_t Buffer::capacity() const {
+    return storage_.size();
+}
+
+void Buffer::shrinkTo(std::size_t minCapacity) {
+    const std::size_t readable = readableBytes();
+    std::size_t target = minCapacity;
+    if (target < 1024) {
+        target = 1024;
+    }
+    if (target < readable) {
+        target = readable;
+    }
+    if (target > kMaxBytes) {
+        target = kMaxBytes;
+    }
+    if (target >= storage_.size()) {
+        return;
+    }
+
+    std::vector<char> next(target);
+    if (readable > 0) {
+        std::memcpy(&next[0], &storage_[readerIndex_], readable);
+    }
+    storage_.swap(next);
+    readerIndex_ = 0;
+    writerIndex_ = readable;
+}
+
 bool Buffer::retrieve(std::size_t len) {
     if (len > readableBytes()) {
         return false;

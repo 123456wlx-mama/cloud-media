@@ -1,6 +1,7 @@
 #include "cm/protocol/codec.h"
 
 #include <cstddef>
+#include <cstring>
 
 #include "cm/base/buffer.h"
 #include "cm/base/byte_order.h"
@@ -97,6 +98,78 @@ ErrorCode Codec::decode(Buffer& in, Frame* out, DecodeStatus* status) {
     out->payload = in.retrieveAsString(len);
     *status = DecodeStatus::Ok;
     return ErrorCode::Ok;
+}
+
+ErrorCode Codec::decodeBulk(Buffer& in, RawFrame* out, DecodeStatus* status) {
+    if (out == NULL || status == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    if (in.readableBytes() < kHeaderSize) {
+        *status = DecodeStatus::NeedMore;
+        return ErrorCode::NeedMore;
+    }
+
+    const std::uint8_t* header = reinterpret_cast<const std::uint8_t*>(in.peek());
+    const std::uint32_t magic = readU32BE(header);
+    const std::uint8_t version = header[4];
+    const std::uint16_t type = readU16BE(header + 5);
+    const std::uint32_t len = readU32BE(header + 7);
+    const std::uint32_t seq = readU32BE(header + 11);
+    const std::uint32_t expectedCrc = readU32BE(header + 15);
+
+    if (magic != kMagic) {
+        *status = DecodeStatus::BadMagic;
+        return ErrorCode::ProtocolError;
+    }
+    if (version != static_cast<std::uint8_t>(kVersion)) {
+        *status = DecodeStatus::BadVersion;
+        return ErrorCode::ProtocolError;
+    }
+    if (len > kMaxPayload) {
+        *status = DecodeStatus::BadLength;
+        return ErrorCode::ProtocolError;
+    }
+    if (type != 10006) {
+        *status = DecodeStatus::UnknownType;
+        return ErrorCode::ProtocolError;
+    }
+    if (in.readableBytes() < kHeaderSize + static_cast<std::size_t>(len)) {
+        *status = DecodeStatus::NeedMore;
+        return ErrorCode::NeedMore;
+    }
+
+    out->type = type;
+    out->seq = seq;
+    out->len = len;
+    out->expectedCrc = expectedCrc;
+    std::memcpy(out->header11.data(), header + 4, 11);
+
+    if (!in.retrieve(kHeaderSize)) {
+        *status = DecodeStatus::NeedMore;
+        return ErrorCode::NeedMore;
+    }
+    out->payload = in.retrieveAsString(len);
+    if (out->payload.size() != static_cast<std::size_t>(len)) {
+        *status = DecodeStatus::BadLength;
+        return ErrorCode::ProtocolError;
+    }
+
+    // 4MB 帧消费完立刻释放读缓冲容量；保留粘包数据（readable > 0 时）。
+    in.shrinkTo(64 * 1024);
+    *status = DecodeStatus::Ok;
+    return ErrorCode::Ok;
+}
+
+bool Codec::verifyFrameCrc(const RawFrame& frame) {
+    if (frame.payload.size() != static_cast<std::size_t>(frame.len)) {
+        return false;
+    }
+    cm::Crc32 checksum;
+    checksum.update(frame.header11.data(), frame.header11.size());
+    if (!frame.payload.empty()) {
+        checksum.update(frame.payload.data(), frame.payload.size());
+    }
+    return checksum.value() == frame.expectedCrc;
 }
 
 }  // namespace protocol

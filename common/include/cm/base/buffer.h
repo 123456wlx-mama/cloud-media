@@ -26,6 +26,10 @@ public:
 
     std::size_t readableBytes() const;
     std::size_t writableBytes() const;
+    std::size_t capacity() const;
+
+    // 缩容到至少 minCapacity，保留未读数据；不改变可读字节内容。
+    void shrinkTo(std::size_t minCapacity);
 
     bool retrieve(std::size_t len);
     std::string retrieveAsString(std::size_t len);

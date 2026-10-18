@@ -21,3 +21,10 @@ set_target_properties(test_tcp_server PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME net_tcp_server COMMAND test_tcp_server)
+
+add_executable(test_send_file test_send_file.cpp)
+target_link_libraries(test_send_file PRIVATE net GTest::gtest GTest::gtest_main)
+set_target_properties(test_send_file PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME send_file COMMAND test_send_file)

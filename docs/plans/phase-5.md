@@ -1,10 +1,11 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-4 代码已落盘；未执行构建/测试，H1 对拍门槛尚未验证）
+**Status:** In Progress（P0-1~P0-6 代码已落盘；P0-5/P0-6 已由用户确认 ctest --output-on-failure 全绿）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
+**H1 Gate:** docs/benchmark/phase5_zero_copy_gate.md（PASS：用户确认 ctest 全绿；D-0 可翻转零拷贝默认值）。
 **Execution Policy:** 本文件中的 cmake / make / ctest / mysql / 压测命令均只作为验收文本，由人工执行；本会话不运行任何构建、测试、数据库或网络命令。
 
 ## Overview
@@ -404,19 +405,19 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: common/tests/CMakeLists.txt（Codec/Buffer 回归）、server/tests/CMakeLists.txt（bulk_gate 独立测试）
 
 **Steps:**
-- [ ] 在 frame.h 增加 RawFrame（type/seq/len/expectedCrc/header11/payload）；header11 用 std::array<uint8_t,11>。
-- [ ] Buffer 增加 capacity() 与 shrinkTo(size_t minCapacity)：保留未读数据（readerIndex..writerIndex），重新分配并复制；minCapacity 至少 1024，最大不超过原容量。
-- [ ] 实现 Codec::decodeBulk(Buffer&, RawFrame*, DecodeStatus*)：
+- [x] 在 frame.h 增加 RawFrame（type/seq/len/expectedCrc/header11/payload）；header11 用 std::array<uint8_t,11>。
+- [x] Buffer 增加 capacity() 与 shrinkTo(size_t minCapacity)：保留未读数据（readerIndex..writerIndex），重新分配并复制；minCapacity 至少 1024，最大不超过原容量。
+- [x] 实现 Codec::decodeBulk(Buffer&, RawFrame*, DecodeStatus*)：
   - 校验 MAGIC/VERSION/LEN/类型白名单（仅 10006；其他类型返回 DecodeStatus::UnknownType，且不消费 Buffer，readableBytes 不变）；
   - 复制 header11；in.retrieve(kHeaderSize)；out->payload = in.retrieveAsString(len)；不校验 CRC；
   - 调用 in.shrinkTo(64*1024)；返回 Ok/NeedMore/BadMagic/BadVersion/BadLength/UnknownType。
-- [ ] 实现 Codec::verifyFrameCrc(const RawFrame&)：用 cm::Crc32 update header11 的 11 字节 + payload，比较 expectedCrc。
-- [ ] 实现 ConnectionDecoder：
+- [x] 实现 Codec::verifyFrameCrc(const RawFrame&)：用 cm::Crc32 update header11 的 11 字节 + payload，比较 expectedCrc。
+- [x] 实现 ConnectionDecoder：
   - 普通帧循环 decode，直到 NeedMore；
   - 遇到 10006：构造 shared_ptr<RawFrame>，设置 bulkPending_，pauseRead，投业务池，返回 StopForBulk；
   - 业务线程 verify：失败回 loop forceClose；成功调用 handler；完成后回 loop 清 bulkPending_、resumeRead、继续 drain；
   - 状态只在 loop 线程读写；业务线程不持有 Buffer*、不持有 TcpConnection 引用（用 weak_ptr 回投）。
-- [ ] 单测使用可控阻塞器：验证第二帧在放行前不解析；坏 CRC 时第二帧不投递；payload 在 Buffer reset 后仍完整；连续 10 个 4MB 帧后 capacity ≤64KB；粘包保留。
+- [x] 单测使用可控阻塞器：验证第二帧在放行前不解析；坏 CRC 时第二帧不投递；payload 在 Buffer reset 后仍完整；连续 10 个 4MB 帧后 capacity ≤64KB；粘包保留。
 
 **gtest 清单:**
 - CodecBulkParsesHeaderWithoutCrc
@@ -431,11 +432,12 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - NormalDecodeStillVerifiesCrc
 
 **验收标准:**
-- [ ] ctest -R 'bulk_gate|cm_common_tests' 全绿（bulk_gate 为独立 add_test 名，原 Codec/Buffer 回归在 cm_common_tests 内）。
-- [ ] BulkGateSecondFrameNotDecodedUntilVerified 在阻塞器放行前断言 handler 计数 0；放行后 1。
-- [ ] 连续 10 个 4MB 帧后，TcpConnection/Buffer 没有 4MB 常驻；ASan/LSan 无泄漏。
-- [ ] grep 确认业务线程代码没有 Buffer* 捕获、TcpConnection 没有 payload 成员。
-- [ ] 原 Codec::decode 的 8 个回归用例仍全绿。
+- [x] ctest -R 'bulk_gate|cm_common_tests' 全绿（用户确认全量 ctest 通过；bulk_gate 为独立 add_test 名，原 Codec/Buffer 回归在 cm_common_tests 内）。
+- [x] BulkGateSecondFrameNotDecodedUntilVerified 在阻塞器放行前断言 handler 计数 0；放行后 1。
+- [x] 连续 10 个 4MB 帧后，TcpConnection/Buffer 没有 4MB 常驻（ctest 通过）。
+- [ ] ASan/LSan 无泄漏（未执行）。
+- [x] grep 确认业务线程代码没有 Buffer* 捕获、TcpConnection 没有 payload 成员。
+- [x] 原 Codec::decode 的 8 个回归用例仍全绿（cm_common_tests 通过）。
 
 **风险:**
 - 门闩死锁：业务池满/任务丢失导致 bulkPending 永不清 → 连接永久停读。对策：handler 必须在 RAII 作用域结束时无条件回投；加 5s 超时 watchdog，超时 forceClose 并记 ERROR。
@@ -456,31 +458,33 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: server/net/tests/CMakeLists.txt
 
 **Steps:**
-- [ ] 增加 bool sendFile(const std::string& prelude, int fd, off_t offset, size_t len, std::function<void(bool)> done);：
+- [x] 增加 bool sendFile(int fd, std::int64_t offset, std::size_t len, const std::function<void(bool)>& done);：
   - 连接接管 fd 所有权（完成/失败/关闭都 close）；
-  - prelude 先 append 到 outputBuffer；只有 outputBuffer 写空后才启动 sendfile；
+  - 调用方先用 send() 发帧头；只有 outputBuffer 写空后才启动 sendfile；
   - 每轮最多 1MB；EAGAIN 时保留剩余区间并 enableWriting；
   - 完成回调只调用一次（成功 true / 失败 false）；
   - 连接关闭时取消并 close fd，回调 false。
-- [ ] 增加 pauseRead() / resumeRead()：pauseRead 设置 readPaused_ 并 disableReading；rearm() 在 readPaused_ 时直接返回，防止消息回调尾部把 EPOLLIN 又打开；resumeRead 清标志并 enableReading。只改本 loop 的 EPOLLIN，不影响写；关闭状态下无副作用。
-- [ ] Windows 编译占位：sendFile 返回 false 并 close fd；pauseRead/resumeRead 空实现。
-- [ ] 单测：4MB 临时文件整发；prelude 先到；SO_SNDBUF 很小造成部分写；回调一次；完成后 fd 已关闭；关闭连接时 fd 关闭且回调 false。
+- [x] 增加 pauseRead() / resumeRead()：pauseRead 设置 readPaused_ 并 disableReading；rearm() 在 readPaused_ 时直接返回，防止消息回调尾部把 EPOLLIN 又打开；resumeRead 清标志并 enableReading。只改本 loop 的 EPOLLIN，不影响写；关闭状态下无副作用。
+- [x] Windows 编译占位：sendFile 走非 Linux 分支，完成回调 false；pauseRead/resumeRead 走 Channel。
+- [x] 单测：4MB 临时文件整发；prelude 先到；SO_SNDBUF 很小造成部分写；回调一次；完成后 fd 已关闭；关闭连接时 fd 关闭且回调 false；/proc/self/fd 基线；空闲无 EPOLLOUT。
 
 **gtest 清单:**
-- TcpConnectionSendFileWholeFile
-- TcpConnectionSendFilePreludeFirst
-- TcpConnectionSendFilePartialEagain
-- TcpConnectionSendFileCallbackOnce
-- TcpConnectionSendFileFdClosedOnComplete
-- TcpConnectionSendFileCancelOnClose
-- TcpConnectionPauseReadStopsEpollIn
-- TcpConnectionPauseReadSurvivesRearm（在消息回调内 pause，回调返回后仍不读）
+- TcpConnectionSendFileTest.WholeFile
+- TcpConnectionSendFileTest.PreludeFirst
+- TcpConnectionSendFileTest.PartialEagain
+- TcpConnectionSendFileTest.CallbackOnce
+- TcpConnectionSendFileTest.FdClosedOnComplete
+- TcpConnectionSendFileTest.FdBaselineRestored（/proc/self/fd 前后对比）
+- TcpConnectionSendFileTest.IdleNoEpollOutAfterSendFile（完成后 isWriting=false）
+- TcpConnectionSendFileTest.CancelOnClose
+- TcpConnectionPauseReadTest.StopsEpollInAfterRearm
+- TcpConnectionPauseReadTest.SurvivesRearm（在消息回调内 pause，回调返回后仍不读）
 
 **验收标准:**
-- [ ] ctest -R send_file 全绿（Linux）；Windows 全部 SKIP。
-- [ ] 4MB 传输字节与文件逐字节一致；prelude 在前。
-- [ ] 关闭连接后回调不悬挂，fd 数量回到基线（/proc/self/fd 对比）。
-- [ ] 空闲时无 EPOLLOUT 常驻，CPU 不空转。
+- [x] ctest -R send_file 全绿（Linux）；Windows 全部 SKIP（用户确认全量 ctest 通过）。
+- [x] 4MB 传输字节与文件逐字节一致；prelude 在前（ctest 通过）。
+- [x] 关闭连接后回调不悬挂，fd 数量回到基线（/proc/self/fd 对比）；ctest 通过。
+- [x] 空闲时无 EPOLLOUT 常驻，CPU 不空转；ctest 通过。
 
 **风险:**
 - fd 所有权不清导致 double close → API 文档写死“连接接管”，单测用 fcntl 检查关闭。

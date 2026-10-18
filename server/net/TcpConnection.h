@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +38,18 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   void send(const std::string& message);
   void send(const void* data, size_t len);
 
+  // 发送文件内容：连接接管 fd；先发完 outputBuffer（可放帧头），再 sendfile。
+  // done 只会被调用一次，且在本连接所属 loop 线程。
+  bool sendFile(int fd, std::int64_t offset, std::size_t len,
+                const std::function<void(bool)>& done);
+
+  // 暂停/恢复读事件；readPaused_ 会阻止 rearm 在回调尾部重新打开 EPOLLIN。
+  void pauseRead();
+  void resumeRead();
+  bool readPaused() const { return readPaused_.load(); }
+  bool isReading() const { return channel_->isReading(); }
+  bool isWriting() const { return channel_->isWriting(); }
+
   // 优雅关闭：停读 -> 发完缓冲 -> SHUT_WR -> 等对端 FIN
   void shutdown();
   // 立即关闭（错误/超时/服务端退出）
@@ -57,6 +70,12 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   void handleClose();
   void handleError();
   void sendInLoop(const std::string& message);
+  void sendFileInLoop(int fd, std::int64_t offset, std::size_t len,
+                      const std::function<void(bool)>& done);
+  void startSendFileInLoop();
+  bool sendFileLoop();
+  void finishSendFile(bool ok);
+  void cancelSendFile();
   void shutdownInLoop();
   void forceCloseInLoop();
   // ET + ONESHOT 的重新武装；不满足条件时什么都不做
@@ -80,7 +99,15 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
   size_t highWaterMark_;
   bool backpressure_;
+  std::atomic<bool> readPaused_;
   std::atomic<int64_t> lastActiveMs_;
+
+  int sendFileFd_;
+  std::int64_t sendFileOffset_;
+  std::size_t sendFileRemaining_;
+  bool sendFilePending_;
+  bool sendFileActive_;
+  std::function<void(bool)> sendFileDone_;
 };
 
 }  // namespace net

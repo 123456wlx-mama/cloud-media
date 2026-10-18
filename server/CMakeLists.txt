@@ -1,5 +1,9 @@
 add_subdirectory(net)
 
+if(BUILD_TESTS)
+    add_subdirectory(logic/tests)
+endif()
+
 if(BUILD_STORAGE)
     cm_find_mysql()
     cm_find_hiredis()
