@@ -13,6 +13,7 @@ option(ENABLE_ASAN "Enable ASan/UBSan in Debug" OFF)
 option(ENABLE_TSAN "Enable TSan in Debug" OFF)
 option(ENABLE_COVERAGE "Enable gcov coverage" OFF)
 option(USE_BUNDLED_THIRDPARTY "Prefer thirdparty/ over system libraries" ${WIN32})
+option(BUILD_BENCHMARKS "Build benchmarks" ON)
 
 if(BUILD_SERVER AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "BUILD_SERVER is Linux-only (epoll). Use WSL or a Linux machine.")

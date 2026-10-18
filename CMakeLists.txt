@@ -6,6 +6,11 @@ include(options)
 include(compiler_flags)
 include(thirdparty)
 
+if(BUILD_TESTS)
+    enable_testing()
+    include(tests)
+endif()
+
 add_subdirectory(common)
 
 if(BUILD_SERVER)
@@ -16,9 +21,8 @@ if(BUILD_CLIENT)
     add_subdirectory(client)
 endif()
 
-if(BUILD_TESTS)
-    enable_testing()
-    # Phase 2+ 再添加 tests 子目录
+if(BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 message(STATUS "cloud-media ${PROJECT_VERSION}")
