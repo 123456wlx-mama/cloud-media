@@ -1,0 +1,13 @@
+* text=auto
+*.sh text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+
+# legacy 保持原样；wanpan-dome 自带 .gitattributes，其规则优先
+legacy/** -text

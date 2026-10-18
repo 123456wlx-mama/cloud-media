@@ -7,14 +7,14 @@ else()
 endif()
 
 option(BUILD_SERVER "Build Linux server (epoll)" ${_cm_default_server})
-option(BUILD_CLIENT "Build Qt client" ${_cm_default_client})
+option(BUILD_CLIENT "Build client (Qt in Phase 8)" ${_cm_default_client})
 option(BUILD_TESTS "Build unit tests" ON)
 option(ENABLE_ASAN "Enable ASan/UBSan in Debug" OFF)
 option(ENABLE_TSAN "Enable TSan in Debug" OFF)
 option(ENABLE_COVERAGE "Enable gcov coverage" OFF)
 option(USE_BUNDLED_THIRDPARTY "Prefer thirdparty/ over system libraries" ${WIN32})
 
-if(WIN32 AND BUILD_SERVER)
+if(BUILD_SERVER AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "BUILD_SERVER is Linux-only (epoll). Use WSL or a Linux machine.")
 endif()
 
