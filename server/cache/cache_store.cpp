@@ -71,28 +71,52 @@ std::string CacheKey::fileById(std::uint64_t fid) {
     return "cm:v1:file:id:" + std::to_string(fid);
 }
 
-std::string CacheKey::share(const std::string& code) {
-    if (code.size() != 9) {
-        return std::string();
+namespace {
+
+// 31 字符表：2-9 + A-Z，去掉易混淆的 I/L/O（0/1 也不在数字段）。
+bool isShareCodeChar(unsigned char c) {
+    if (c >= '2' && c <= '9') {
+        return true;
+    }
+    return c >= 'A' && c <= 'Z' && c != 'I' && c != 'L' && c != 'O';
+}
+
+bool isValidShareCode(const std::string& code) {
+    if (code.size() != 6) {
+        return false;
     }
     for (std::size_t i = 0; i < code.size(); ++i) {
-        if (!std::isdigit(static_cast<unsigned char>(code[i]))) {
-            return std::string();
+        if (!isShareCodeChar(static_cast<unsigned char>(code[i]))) {
+            return false;
         }
+    }
+    return true;
+}
+
+}  // namespace
+
+std::string CacheKey::share(const std::string& code) {
+    if (!isValidShareCode(code)) {
+        return std::string();
     }
     return "cm:v1:share:" + code;
 }
 
 std::string CacheKey::shareMiss(const std::string& code) {
-    if (code.size() != 9) {
+    if (!isValidShareCode(code)) {
         return std::string();
     }
-    for (std::size_t i = 0; i < code.size(); ++i) {
-        if (!std::isdigit(static_cast<unsigned char>(code[i]))) {
-            return std::string();
-        }
-    }
     return "cm:v1:share:miss:" + code;
+}
+
+std::string CacheKey::uploadReq(std::uint64_t uid, std::uint32_t reqId) {
+    return join("cm:v1:up:req:" + std::to_string(uid) + ":",
+                std::to_string(reqId));
+}
+
+std::string CacheKey::shareReq(std::uint64_t uid, std::uint32_t reqId) {
+    return join("cm:v1:share:req:" + std::to_string(uid) + ":",
+                std::to_string(reqId));
 }
 
 std::string CacheKey::uploadBitmap(const std::string& taskId) {

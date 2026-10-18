@@ -76,3 +76,29 @@ set_target_properties(test_schema_contract PROPERTIES
 )
 
 add_test(NAME schema_contract COMMAND test_schema_contract)
+
+add_executable(test_cache_key
+    storage/test_cache_key.cpp
+)
+target_link_libraries(test_cache_key PRIVATE
+    cm_cache
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_cache_key PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME cache_key COMMAND test_cache_key)
+
+add_executable(test_schema_v2_2
+    storage/test_schema_v2_2.cpp
+)
+target_link_libraries(test_schema_v2_2 PRIVATE
+    cm_storage
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_schema_v2_2 PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME schema_v2_2 COMMAND test_schema_v2_2)

@@ -92,10 +92,12 @@ TEST(CacheKeyTest, MatchesSpecFormats) {
               cm::cache::CacheKey::fileByMd5(md5));
     EXPECT_EQ(std::string("cm:v1:file:id:7"),
               cm::cache::CacheKey::fileById(7));
-    EXPECT_EQ(std::string("cm:v1:share:123456789"),
-              cm::cache::CacheKey::share("123456789"));
-    EXPECT_EQ(std::string("cm:v1:share:miss:123456789"),
-              cm::cache::CacheKey::shareMiss("123456789"));
+    // Phase 5 起分享码固定 6 位（31 字符表，去掉 0/O/1/I/L），9 位旧码直接判非法返回空
+    EXPECT_EQ(std::string("cm:v1:share:AB2CD3"),
+              cm::cache::CacheKey::share("AB2CD3"));
+    EXPECT_EQ(std::string("cm:v1:share:miss:AB2CD3"),
+              cm::cache::CacheKey::shareMiss("AB2CD3"));
+    EXPECT_EQ(std::string(""), cm::cache::CacheKey::share("123456789"));
     EXPECT_EQ(std::string("cm:v1:up:bitmap:task"),
               cm::cache::CacheKey::uploadBitmap("task"));
     EXPECT_EQ(std::string("cm:v1:rl:ip:127.0.0.1:60"),

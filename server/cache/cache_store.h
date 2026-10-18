@@ -24,6 +24,8 @@ public:
     static std::string fileById(std::uint64_t fid);
     static std::string share(const std::string& code);
     static std::string shareMiss(const std::string& code);
+    static std::string uploadReq(std::uint64_t uid, std::uint32_t reqId);
+    static std::string shareReq(std::uint64_t uid, std::uint32_t reqId);
     static std::string uploadBitmap(const std::string& taskId);
     static std::string rateLimitIp(const std::string& ip, std::int64_t window);
     static std::string rebuildLock(const std::string& key);

@@ -26,6 +26,24 @@ const Crc32Table& table() {
     return instance;
 }
 
+std::uint32_t matrixTimes(const std::uint32_t* matrix, std::uint32_t vector) {
+    std::uint32_t sum = 0;
+    while (vector != 0) {
+        if ((vector & 1u) != 0) {
+            sum ^= *matrix;
+        }
+        vector >>= 1;
+        ++matrix;
+    }
+    return sum;
+}
+
+void matrixSquare(std::uint32_t* square, const std::uint32_t* matrix) {
+    for (std::size_t i = 0; i < 32; ++i) {
+        square[i] = matrixTimes(matrix, matrix[i]);
+    }
+}
+
 }  // namespace
 
 Crc32::Crc32() : crc_(0xFFFFFFFFu) {}
@@ -53,6 +71,47 @@ std::uint32_t crc32(const void* data, std::size_t len) {
 
 std::uint32_t crc32(const std::string& data) {
     return crc32(data.data(), data.size());
+}
+
+std::uint32_t crc32Combine(std::uint32_t crc1, std::uint32_t crc2,
+                           std::uint64_t len2) {
+    if (len2 == 0) {
+        return crc1;
+    }
+
+    // 与 zlib 的 crc32_combine 等价：在 GF(2) 上用 32x32 矩阵平方，
+    // 把「len2 个零比特」的移位作用到 crc1 上，再与 crc2 异或。
+    std::uint32_t even[32];
+    std::uint32_t odd[32];
+
+    odd[0] = 0xEDB88320u;
+    std::uint32_t row = 1;
+    for (std::size_t i = 1; i < 32; ++i) {
+        odd[i] = row;
+        row <<= 1;
+    }
+
+    matrixSquare(even, odd);  // 2 个零比特
+    matrixSquare(odd, even);  // 4 个零比特
+
+    do {
+        matrixSquare(even, odd);
+        if ((len2 & 1u) != 0) {
+            crc1 = matrixTimes(even, crc1);
+        }
+        len2 >>= 1;
+        if (len2 == 0) {
+            break;
+        }
+
+        matrixSquare(odd, even);
+        if ((len2 & 1u) != 0) {
+            crc1 = matrixTimes(odd, crc1);
+        }
+        len2 >>= 1;
+    } while (len2 != 0);
+
+    return crc1 ^ crc2;
 }
 
 }  // namespace cm
