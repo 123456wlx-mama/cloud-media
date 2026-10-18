@@ -26,6 +26,14 @@ const char* to_string(ErrorCode code) {
         case ErrorCode::TaskNotFound: return "TaskNotFound";
         case ErrorCode::TaskStateInvalid: return "TaskStateInvalid";
         case ErrorCode::RateLimited: return "RateLimited";
+        case ErrorCode::DbUnavailable: return "DbUnavailable";
+        case ErrorCode::DbPoolTimeout: return "DbPoolTimeout";
+        case ErrorCode::DbQueryFailed: return "DbQueryFailed";
+        case ErrorCode::DbTxConflict: return "DbTxConflict";
+        case ErrorCode::RedisUnavailable: return "RedisUnavailable";
+        case ErrorCode::CacheRebuildFailed: return "CacheRebuildFailed";
+        case ErrorCode::AuthUnavailable: return "AuthUnavailable";
+        case ErrorCode::RateLimitUnavailable: return "RateLimitUnavailable";
     }
     return "UnknownError";
 }
@@ -37,6 +45,12 @@ bool is_retryable(ErrorCode code) {
         case ErrorCode::ChunkMissing:
         case ErrorCode::Md5Mismatch:
         case ErrorCode::RateLimited:
+        case ErrorCode::DbUnavailable:
+        case ErrorCode::DbPoolTimeout:
+        case ErrorCode::DbTxConflict:
+        case ErrorCode::RedisUnavailable:
+        case ErrorCode::AuthUnavailable:
+        case ErrorCode::RateLimitUnavailable:
         case ErrorCode::NeedMore:
             return true;
         default:

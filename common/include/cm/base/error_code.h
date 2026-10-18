@@ -26,7 +26,17 @@ enum class ErrorCode {
     Md5Mismatch = 3003,
     TaskNotFound = 3004,
     TaskStateInvalid = 3005,
-    RateLimited = 3006
+    RateLimited = 3006,
+
+    // 存储层错误码（Phase 4）
+    DbUnavailable = 4001,
+    DbPoolTimeout = 4002,
+    DbQueryFailed = 4003,
+    DbTxConflict = 4004,
+    RedisUnavailable = 4005,
+    CacheRebuildFailed = 4006,
+    AuthUnavailable = 4007,
+    RateLimitUnavailable = 4008
 };
 
 // 协议错误码：ERROR_RS 的 wire code，数值与 docs/specs/03 第 13.2 节一致。
