@@ -127,6 +127,7 @@ private:
     MysqlPool(const MysqlOptions& options,
               const std::shared_ptr<detail::PoolCore>& core);
 
+    void logAcquireTimeout() const;
     void setLastError(ErrorCode code);
 
     std::shared_ptr<detail::PoolCore> m_core;

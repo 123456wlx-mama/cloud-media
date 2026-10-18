@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <random>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -193,10 +194,41 @@ bool CacheStore::isNullMarker(const std::string& value) {
     return value == nullMarker();
 }
 
-std::mutex& CacheStore::lockFor(const std::string& key) {
-    const std::size_t index =
-        std::hash<std::string>()(key) % m_localLocks.size();
-    return m_localLocks[index];
+std::shared_ptr<CacheStore::RebuildSlot> CacheStore::findOrCreateSlot(
+    const std::string& key, bool* isLeader) {
+    std::lock_guard<std::mutex> guard(m_slotMutex);
+    std::unordered_map<std::string, std::shared_ptr<RebuildSlot>>::iterator it =
+        m_slots.find(key);
+    if (it != m_slots.end()) {
+        *isLeader = false;
+        return it->second;
+    }
+    std::shared_ptr<RebuildSlot> slot = std::make_shared<RebuildSlot>();
+    m_slots.insert(std::make_pair(key, slot));
+    *isLeader = true;
+    return slot;
+}
+
+void CacheStore::publishSlot(const std::string& key, Result result,
+                             const std::string& value) {
+    std::shared_ptr<RebuildSlot> slot;
+    {
+        std::lock_guard<std::mutex> guard(m_slotMutex);
+        std::unordered_map<std::string, std::shared_ptr<RebuildSlot>>::iterator it =
+            m_slots.find(key);
+        if (it == m_slots.end()) {
+            return;
+        }
+        slot = it->second;
+        m_slots.erase(it);
+    }
+    {
+        std::lock_guard<std::mutex> guard(slot->mutex);
+        slot->done = true;
+        slot->result = result;
+        slot->value = value;
+    }
+    slot->cv.notify_all();
 }
 
 CacheStore::Result CacheStore::read(RedisConn& conn, const std::string& key,
@@ -243,9 +275,10 @@ CacheStore::Result CacheStore::loadDirect(const Loader& loader,
 
 bool CacheStore::write(RedisConn& conn, const std::string& key,
                        const std::string& value,
-                       std::chrono::milliseconds baseTtl) {
-    const std::int64_t ttlMs =
-        randomJitterTtlMs(baseTtl.count(), m_options.jitterPercent);
+                       std::chrono::milliseconds baseTtl, bool jitter) {
+    const std::int64_t ttlMs = jitter
+        ? randomJitterTtlMs(baseTtl.count(), m_options.jitterPercent)
+        : baseTtl.count();
     if (ttlMs <= 0) {
         return false;
     }
@@ -296,7 +329,7 @@ bool CacheStore::put(const std::string& key, const std::string& value,
         m_errors.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    return write(*conn, key, value, ttl);
+    return write(*conn, key, value, ttl, true);
 }
 
 bool CacheStore::invalidate(const std::string& key) {
@@ -322,6 +355,12 @@ CacheStore::Result CacheStore::getOrLoad(const std::string& key,
         return Result::Error;
     }
 
+    // 同线程重入（loader 内部又请求同一个 key）：直接回源，避免等待自己造成死锁
+    static thread_local std::set<std::string> loadingKeys;
+    if (loadingKeys.find(key) != loadingKeys.end()) {
+        return loadDirect(loader, out);
+    }
+
     std::unique_ptr<RedisConn> conn = m_pool.acquire();
     if (!conn) {
         m_errors.fetch_add(1, std::memory_order_relaxed);
@@ -344,23 +383,43 @@ CacheStore::Result CacheStore::getOrLoad(const std::string& key,
         return loadDirect(loader, out);
     }
 
-    std::lock_guard<std::mutex> localLock(lockFor(key));
-
-    nullHit = false;
-    result = read(*conn, key, out, &nullHit);
-    if (result == Result::Hit) {
-        m_hits.fetch_add(1, std::memory_order_relaxed);
-        return Result::Hit;
-    }
-    if (result == Result::Miss && nullHit) {
-        m_nullHits.fetch_add(1, std::memory_order_relaxed);
-        return Result::Miss;
-    }
-    if (result == Result::Error) {
-        m_errors.fetch_add(1, std::memory_order_relaxed);
-        conn.reset();
+    // 单飞：同一 key 的并发请求只允许一个 leader 回源，其余最多等 200ms
+    bool isLeader = false;
+    std::shared_ptr<RebuildSlot> slot = findOrCreateSlot(key, &isLeader);
+    if (!isLeader) {
+        std::unique_lock<std::mutex> waitLock(slot->mutex);
+        if (!slot->cv.wait_for(waitLock, std::chrono::milliseconds(200),
+                               [&slot]() { return slot->done; })) {
+            // 等待超时：不等了，直接回源（此刻不持有任何进程级锁）
+            m_rebuildFallbacks.fetch_add(1, std::memory_order_relaxed);
+            return loadDirect(loader, out);
+        }
+        if (slot->result == Result::Hit) {
+            *out = slot->value;
+            return Result::Hit;
+        }
+        if (slot->result == Result::Miss) {
+            return Result::Miss;
+        }
+        // leader 失败：自己回源兜底，避免把故障扩散给所有等待者
         return loadDirect(loader, out);
     }
+
+    // leader：登记重入标记 + 保证任何返回路径都会唤醒等待者
+    loadingKeys.insert(key);
+    Result finalResult = Result::Error;
+    std::string finalValue;
+    struct LeaderGuard {
+        CacheStore* self;
+        const std::string& key;
+        std::set<std::string>& loading;
+        Result& result;
+        std::string& value;
+        ~LeaderGuard() {
+            self->publishSlot(key, result, value);
+            loading.erase(key);
+        }
+    } leaderGuard = {this, key, loadingKeys, finalResult, finalValue};
 
     const std::string token = makeToken();
     const std::string lockKey = CacheKey::rebuildLock(key);
@@ -379,10 +438,13 @@ CacheStore::Result CacheStore::getOrLoad(const std::string& key,
         result = read(*conn, key, out, &nullHit);
         if (result == Result::Hit) {
             m_hits.fetch_add(1, std::memory_order_relaxed);
+            finalResult = Result::Hit;
+            finalValue = *out;
             return Result::Hit;
         }
         if (result == Result::Miss && nullHit) {
             m_nullHits.fetch_add(1, std::memory_order_relaxed);
+            finalResult = Result::Miss;
             return Result::Miss;
         }
         if (result == Result::Error) {
@@ -394,24 +456,37 @@ CacheStore::Result CacheStore::getOrLoad(const std::string& key,
         m_rebuildFallbacks.fetch_add(1, std::memory_order_relaxed);
     }
 
+    // Redis 锁 RAII：异常/提前返回都不留下残留锁
+    struct RedisLockGuard {
+        CacheStore* self;
+        RedisConn* conn;
+        std::string lockKey;
+        std::string token;
+        bool active;
+        ~RedisLockGuard() {
+            if (active) {
+                self->releaseLock(*conn, lockKey, token);
+            }
+        }
+    } redisLock = {this, conn.get(), lockKey, token, locked};
+
     if (locked) {
         nullHit = false;
         result = read(*conn, key, out, &nullHit);
         if (result == Result::Hit) {
             m_hits.fetch_add(1, std::memory_order_relaxed);
-            releaseLock(*conn, lockKey, token);
+            finalResult = Result::Hit;
+            finalValue = *out;
             return Result::Hit;
         }
         if (result == Result::Miss && nullHit) {
             m_nullHits.fetch_add(1, std::memory_order_relaxed);
-            releaseLock(*conn, lockKey, token);
+            finalResult = Result::Miss;
             return Result::Miss;
         }
         if (result == Result::Error) {
             m_errors.fetch_add(1, std::memory_order_relaxed);
-            releaseLock(*conn, lockKey, token);
-            conn.reset();
-            return loadDirect(loader, out);
+            return loadDirect(loader, out);  // 锁由 redisLock 释放
         }
     }
 
@@ -419,20 +494,18 @@ CacheStore::Result CacheStore::getOrLoad(const std::string& key,
     m_loads.fetch_add(1, std::memory_order_relaxed);
     const LoadStatus status = loader(out);
     if (status == LoadStatus::Found) {
-        write(*conn, key, *out, m_options.defaultTtl);
-    } else if (status == LoadStatus::NotFound) {
-        write(*conn, key, nullMarker(), m_options.nullTtl);
-    } else {
-        m_loadErrors.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    if (locked) {
-        releaseLock(*conn, lockKey, token);
-    }
-    if (status == LoadStatus::Found) {
+        write(*conn, key, *out, m_options.defaultTtl, true);
+        finalResult = Result::Hit;
+        finalValue = *out;
         return Result::Hit;
     }
-    return status == LoadStatus::NotFound ? Result::Miss : Result::Error;
+    if (status == LoadStatus::NotFound) {
+        write(*conn, key, nullMarker(), m_options.nullTtl, false);
+        finalResult = Result::Miss;
+        return Result::Miss;
+    }
+    m_loadErrors.fetch_add(1, std::memory_order_relaxed);
+    return Result::Error;
 }
 
 CacheStats CacheStore::stats() const {

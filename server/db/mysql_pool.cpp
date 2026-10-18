@@ -3,13 +3,17 @@
 #include <mysql.h>
 
 #include <sstream>
+
+#include "cm/log/logger.h"
 #include <utility>
 
 namespace cm {
 namespace db {
 namespace {
 
-MysqlHandle createPhysical(const MysqlOptions& options, std::string* err) {
+MysqlHandle createPhysical(const MysqlOptions& options,
+                           unsigned int connectTimeoutSec,
+                           std::string* err) {
     MYSQL* raw = mysql_init(NULL);
     if (raw == NULL) {
         if (err != NULL) {
@@ -18,7 +22,7 @@ MysqlHandle createPhysical(const MysqlOptions& options, std::string* err) {
         return MysqlHandle();
     }
 
-    unsigned int connectTimeout = 3;
+    unsigned int connectTimeout = connectTimeoutSec < 1 ? 1 : connectTimeoutSec;
     unsigned int readTimeout = 5;
     unsigned int writeTimeout = 5;
     my_bool reconnect = 0;
@@ -202,7 +206,7 @@ void PoolCore::giveBack(MysqlHandle handle,
             slot.lastActive = lastActive;
             idle.push_back(std::move(slot));
         }
-        cv.notify_one();
+        cv.notify_all();
     }
 }
 
@@ -251,7 +255,7 @@ void PoolCore::reaperLoop() {
         while (it != idle.end()) {
             const bool tooOld = (now - it->createdAt) > options.maxLifetime;
             const bool tooIdle = (now - it->lastActive) > options.idleTimeout;
-            if (tooOld || (tooIdle && total > options.minSize)) {
+            if (total > options.minSize && (tooOld || tooIdle)) {
                 expired.push_back(std::move(*it));
                 it = idle.erase(it);
                 if (total > 0) {
@@ -262,6 +266,7 @@ void PoolCore::reaperLoop() {
             }
         }
         lock.unlock();
+        cv.notify_all();
     }
 }
 
@@ -296,7 +301,7 @@ std::shared_ptr<MysqlPool> MysqlPool::create(const MysqlOptions& options,
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < options.minSize; ++i) {
-        MysqlHandle handle = createPhysical(options, &localError);
+        MysqlHandle handle = createPhysical(options, 3, &localError);
         if (!handle) {
             if (err != NULL) {
                 *err = localError;
@@ -360,9 +365,10 @@ std::unique_ptr<MysqlConn> MysqlPool::acquire(std::chrono::milliseconds timeout)
                 if (m_core->inUse > 0) {
                     --m_core->inUse;
                 }
-                m_core->cv.notify_one();
+                m_core->cv.notify_all();
                 if (std::chrono::steady_clock::now() >= deadline) {
-                    setLastError(ErrorCode::DbUnavailable);
+                    setLastError(ErrorCode::DbPoolTimeout);
+                    logAcquireTimeout();
                     return std::unique_ptr<MysqlConn>();
                 }
                 continue;
@@ -375,12 +381,33 @@ std::unique_ptr<MysqlConn> MysqlPool::acquire(std::chrono::milliseconds timeout)
         }
 
         if (m_core->total < m_core->options.maxSize) {
+            const std::chrono::steady_clock::time_point now =
+                std::chrono::steady_clock::now();
+            if (timeout.count() <= 0 || now >= deadline) {
+                m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
+                setLastError(ErrorCode::DbPoolTimeout);
+                logAcquireTimeout();
+                return std::unique_ptr<MysqlConn>();
+            }
+
+            const long long remainingMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now).count();
+            long long remainingSec = (remainingMs + 999) / 1000;
+            if (remainingSec < 1) {
+                remainingSec = 1;
+            }
+            unsigned int connectSec = 3;
+            if (remainingSec < 3) {
+                connectSec = static_cast<unsigned int>(remainingSec);
+            }
+
             ++m_core->total;
             ++m_core->inUse;
             lock.unlock();
 
             std::string connectError;
-            MysqlHandle handle = createPhysical(m_core->options, &connectError);
+            MysqlHandle handle = createPhysical(m_core->options, connectSec, &connectError);
             if (!handle) {
                 lock.lock();
                 if (m_core->total > 0) {
@@ -395,8 +422,13 @@ std::unique_ptr<MysqlConn> MysqlPool::acquire(std::chrono::milliseconds timeout)
                     m_core->circuitOpenUntil =
                         std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 }
-                m_core->cv.notify_one();
-                setLastError(ErrorCode::DbUnavailable);
+                m_core->cv.notify_all();
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    setLastError(ErrorCode::DbPoolTimeout);
+                    logAcquireTimeout();
+                } else {
+                    setLastError(ErrorCode::DbUnavailable);
+                }
                 return std::unique_ptr<MysqlConn>();
             }
 
@@ -413,18 +445,21 @@ std::unique_ptr<MysqlConn> MysqlPool::acquire(std::chrono::milliseconds timeout)
             std::chrono::steady_clock::now() >= deadline) {
             m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
             setLastError(ErrorCode::DbPoolTimeout);
+            logAcquireTimeout();
             return std::unique_ptr<MysqlConn>();
         }
 
         ++m_core->waiters;
         const bool signaled = m_core->cv.wait_until(lock, deadline, [this]() {
-            return m_core->stopping || !m_core->idle.empty();
+            return m_core->stopping || !m_core->idle.empty() ||
+                   m_core->total < m_core->options.maxSize;
         });
         --m_core->waiters;
 
         if (!signaled) {
             m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
             setLastError(ErrorCode::DbPoolTimeout);
+            logAcquireTimeout();
             return std::unique_ptr<MysqlConn>();
         }
     }
@@ -467,6 +502,16 @@ ErrorCode MysqlPool::lastError() const {
 
 void MysqlPool::setLastError(ErrorCode code) {
     m_lastError.store(static_cast<int>(code), std::memory_order_relaxed);
+}
+
+void MysqlPool::logAcquireTimeout() const {
+    std::ostringstream out;
+    out << "mysql pool acquire timeout total=" << m_core->total
+        << " idle=" << m_core->idle.size()
+        << " in_use=" << m_core->inUse
+        << " waiters=" << m_core->waiters
+        << " max=" << m_core->options.maxSize;
+    Logger::instance().log(LogLevel::Warn, __FILE__, __LINE__, out.str());
 }
 
 }  // namespace db

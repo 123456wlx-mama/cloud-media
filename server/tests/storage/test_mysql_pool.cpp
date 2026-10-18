@@ -261,7 +261,7 @@ TEST_F(MysqlIntegration, TransactionRollbackOnDestruct) {
     std::unique_ptr<cm::db::MysqlConn> conn = m_pool->acquire();
     ASSERT_TRUE(conn) << static_cast<int>(m_pool->lastError());
 
-    ASSERT_TRUE(conn->execute("CREATE TEMPORARY TABLE cm_tx_probe (id INT)"))
+    ASSERT_TRUE(conn->executeDdl("CREATE TEMPORARY TABLE cm_tx_probe (id INT)"))
         << conn->lastErrorMessage();
 
     {
@@ -282,7 +282,7 @@ TEST_F(MysqlIntegration, TransactionRollbackOnDestruct) {
         EXPECT_EQ(std::int64_t(0), count->getInt64(0));
     }
 
-    EXPECT_TRUE(conn->execute("DROP TEMPORARY TABLE IF EXISTS cm_tx_probe"))
+    EXPECT_TRUE(conn->executeDdl("DROP TEMPORARY TABLE IF EXISTS cm_tx_probe"))
         << conn->lastErrorMessage();
 }
 

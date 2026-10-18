@@ -45,3 +45,34 @@ if(ENABLE_DB_INTEGRATION_TESTS)
         COMMAND test_redis_pool --gtest_filter=*Integration*
     )
 endif()
+
+add_executable(test_storage_integration
+    storage/test_storage_integration.cpp
+)
+target_link_libraries(test_storage_integration PRIVATE
+    cm_storage
+    cm_cache
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_storage_integration PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_test(NAME storage_integration COMMAND test_storage_integration)
+
+add_executable(test_schema_contract
+    storage/test_schema_contract.cpp
+)
+target_compile_definitions(test_schema_contract PRIVATE
+    CM_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_link_libraries(test_schema_contract PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_schema_contract PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_test(NAME schema_contract COMMAND test_schema_contract)

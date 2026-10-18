@@ -85,7 +85,7 @@ std::unique_ptr<PreparedStatement> MysqlConn::prepare(const std::string& sql) {
                               m_slowQueryThreshold, m_inTx));
 }
 
-bool MysqlConn::execute(const std::string& sql) {
+bool MysqlConn::executeDdl(const std::string& sql) {
     m_lastError = ErrorCode::Ok;
     m_lastErrorMsg.clear();
     if (!valid()) {

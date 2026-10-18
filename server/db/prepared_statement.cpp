@@ -230,19 +230,24 @@ bool PreparedStatement::execute() {
         setError(ErrorCode::DbQueryFailed, "statement is closed");
         return false;
     }
+
+    my_bool updateMaxLength = 1;
+    if (mysql_stmt_attr_set(m_stmt, STMT_ATTR_UPDATE_MAX_LENGTH,
+                            &updateMaxLength) != 0) {
+        m_timing = false;
+        setError(ErrorCode::DbQueryFailed, "cannot enable max_length");
+        return false;
+    }
+
     if (m_paramCount > 0 &&
         mysql_stmt_bind_param(m_stmt, &m_paramBinds[0]) != 0) {
         m_timing = false;
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
+        setStmtError("bind param failed");
         return false;
     }
     if (mysql_stmt_execute(m_stmt) != 0) {
         m_timing = false;
-        const unsigned int code = mysql_stmt_errno(m_stmt);
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
-        if (m_conn != NULL && (code == 2003 || code == 2006 || code == 2013)) {
-            m_conn->markBroken();
-        }
+        setStmtError("execute failed");
         return false;
     }
 
@@ -259,16 +264,41 @@ bool PreparedStatement::execute() {
     return true;
 }
 
+void PreparedStatement::setStmtError(const char* fallback) {
+    const unsigned int code = m_stmt != NULL ? mysql_stmt_errno(m_stmt) : 0;
+    const char* text = m_stmt != NULL ? mysql_stmt_error(m_stmt) : nullptr;
+    if (text != nullptr && text[0] != '\0') {
+        setError(ErrorCode::DbQueryFailed, text);
+    } else {
+        setError(ErrorCode::DbQueryFailed,
+                 fallback != nullptr ? fallback : "statement error");
+    }
+    if (m_conn != NULL && (code == 2003 || code == 2006 || code == 2013)) {
+        m_conn->markBroken();
+    }
+}
+
 bool PreparedStatement::prepareResult() {
     m_meta = mysql_stmt_result_metadata(m_stmt);
     if (m_meta == NULL) {
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
+        setStmtError("result metadata failed");
         return false;
     }
     m_fieldCount = static_cast<std::size_t>(mysql_num_fields(m_meta));
-    MYSQL_FIELD* fields = mysql_fetch_fields(m_meta);
-    if (fields == NULL || m_fieldCount == 0) {
+    if (m_fieldCount == 0) {
         setError(ErrorCode::DbQueryFailed, "result metadata is empty");
+        return false;
+    }
+
+    // UPDATE_MAX_LENGTH 在 execute 前设置；store_result 之后 max_length 才有效。
+    if (mysql_stmt_store_result(m_stmt) != 0) {
+        setStmtError("store result failed");
+        return false;
+    }
+
+    MYSQL_FIELD* fields = mysql_fetch_fields(m_meta);
+    if (fields == NULL) {
+        setError(ErrorCode::DbQueryFailed, "result fields are empty");
         return false;
     }
 
@@ -278,16 +308,16 @@ bool PreparedStatement::prepareResult() {
     m_resultNulls.assign(m_fieldCount, 0);
     m_resultErrors.assign(m_fieldCount, 0);
 
-    const unsigned long kMinBuffer = 4096;
-    const unsigned long kMaxBuffer = 1024UL * 1024UL;
+    const unsigned long kMaxBuffer = 16UL * 1024UL * 1024UL;
 
     for (std::size_t i = 0; i < m_fieldCount; ++i) {
         unsigned long maxLength = fields[i].max_length;
-        if (maxLength < kMinBuffer) {
-            maxLength = kMinBuffer;
+        if (maxLength < 1) {
+            maxLength = 1;
         }
         if (maxLength > kMaxBuffer) {
-            maxLength = kMaxBuffer;
+            setError(ErrorCode::DbQueryFailed, "result column exceeds 16MB");
+            return false;
         }
         m_resultBuffers[i].resize(static_cast<std::size_t>(maxLength) + 1);
 
@@ -302,40 +332,37 @@ bool PreparedStatement::prepareResult() {
     }
 
     if (mysql_stmt_bind_result(m_stmt, &m_resultBinds[0]) != 0) {
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
-        return false;
-    }
-    if (mysql_stmt_store_result(m_stmt) != 0) {
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
+        setStmtError("bind result failed");
         return false;
     }
     return true;
 }
 
-bool PreparedStatement::fetch() {
+PreparedStatement::FetchStatus PreparedStatement::fetchRow() {
     if (!m_hasResult || m_stmt == NULL) {
-        return false;
+        return FetchStatus::End;
     }
     const int rc = mysql_stmt_fetch(m_stmt);
     if (rc == 0) {
         ++m_rows;
-        return true;
+        return FetchStatus::Row;
     }
     if (rc == MYSQL_NO_DATA) {
         reportSlowIfNeeded();
-        return false;
+        return FetchStatus::End;
     }
     if (rc == MYSQL_DATA_TRUNCATED) {
         setError(ErrorCode::DbQueryFailed, "result column truncated");
-    } else {
-        const unsigned int code = mysql_stmt_errno(m_stmt);
-        setError(ErrorCode::DbQueryFailed, mysql_stmt_error(m_stmt));
-        if (m_conn != NULL && (code == 2003 || code == 2006 || code == 2013)) {
-            m_conn->markBroken();
-        }
+        reportSlowIfNeeded();
+        return FetchStatus::Error;
     }
+    setStmtError("fetch failed");
     reportSlowIfNeeded();
-    return false;
+    return FetchStatus::Error;
+}
+
+bool PreparedStatement::fetch() {
+    return fetchRow() == FetchStatus::Row;
 }
 
 bool PreparedStatement::isNull(std::size_t index) const {

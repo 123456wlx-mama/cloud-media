@@ -143,6 +143,7 @@ private:
               std::chrono::steady_clock::time_point createdAt);
 
     void setError(ErrorCode code, const std::string& message);
+    void deleteWrongTypeKey(const std::string& key);
     void markBroken();
 
     std::shared_ptr<detail::RedisCore> m_core;
@@ -224,6 +225,7 @@ private:
     RedisPool(const RedisOptions& options,
               const std::shared_ptr<detail::RedisCore>& core);
 
+    void logAcquireTimeout() const;
     void setLastError(ErrorCode code);
 
     std::shared_ptr<detail::RedisCore> m_core;

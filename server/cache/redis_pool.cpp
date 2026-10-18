@@ -4,6 +4,8 @@
 #include <sstream>
 #include <utility>
 
+#include "cm/log/logger.h"
+
 // hiredis 0.13（Ubuntu 16.04 apt 版本）的 redisCommand 返回 void*，1.x 起才改为 redisReply*。
 // 这里统一包一层做类型收窄，避免每个调用点各写一遍 static_cast。
 #if !defined(HIREDIS_MAJOR) || HIREDIS_MAJOR < 1
@@ -23,11 +25,13 @@ namespace cm {
 namespace cache {
 namespace {
 
-RedisCtxHandle createPhysical(const RedisOptions& options, std::string* err) {
+RedisCtxHandle createPhysical(const RedisOptions& options,
+                              std::chrono::milliseconds connectTimeout,
+                              std::string* err) {
     struct timeval connectTv;
-    connectTv.tv_sec = static_cast<long>(options.connectTimeout.count() / 1000);
+    connectTv.tv_sec = static_cast<long>(connectTimeout.count() / 1000);
     connectTv.tv_usec = static_cast<long>(
-        (options.connectTimeout.count() % 1000) * 1000);
+        (connectTimeout.count() % 1000) * 1000);
 
     redisContext* ctx = redisConnectWithTimeout(options.host.c_str(),
                                                 options.port, connectTv);
@@ -262,6 +266,19 @@ void RedisConn::markBroken() {
     m_broken = true;
 }
 
+void RedisConn::deleteWrongTypeKey(const std::string& key) {
+    if (!valid()) {
+        return;
+    }
+    redisReply* raw = redisCommand(m_ctx.get(), "DEL %s", key.c_str());
+    if (raw != nullptr) {
+        freeReplyObject(raw);
+    }
+    if (m_ctx->err != 0) {
+        markBroken();
+    }
+}
+
 bool RedisConn::ping() {
     if (!valid()) {
         setError(ErrorCode::RedisUnavailable, "connection is closed");
@@ -269,6 +286,9 @@ bool RedisConn::ping() {
     }
     redisReply* raw = redisCommand(m_ctx.get(), "PING");
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -288,12 +308,18 @@ RedisLookup RedisConn::get(const std::string& key, std::string* value) {
     }
     redisReply* raw = redisCommand(m_ctx.get(), "GET %s", key.c_str());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return RedisLookup::Error;
     }
     RedisReply reply(raw);
     if (reply.isError()) {
+        if (reply.str().find("WRONGTYPE") != std::string::npos) {
+            deleteWrongTypeKey(key);
+        }
         setError(ErrorCode::RedisUnavailable, reply.str());
         return RedisLookup::Error;
     }
@@ -319,6 +345,9 @@ bool RedisConn::set(const std::string& key, const std::string& value) {
     redisReply* raw = redisCommand(m_ctx.get(), "SET %s %b",
                                    key.c_str(), value.data(), value.size());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -343,6 +372,9 @@ bool RedisConn::setPx(const std::string& key, const std::string& value,
         key.c_str(), value.data(), value.size(),
         static_cast<int>(ttl.count()));
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -367,6 +399,9 @@ bool RedisConn::setNxPx(const std::string& key, const std::string& value,
         key.c_str(), value.data(), value.size(),
         static_cast<int>(ttl.count()));
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -392,6 +427,9 @@ bool RedisConn::expire(const std::string& key, std::chrono::seconds ttl) {
                                    key.c_str(),
                                    static_cast<int>(ttl.count()));
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -418,6 +456,9 @@ bool RedisConn::hset(const std::string& key, const std::string& field,
                                    key.c_str(), field.c_str(),
                                    value.data(), value.size());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -425,6 +466,9 @@ bool RedisConn::hset(const std::string& key, const std::string& field,
     RedisReply reply(raw);
     if (reply.type() == REDIS_REPLY_INTEGER) {
         return true;
+    }
+    if (reply.isError() && reply.str().find("WRONGTYPE") != std::string::npos) {
+        deleteWrongTypeKey(key);
     }
     setError(ErrorCode::RedisUnavailable,
              reply.isError() ? reply.str() : std::string("HSET failed"));
@@ -440,12 +484,18 @@ RedisLookup RedisConn::hget(const std::string& key, const std::string& field,
     redisReply* raw = redisCommand(m_ctx.get(), "HGET %s %s",
                                    key.c_str(), field.c_str());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return RedisLookup::Error;
     }
     RedisReply reply(raw);
     if (reply.isError()) {
+        if (reply.str().find("WRONGTYPE") != std::string::npos) {
+            deleteWrongTypeKey(key);
+        }
         setError(ErrorCode::RedisUnavailable, reply.str());
         return RedisLookup::Error;
     }
@@ -470,6 +520,9 @@ bool RedisConn::incr(const std::string& key, long long* value) {
     }
     redisReply* raw = redisCommand(m_ctx.get(), "INCR %s", key.c_str());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -480,6 +533,9 @@ bool RedisConn::incr(const std::string& key, long long* value) {
             *value = reply.integer();
         }
         return true;
+    }
+    if (reply.isError() && reply.str().find("WRONGTYPE") != std::string::npos) {
+        deleteWrongTypeKey(key);
     }
     setError(ErrorCode::RedisUnavailable,
              reply.isError() ? reply.str() : std::string("INCR failed"));
@@ -493,6 +549,9 @@ bool RedisConn::del(const std::string& key) {
     }
     redisReply* raw = redisCommand(m_ctx.get(), "DEL %s", key.c_str());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -512,10 +571,17 @@ bool RedisConn::eval(const std::string& script, const std::string& key,
         setError(ErrorCode::RedisUnavailable, "connection is closed");
         return false;
     }
+    if (script.find('%') != std::string::npos) {
+        setError(ErrorCode::InvalidArgument, "eval script must not contain %");
+        return false;
+    }
     redisReply* raw = redisCommand(m_ctx.get(), "EVAL %s 1 %s %b",
                                    script.c_str(), key.c_str(),
                                    arg.data(), arg.size());
     if (raw == nullptr || m_ctx->err != 0) {
+        if (raw != nullptr) {
+            freeReplyObject(raw);
+        }
         markBroken();
         setError(ErrorCode::RedisUnavailable, m_ctx->errstr);
         return false;
@@ -523,6 +589,9 @@ bool RedisConn::eval(const std::string& script, const std::string& key,
     if (raw->type == REDIS_REPLY_ERROR) {
         const std::string message = std::string(raw->str, raw->len);
         freeReplyObject(raw);
+        if (message.find("WRONGTYPE") != std::string::npos) {
+            deleteWrongTypeKey(key);
+        }
         setError(ErrorCode::RedisUnavailable, message);
         return false;
     }
@@ -588,7 +657,7 @@ void RedisCore::giveBack(RedisCtxHandle ctx,
             slot.lastActive = lastActive;
             idle.push_back(std::move(slot));
         }
-        cv.notify_one();
+        cv.notify_all();
     }
 }
 
@@ -637,7 +706,7 @@ void RedisCore::reaperLoop() {
         while (it != idle.end()) {
             const bool tooOld = (now - it->createdAt) > options.maxLifetime;
             const bool tooIdle = (now - it->lastActive) > options.idleTimeout;
-            if (tooOld || (tooIdle && total > options.minSize)) {
+            if (total > options.minSize && (tooOld || tooIdle)) {
                 expired.push_back(std::move(*it));
                 it = idle.erase(it);
                 if (total > 0) {
@@ -648,6 +717,7 @@ void RedisCore::reaperLoop() {
             }
         }
         lock.unlock();
+        cv.notify_all();
     }
 }
 
@@ -672,7 +742,8 @@ void RedisConn::setError(ErrorCode code, const std::string& message) {
 bool RedisConn::reconnect() {
     m_ctx.reset();
     std::string error;
-    RedisCtxHandle ctx = createPhysical(m_core->options, &error);
+    RedisCtxHandle ctx = createPhysical(m_core->options,
+                                       m_core->options.connectTimeout, &error);
     if (!ctx) {
         markBroken();
         setError(ErrorCode::RedisUnavailable, error);
@@ -715,7 +786,7 @@ std::shared_ptr<RedisPool> RedisPool::create(const RedisOptions& options,
     const std::chrono::steady_clock::time_point now =
         std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < options.minSize; ++i) {
-        RedisCtxHandle ctx = createPhysical(options, &localError);
+        RedisCtxHandle ctx = createPhysical(options, options.connectTimeout, &localError);
         if (!ctx) {
             if (err != nullptr) {
                 *err = localError;
@@ -785,9 +856,10 @@ std::unique_ptr<RedisConn> RedisPool::acquire(std::chrono::milliseconds timeout)
                     --m_core->inUse;
                 }
                 m_core->reconnectTotal.fetch_add(1, std::memory_order_relaxed);
-                m_core->cv.notify_one();
+                m_core->cv.notify_all();
                 if (std::chrono::steady_clock::now() >= deadline) {
                     setLastError(ErrorCode::RedisUnavailable);
+                    logAcquireTimeout();
                     return std::unique_ptr<RedisConn>();
                 }
                 continue;
@@ -799,12 +871,37 @@ std::unique_ptr<RedisConn> RedisPool::acquire(std::chrono::milliseconds timeout)
         }
 
         if (m_core->total < m_core->options.maxSize) {
+            const std::chrono::steady_clock::time_point now =
+                std::chrono::steady_clock::now();
+            if (timeout.count() <= 0 || now >= deadline) {
+                m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
+                setLastError(ErrorCode::RedisUnavailable);
+                logAcquireTimeout();
+                return std::unique_ptr<RedisConn>();
+            }
+
+            std::chrono::milliseconds connectTimeout =
+                m_core->options.connectTimeout;
+            const std::chrono::milliseconds remaining =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now);
+            if (remaining < connectTimeout) {
+                connectTimeout = remaining;
+            }
+            if (connectTimeout.count() < 1) {
+                connectTimeout = std::chrono::milliseconds(1);
+            }
+            if (connectTimeout > std::chrono::milliseconds(3000)) {
+                connectTimeout = std::chrono::milliseconds(3000);
+            }
+
             ++m_core->total;
             ++m_core->inUse;
             lock.unlock();
 
             std::string connectError;
-            RedisCtxHandle ctx = createPhysical(m_core->options, &connectError);
+            RedisCtxHandle ctx = createPhysical(m_core->options, connectTimeout,
+                                                &connectError);
             if (!ctx) {
                 lock.lock();
                 if (m_core->total > 0) {
@@ -819,8 +916,13 @@ std::unique_ptr<RedisConn> RedisPool::acquire(std::chrono::milliseconds timeout)
                     m_core->circuitOpenUntil =
                         std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 }
-                m_core->cv.notify_one();
-                setLastError(ErrorCode::RedisUnavailable);
+                m_core->cv.notify_all();
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    setLastError(ErrorCode::RedisUnavailable);
+                    logAcquireTimeout();
+                } else {
+                    setLastError(ErrorCode::RedisUnavailable);
+                }
                 return std::unique_ptr<RedisConn>();
             }
 
@@ -836,18 +938,21 @@ std::unique_ptr<RedisConn> RedisPool::acquire(std::chrono::milliseconds timeout)
             std::chrono::steady_clock::now() >= deadline) {
             m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
             setLastError(ErrorCode::RedisUnavailable);
+            logAcquireTimeout();
             return std::unique_ptr<RedisConn>();
         }
 
         ++m_core->waiters;
         const bool signaled = m_core->cv.wait_until(lock, deadline, [this]() {
-            return m_core->stopping || !m_core->idle.empty();
+            return m_core->stopping || !m_core->idle.empty() ||
+                   m_core->total < m_core->options.maxSize;
         });
         --m_core->waiters;
 
         if (!signaled) {
             m_core->acquireTimeoutTotal.fetch_add(1, std::memory_order_relaxed);
             setLastError(ErrorCode::RedisUnavailable);
+            logAcquireTimeout();
             return std::unique_ptr<RedisConn>();
         }
     }
@@ -891,6 +996,16 @@ ErrorCode RedisPool::lastError() const {
 
 void RedisPool::setLastError(ErrorCode code) {
     m_lastError.store(static_cast<int>(code), std::memory_order_relaxed);
+}
+
+void RedisPool::logAcquireTimeout() const {
+    std::ostringstream out;
+    out << "redis pool acquire timeout total=" << m_core->total
+        << " idle=" << m_core->idle.size()
+        << " in_use=" << m_core->inUse
+        << " waiters=" << m_core->waiters
+        << " max=" << m_core->options.maxSize;
+    Logger::instance().log(LogLevel::Warn, __FILE__, __LINE__, out.str());
 }
 
 }  // namespace cache

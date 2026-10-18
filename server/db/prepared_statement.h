@@ -52,6 +52,14 @@ public:
     bool bindNull(std::size_t index);
 
     bool execute();
+
+    enum class FetchStatus {
+        Row,
+        End,
+        Error
+    };
+
+    FetchStatus fetchRow();
     bool fetch();
     bool isNull(std::size_t index) const;
     std::int64_t getInt64(std::size_t index) const;
@@ -77,6 +85,7 @@ private:
                       bool inTransaction);
 
     void setError(ErrorCode code, const std::string& message);
+    void setStmtError(const char* fallback);
     bool prepareResult();
     void reportSlowIfNeeded();
 

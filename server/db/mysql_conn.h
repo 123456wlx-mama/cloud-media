@@ -44,7 +44,7 @@ public:
 
     std::unique_ptr<PreparedStatement> prepare(const std::string& sql);
     // 仅用于 DDL / 会话语句；禁止拼接用户输入。
-    bool execute(const std::string& sql);
+    bool executeDdl(const std::string& sql);
     bool begin();
     bool commit();
     bool rollback();

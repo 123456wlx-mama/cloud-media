@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "cache/cache_store.h"
 #include "cache/redis_pool.h"
@@ -354,6 +355,48 @@ TEST_F(RedisIntegration, CacheStoreMissLoadsOnce) {
     EXPECT_TRUE(store.getOrLoad(key, loader, &out) ==
                 cm::cache::CacheStore::Result::Hit);
     EXPECT_EQ(1, loads);
+
+    store.invalidate(key);
+}
+
+// 并发单飞：8 个线程同时请求同一个未缓存的 key，loader 只应执行一次；
+// 且等待者必须在 200ms 上限内拿到 leader 的结果（不能串行化整个 loader）。
+TEST_F(RedisIntegration, ConcurrentSameKeyLoadsOnce) {
+    cm::cache::CacheStoreOptions options;
+    cm::cache::CacheStore store(*m_pool, options);
+
+    const std::string key = uniqueKey("singleflight");
+    std::atomic<int> loads(0);
+    cm::cache::CacheStore::Loader loader =
+        [&loads](std::string* out) -> cm::cache::CacheStore::LoadStatus {
+            loads.fetch_add(1);
+            // 模拟慢 loader：修复前分片锁会把它串行化，现在其他线程应等待并复用结果
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (out != nullptr) {
+                *out = "singleflight-value";
+            }
+            return cm::cache::CacheStore::LoadStatus::Found;
+        };
+
+    const int threadCount = 8;
+    std::atomic<int> okCount(0);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < threadCount; ++i) {
+        threads.push_back(std::thread([&store, &loader, &key, &okCount]() {
+            std::string value;
+            if (store.getOrLoad(key, loader, &value) ==
+                    cm::cache::CacheStore::Result::Hit &&
+                value == "singleflight-value") {
+                okCount.fetch_add(1);
+            }
+        }));
+    }
+    for (std::size_t i = 0; i < threads.size(); ++i) {
+        threads[i].join();
+    }
+
+    EXPECT_EQ(threadCount, okCount.load());
+    EXPECT_EQ(1, loads.load());
 
     store.invalidate(key);
 }

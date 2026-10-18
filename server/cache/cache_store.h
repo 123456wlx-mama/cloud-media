@@ -1,13 +1,15 @@
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "redis_pool.h"
 
@@ -66,8 +68,9 @@ struct CacheStoreOptions {
 
 // 旁路缓存：
 // - 空值标记防穿透
-// - 本地分片锁 + Redis SET NX 锁防击穿
+// - 进程内「按 key 单飞」+ Redis SET NX 锁防击穿（等待上限 200ms，超时回源，不阻塞 loader）
 // - TTL ±jitterPercent 抖动防雪崩
+// 注意：loader 绝不在任何进程级锁内执行，且同线程重入同 key 会直接回源（防自锁）。
 class CacheStore {
 public:
     enum class Result {
@@ -104,18 +107,36 @@ public:
     static bool isNullMarker(const std::string& value);
 
 private:
+    // 单飞槽位：每个正在回源的 key 一个，leader 完成后唤醒所有等待者
+    struct RebuildSlot {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done;
+        Result result;
+        std::string value;
+
+        RebuildSlot() : done(false), result(Result::Error) {}
+    };
+
     Result read(RedisConn& conn, const std::string& key,
                 std::string* out, bool* nullHit);
     Result loadDirect(const Loader& loader, std::string* out);
     bool write(RedisConn& conn, const std::string& key,
-               const std::string& value, std::chrono::milliseconds baseTtl);
+               const std::string& value, std::chrono::milliseconds baseTtl,
+               bool jitter);
     void releaseLock(RedisConn& conn, const std::string& lockKey,
                      const std::string& token);
-    std::mutex& lockFor(const std::string& key);
+
+    std::shared_ptr<RebuildSlot> findOrCreateSlot(const std::string& key,
+                                                  bool* isLeader);
+    void publishSlot(const std::string& key, Result result,
+                     const std::string& value);
 
     RedisPool& m_pool;
     CacheStoreOptions m_options;
-    std::array<std::mutex, 64> m_localLocks;
+
+    std::mutex m_slotMutex;
+    std::unordered_map<std::string, std::shared_ptr<RebuildSlot>> m_slots;
 
     std::atomic<std::uint64_t> m_hits;
     std::atomic<std::uint64_t> m_misses;

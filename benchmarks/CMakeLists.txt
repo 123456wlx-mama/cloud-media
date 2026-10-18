@@ -13,3 +13,11 @@ endif()
 set_target_properties(bench_conn PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+if(BUILD_STORAGE AND BUILD_SERVER AND TARGET cm_storage AND TARGET cm_cache)
+    add_executable(bench_db bench_db.cpp)
+    target_link_libraries(bench_db PRIVATE cm_storage cm_cache)
+    set_target_properties(bench_db PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+endif()

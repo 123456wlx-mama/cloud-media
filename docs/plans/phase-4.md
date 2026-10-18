@@ -1,7 +1,7 @@
 # Phase 4 实施计划（存储层：MySQL / Redis / 缓存）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Stage 1-4 代码已落盘；未执行构建/测试，待人工验收）
+**Status:** In Progress（Stage 1-6 代码已落盘；未执行构建/测试，待人工验收）
 **Implementation Note:** RedisPool 与 CacheStore 按用户要求落在 server/cache/，不采用原计划的 server/pool/redis_*；其余结构不变。
 **Source Spec:** docs/specs/05-存储设计.md（v0.2，5 条关键取舍已评审）
 **Review:** 2026-10-18 用户确认两项实施取舍：拆分建库脚本（测试库物理隔离）、缓存用 setPx 毫秒 TTL
