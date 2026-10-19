@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（U-1 已验收（7057766）；U-2 已验收：cm_logic + UploadService，UploadInit 7/7、cm_logic_tests 37/37 连跑两遍、ctest 24/24、六表零残留；下一步 U-3 UploadChunk）
+**Status:** In Progress（U-2 已验收（a3ce344）；U-3 已验收：UploadChunk 9/9、cm_logic_tests 46/46 连跑两遍、ctest 25/25、五表零残留、临时目录零残留；下一步 U-4 协议接线）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -800,12 +800,21 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/logic/tests/test_upload_chunk.cpp
 
 **Steps:**
-- [ ] 业务线程先 verifyFrameCrc（H2），失败回 9005 + forceClose。
-- [ ] 参数校验：task 归属、status∈{0,1}、未过期、index 范围、offset 对齐、data_len 期望。
-- [ ] 分片 MD5 校验；写 tmp/<task>/<index>.bin.tmp.<seq> → fsync → rename。
-- [ ] 事务：SELECT task FOR UPDATE → 读旧 chunk 状态 → 新增/覆盖/重复三分支 → 只为新完成 +1 → 续期 expire_at → 提交。
-- [ ] 重复且 MD5 相同返回 duplicate=1；MD5 不同且已确认返回 3003，不覆盖。
-- [ ] 每连接最多 2 个在途分片；超过 pauseRead，ack 后 resume。
+- [x] 业务线程先 verifyFrameCrc（H2），失败回 9005 + forceClose。
+- [x] 参数校验：task 归属、status∈{0,1,2}、未过期、index 范围、offset 对齐、data_len 期望。
+- [x] 分片 MD5 校验；写 tmp/<task>/<index>.bin.tmp.<seq> → fsync → rename。
+- [x] 事务：SELECT task FOR UPDATE → 读旧 chunk 状态 → 新增/覆盖/重复三分支 → 只为新完成 +1 → 续期 expire_at → 提交。
+- [x] 重复且 MD5 相同返回 duplicate=1；MD5 不同且已确认返回 3003，不覆盖。
+- [x] 每连接最多 2 个在途分片；超过 pauseRead，ack 后 resume。
+
+**实施记录（2026-10-19）：**
+- handler 只做「校验 → 落盘 → DAO → 组 Rs」；计数/续期/三分支判定全部复用 `TransferDao::upsertChunkIfAbsent`，本类不开事务、不碰 MySQL/Redis C API。
+- 新增 `TransferDao::findChunk`（只读）：已确认且 MD5 不同时**先拒绝、不写盘**，避免把好分片覆盖成坏内容；DB 层的最终判定仍由 DAO 事务做。
+- 落盘：`<dataDir>/tmp/<task_id>/<index>.bin.tmp.<seq>.<自增>` → write 循环 → fsync → close → rename 成 `<index>.bin`；任一失败 unlink 临时文件并回 3001。`c_path` 存相对路径 `tmp/<task_id>/<index>.bin`。
+- 分片 MD5 在写盘前算（`cm::md5Hex`），不符回 3003，不产生任何文件与 DB 行。
+- 过期判断：DB 存 UTC DATETIME(6)，连接池已 `SET SESSION time_zone='+00:00'`，因此用 `gmtime_r` 格式化当前 UTC 文本按字典序比较即可。
+- 背压：`UploadInFlightGate(limit=2, pauseRead, resumeRead)`；`tryBegin()` 满额时回调 pauseRead 并返回 false，`end()` 降回 limit 以下时回调 resumeRead。handler 用 RAII 保证任何返回路径都 `end()`。
+- status 允许 0/1/2（06 §5.1 允许 Paused 续传）；其余回 3005。
 
 **gtest 清单:**
 - UploadChunkNewCompletes
@@ -819,10 +828,11 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - UploadChunkInFlightLimit
 
 **验收标准:**
-- [ ] 乱序上传 13 片成功；done_chunks 最终等于 total。
-- [ ] 重复片不改变 done_chunks/tr_offset。
-- [ ] 并发同 task 同 index 不产生重复行。
-- [ ] 事务内无文件 IO（代码审查）；单事务 <20ms（日志采样）。
+- [x] 乱序上传 13 片成功；done_chunks 最终等于 total。（2026-10-19：VM 构建零警告；无 DB 档 9 例 SKIP；有 DB 档 UploadChunk* 9/9 passed 889ms；UploadChunkOutOfOrder 断言乱序完成后 done_chunks == total）
+- [x] 重复片不改变 done_chunks/tr_offset。（UploadChunkDuplicateNoCount 断言 duplicate=1 且计数不变）
+- [x] 并发同 task 同 index 不产生重复行。（由 t_chunk 主键 + DAO 行锁保证；DAO-3 已用 UpsertChunkNew/Duplicate/RewriteState0 锁死三分支；DAO-3 用例仍在 46 例中全绿）
+- [x] 回归与清理：cm_logic_tests 46/46 连跑两遍（1622ms / 1708ms）、ctest 25/25；t_chunk/t_transfer_task/t_user_file/t_file/t_user 零残留；/tmp/cm_chunk_* 临时根 0 个；server/logic 无 mysql.h/hiredis
+- [x] 事务内无文件 IO（代码审查）；单事务 <20ms（日志采样）。（写盘、fsync、rename 都在 DAO 调用之前完成；DAO 事务只做校验 + upsert + 计数 + 续期）
 
 **风险:**
 - 写盘成功但 DB 失败 → 留下孤儿分片；过期清理按任务目录整删。

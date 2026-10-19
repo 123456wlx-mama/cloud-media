@@ -10,6 +10,7 @@ add_executable(cm_logic_tests
     test_share_dao.cpp
     test_play_dao.cpp
     test_upload_init.cpp
+    test_upload_chunk.cpp
 )
 # test_file_dao 的 FileDaoNoOffsetSql 要扫描源码。
 target_compile_definitions(cm_logic_tests PRIVATE
@@ -36,3 +37,4 @@ add_test(NAME transfer_dao COMMAND cm_logic_tests --gtest_filter=TransferDaoTest
 add_test(NAME share_dao COMMAND cm_logic_tests --gtest_filter=ShareDaoTest.*)
 add_test(NAME play_dao COMMAND cm_logic_tests --gtest_filter=PlayDaoTest.*)
 add_test(NAME upload_init COMMAND cm_logic_tests --gtest_filter=UploadInit*)
+add_test(NAME upload_chunk COMMAND cm_logic_tests --gtest_filter=UploadChunk*)

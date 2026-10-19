@@ -35,6 +35,7 @@ if(BUILD_STORAGE)
     # 业务层：只经 DAO 与 CacheStore 访问存储，不出现 MySQL/Redis C API。
     add_library(cm_logic STATIC
         logic/upload_service.cpp
+        logic/upload_chunk_handler.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic

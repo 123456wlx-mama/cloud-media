@@ -49,6 +49,17 @@ struct NewTransferTask {
     NewTransferTask();
 };
 
+struct ChunkRow {
+    std::uint32_t index;
+    std::uint64_t offset;
+    std::uint32_t size;
+    std::string md5;
+    std::uint8_t state;
+    std::string path;
+
+    ChunkRow();
+};
+
 struct ChunkWrite {
     std::uint32_t index;
     std::uint64_t offset;
@@ -103,6 +114,11 @@ public:
                                   const std::string& taskId,
                                   const ChunkWrite& chunk,
                                   ChunkUpsertResult* out);
+
+    // 读单个分片行（只读，不加锁）；不存在返回 NotFound。
+    ErrorCode findChunk(const std::string& taskId,
+                        std::uint32_t index,
+                        ChunkRow* out);
 
     // c_index 升序；LSB-first 位图由服务层组装。
     ErrorCode listDoneIndexes(const std::string& taskId,

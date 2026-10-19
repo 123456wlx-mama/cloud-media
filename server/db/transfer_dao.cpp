@@ -89,6 +89,10 @@ NewTransferTask::NewTransferTask()
       ttlSeconds(kDefaultTaskTtlSeconds) {
 }
 
+ChunkRow::ChunkRow()
+    : index(0), offset(0), size(0), state(0) {
+}
+
 ChunkWrite::ChunkWrite() : index(0), offset(0), size(0) {
 }
 
@@ -349,6 +353,43 @@ ErrorCode TransferDao::upsertChunkIfAbsent(std::uint64_t uid,
     out->doneBytes = task.offset + chunk.size;
     out->totalChunks = task.totalChunks;
     out->status = (task.status == 0) ? 1 : task.status;
+    return ErrorCode::Ok;
+}
+
+ErrorCode TransferDao::findChunk(const std::string& taskId,
+                                   std::uint32_t index,
+                                   ChunkRow* out) {
+    if (out == NULL || !isHex32(taskId)) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "SELECT c_index, c_offset, c_size, c_md5, c_state, c_path "
+        "FROM t_chunk WHERE c_task_id = ? AND c_index = ?");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindString(0, taskId) || !stmt->bindUInt64(1, index)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    const PreparedStatement::FetchStatus status = stmt->fetchRow();
+    if (status == PreparedStatement::FetchStatus::End) {
+        return ErrorCode::NotFound;
+    }
+    if (status == PreparedStatement::FetchStatus::Error) {
+        return stmt->lastError();
+    }
+
+    out->index = static_cast<std::uint32_t>(stmt->getUInt64(0));
+    out->offset = stmt->getUInt64(1);
+    out->size = static_cast<std::uint32_t>(stmt->getUInt64(2));
+    out->md5 = stmt->getString(3);
+    out->state = static_cast<std::uint8_t>(stmt->getUInt64(4));
+    out->path = stmt->getString(5);
     return ErrorCode::Ok;
 }
 
