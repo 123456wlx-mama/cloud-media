@@ -96,6 +96,28 @@ target_link_libraries(echo_server PRIVATE net)
 set_target_properties(echo_server PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+if(BUILD_SERVER)
+    # E-1 / E-2：脚本化 CLI，仅服务端构建时产出。
+    add_executable(upload_cli
+        examples/upload_cli.cpp
+        examples/cli_common.cpp
+    )
+    target_link_libraries(upload_cli PRIVATE
+        cm_protocol cm_common Threads::Threads)
+    set_target_properties(upload_cli PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    add_executable(download_cli
+        examples/download_cli.cpp
+        examples/cli_common.cpp
+    )
+    target_link_libraries(download_cli PRIVATE
+        cm_protocol cm_common Threads::Threads)
+    set_target_properties(download_cli PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+endif()
 
 if(BUILD_STORAGE AND BUILD_TESTS)
     add_subdirectory(tests)
