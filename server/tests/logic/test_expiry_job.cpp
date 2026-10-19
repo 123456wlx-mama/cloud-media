@@ -6,7 +6,9 @@
 #include <utime.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -15,11 +17,16 @@
 #include <string>
 #include <vector>
 
+#include "EventLoop.h"
+#include "TimerQueue.h"
+#include "cm/base/thread_pool.h"
+#include "cm/config/server_config.h"
 #include "dao_fixture.h"
 #include "db/prepared_statement.h"
 #include "db/transfer_dao.h"
 #include "logic/expiry_job.h"
 #include "logic/upload_fs.h"
+#include "app/server_app.h"
 
 namespace {
 
@@ -280,6 +287,55 @@ TEST_F(ExpiryJobTest, ExpiryJobCleansStaleMergedTemp) {
 
     EXPECT_FALSE(exists(staleOnly));
     EXPECT_EQ(std::size_t(2), removed);
+}
+
+// T-1 补漏：tick 回调只投递，不执行 SQL/IO；loop 必须始终可调度。
+TEST_F(ExpiryJobTest, ExpiryJobDoesNotBlockLoop) {
+    cm::ServerConfig cfg;
+    cfg.dataDir = m_root;
+    cfg.workerThreads = 1;
+
+    net::EventLoop loop;
+    net::TimerQueue timers(&loop);
+    cm::ThreadPool workers(1, "tick-test");
+    // 1ms 注入：把 tick 压到最密，任何 loop 内重活都会暴露成超时。
+    cm::app::ServerApp app(cfg, *m_pool, timers, workers, 1);
+
+    std::string error;
+    ASSERT_TRUE(app.start(&error)) << error;
+
+    std::int64_t maxUs = 0;
+    for (int i = 0; i < 50; ++i) {
+        const std::chrono::steady_clock::time_point begin =
+            std::chrono::steady_clock::now();
+        app.triggerExpiryTick();
+        const std::int64_t us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - begin)
+                .count();
+        if (us > maxUs) {
+            maxUs = us;
+        }
+    }
+    if (maxUs > 1000) {
+        std::cerr << "[WARN] expiry tick took " << maxUs
+                  << "us (>1ms): tick 可能做了同步工作\n";
+    }
+    // 目标 <1ms；给 CI 留出 50ms 的硬上限，超出必然是把 SQL/IO 落到了 loop。
+    EXPECT_LT(maxUs, 50000);
+
+    const std::chrono::steady_clock::time_point loopStart =
+        std::chrono::steady_clock::now();
+    timers.runAfter(150, [&loop]() { loop.quit(); });
+    loop.loop();
+    const std::int64_t loopMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - loopStart)
+            .count();
+    EXPECT_LT(loopMs, 2000) << "loop 被 tick 阻塞";
+
+    app.stop();
+    workers.stop();
 }
 
 }  // namespace

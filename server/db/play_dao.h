@@ -45,6 +45,9 @@ public:
                          std::size_t limit,
                          std::vector<PlayRow>* out);
 
+    // 清理孤儿播放记录：p_file_id 在 t_file 中已不存在；单轮最多 limit 行。
+    ErrorCode deleteOrphanRecords(std::size_t limit, std::uint64_t* deleted);
+
 private:
     MysqlConn& m_conn;
 };

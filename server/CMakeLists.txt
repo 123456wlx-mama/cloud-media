@@ -51,6 +51,9 @@ if(BUILD_STORAGE)
         logic/recycle_service.cpp
         logic/file_service.cpp
         logic/play_service.cpp
+        logic/jobs/orphan_gc_job.cpp
+        logic/jobs/share_expiry_job.cpp
+        logic/jobs/play_cleanup_job.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic

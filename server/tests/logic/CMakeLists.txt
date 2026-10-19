@@ -2,6 +2,8 @@
 # 五个 DAO 测试源编进同一个可执行，避免各自复制一份 pool 创建与清理代码。
 
 add_executable(cm_logic_tests
+    # T-1/T-3：ServerApp 只在 server 可执行里编，测试需要单独带入。
+    ../../app/server_app.cpp
     dao_fixture.cpp
     test_dao_fixture.cpp
     test_user_dao.cpp
@@ -25,6 +27,8 @@ add_executable(cm_logic_tests
     test_recycle_service.cpp
     test_file_list.cpp
     test_play_service.cpp
+    test_gc_job.cpp
+    test_timers_integration.cpp
 )
 # test_file_dao 的 FileDaoNoOffsetSql 要扫描源码。
 target_compile_definitions(cm_logic_tests PRIVATE
@@ -67,3 +71,5 @@ add_test(NAME share_service COMMAND cm_logic_tests --gtest_filter=ShareServiceTe
 add_test(NAME recycle_service COMMAND cm_logic_tests --gtest_filter=RecycleServiceTest.*)
 add_test(NAME file_service COMMAND cm_logic_tests --gtest_filter=FileList*)
 add_test(NAME play_service COMMAND cm_logic_tests --gtest_filter=PlayServiceTest.*)
+add_test(NAME gc_job COMMAND cm_logic_tests --gtest_filter=Gc*:ShareExpiry*:PlayCleanup*)
+add_test(NAME timers COMMAND cm_logic_tests --gtest_filter=Timer*)

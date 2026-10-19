@@ -154,6 +154,9 @@ UserFileRow::UserFileRow()
 
 const std::uint64_t FileDao::kUnknownCount;
 
+OrphanBlobRow::OrphanBlobRow() : fid(0), size(0) {
+}
+
 FileListQuery::FileListQuery()
     : uid(0), parentId(0), sort(FileListSort::NameAsc), limit(0), cursorId(0) {
 }
@@ -676,6 +679,59 @@ ErrorCode FileDao::listByParent(const FileListQuery& query, FileListPage* page) 
                                    ? page->rows.back().createdAt
                                    : page->rows.back().updatedAt);
         page->nextId = page->rows.back().ufId;
+    }
+    return ErrorCode::Ok;
+}
+
+ErrorCode FileDao::listOrphanBlobs(std::uint64_t graceSeconds,
+                                    std::size_t limit,
+                                    std::vector<OrphanBlobRow>* out) {
+    if (out == NULL || limit == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    out->clear();
+
+    // 宽限期用数据库时钟，避免应用与 DB 时区/时钟偏差。
+    // 基准列是 f_updated_at（ON UPDATE CURRENT_TIMESTAMP(6)）：引用数归零 /
+    // 置 f_state=2 时自动刷新，即“成为孤儿的时刻”；用 f_created_at 会把
+    // 刚变孤儿的旧 blob 当成已过宽限。
+    // 有效分享 = 未取消且未过期；分享指向目录时 s_file_id 为 NULL，不参与。
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "SELECT f.f_id, f.f_md5, f.f_size, f.f_path FROM t_file f "
+        "WHERE f.f_state = 2 AND f.f_ref_count = 0 "
+        "AND f.f_updated_at < DATE_SUB(NOW(6), INTERVAL ? SECOND) "
+        "AND NOT EXISTS (SELECT 1 FROM t_user_file uf "
+        "WHERE uf.f_id = f.f_id AND uf.uf_deleted_at = ?) "
+        "AND NOT EXISTS (SELECT 1 FROM t_share s "
+        "WHERE s.s_file_id = f.f_id AND s.s_status = 0 "
+        "AND s.s_expire_at >= NOW(6)) "
+        "ORDER BY f.f_id LIMIT ?");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, graceSeconds) ||
+        !stmt->bindString(1, kActiveDeletedAt) ||
+        !stmt->bindUInt64(2, static_cast<std::uint64_t>(limit))) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    for (;;) {
+        const PreparedStatement::FetchStatus status = stmt->fetchRow();
+        if (status == PreparedStatement::FetchStatus::End) {
+            break;
+        }
+        if (status == PreparedStatement::FetchStatus::Error) {
+            return stmt->lastError();
+        }
+        OrphanBlobRow row;
+        row.fid = stmt->getUInt64(0);
+        row.md5 = stmt->getString(1);
+        row.size = stmt->getUInt64(2);
+        row.path = stmt->getString(3);
+        out->push_back(row);
     }
     return ErrorCode::Ok;
 }

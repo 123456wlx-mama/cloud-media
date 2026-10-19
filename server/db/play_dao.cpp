@@ -142,5 +142,34 @@ ErrorCode PlayDao::listRecent(std::uint64_t userId,
     return ErrorCode::Ok;
 }
 
+ErrorCode PlayDao::deleteOrphanRecords(std::size_t limit,
+                                       std::uint64_t* deleted) {
+    if (deleted == NULL || limit == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    *deleted = 0;
+
+    // 多表 DELETE 不支持 LIMIT，改为派生表先取 p_id（MySQL 会物化）。
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "DELETE FROM t_play_record WHERE p_id IN ("
+        "SELECT p_id FROM ("
+        "SELECT p.p_id FROM t_play_record p "
+        "LEFT JOIN t_file f ON f.f_id = p.p_file_id "
+        "WHERE f.f_id IS NULL LIMIT ?"
+        ") t)");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, static_cast<std::uint64_t>(limit))) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    *deleted = stmt->affectedRows();
+    return ErrorCode::Ok;
+}
+
 }  // namespace db
 }  // namespace cm

@@ -124,6 +124,16 @@ struct PurgeBatchResult {
     PurgeBatchResult();
 };
 
+// GC 候选：f_state=2、无活跃节点、无有效分享、超过宽限期的 blob。
+struct OrphanBlobRow {
+    std::uint64_t fid;
+    std::string md5;
+    std::uint64_t size;
+    std::string path;  // 相对 blob 根：aa/bb/<md5>
+
+    OrphanBlobRow();
+};
+
 // t_file（blob）与 t_user_file（用户节点）的 DAO。
 // 不持有连接池，调用方用 MysqlPool::acquire 取得连接后构造。
 // 所有 SQL 均为预处理语句；本类不拼接用户输入。
@@ -199,6 +209,14 @@ public:
     // 只列未删除节点；取 limit+1 行判断 has_more。
     // LEFT JOIN t_file 回填 size / md5（目录 f_id 为 NULL，得 0 / 空串）。
     ErrorCode listByParent(const FileListQuery& query, FileListPage* page);
+    // 孤儿 blob 扫描（GC 第一道筛选）：f_state=2、f_ref_count=0、
+    // 最后更新（孤儿时刻，f_updated_at）超过 graceSeconds、无活跃节点、
+    // 无未过期有效分享；按 f_id 升序 LIMIT ?。
+    // 真正的删除前还会在事务内 FOR UPDATE 复核一次。
+    ErrorCode listOrphanBlobs(std::uint64_t graceSeconds,
+                              std::size_t limit,
+                              std::vector<OrphanBlobRow>* out);
+
     // 首页 COUNT：200ms 上限 + LIMIT 10001 截断（最多返回 10001）。
     // 命中 max_execution_time（3024）时返回 Ok 且 *count = kUnknownCount，由调用方降级展示。
     ErrorCode countByParent(std::uint64_t uid, std::uint64_t parentId, std::uint64_t* count);
