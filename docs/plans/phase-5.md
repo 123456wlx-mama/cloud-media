@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据，build-on 88/88、build-off 14/14；D-3 已验收：缓冲块发送器 5/5、build-on 93/93 连跑两遍、build-off 12/12、ctest 31/31、四表零残留；下一步 D-4 sendfile 块发送器）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据，build-on 88/88；D-3 已验收：缓冲块发送器 5/5、build-on 93/93；D-4 已验收：sendfile 零拷贝 + crc32Combine 组帧 + 工厂选择，build-on 99/99 连跑两遍、build-off 工厂 1/1、ctest 32/32、四表零残留；下一步 D-5 令牌桶/并发上限/慢客户端）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1296,17 +1296,30 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 **Files:**
 - Create: server/logic/sendfile_block_sender.h
 - Create: server/logic/sendfile_block_sender.cpp
-- Modify: server/logic/block_sender.cpp（按 CM_DOWNLOAD_ZEROCOPY 选择）
-- Modify: server/CMakeLists.txt（把 sendfile_block_sender.cpp 加入 cm_logic）
-- Create: server/logic/tests/test_block_sender_sendfile.cpp
+- Create: server/logic/block_sender_factory.h
+- Create: server/logic/block_sender_factory.cpp
+- Modify: server/CMakeLists.txt（sendfile_block_sender.cpp / block_sender_factory.cpp 加入 cm_logic）
+- Create: server/tests/logic/test_block_sender_sendfile.cpp（计划笔误 server/logic/tests/）
+
+> 注：计划里「Modify block_sender.cpp 按开关选择」改为独立 `BlockSenderFactory`（缓冲实现仍是 D-3 的 BlockSender，不改动其文件）。
 
 **Steps:**
-- [ ] 仅 #if CM_DOWNLOAD_ZEROCOPY 编译；否则返回“unsupported”，由工厂选缓冲路径。
-- [ ] 读 sidecar 块 CRC；缺失→懒填充（D-1）或本次回退缓冲路径。
-- [ ] 构造 header11（VERSION/TYPE/LEN/SEQ），crc32Combine(crc32(header11), blockCrc, len) 填 CRC。
-- [ ] open blob（业务池）；把 fd + prelude 交给 TcpConnection::sendFile；连接接管 fd。
-- [ ] header 未发完时 sendFile 必须等 outputBuffer 空；每轮 ≤1MB；EAGAIN 继续。
-- [ ] 单测：4MB 帧与缓冲路径逐字节一致；末块；sidecar 缺失回退；fd 关闭；prelude 顺序。
+- [x] 仅 #if CM_DOWNLOAD_ZEROCOPY 编译；否则由工厂选缓冲路径。
+- [x] 读 sidecar 块 CRC；缺失/为 0 → 懒填充（ensureBlockCrc，IO 池读块算 CRC pwrite），失败回退缓冲路径。
+- [x] 构造 header11（VERSION/TYPE/LEN/SEQ），crc32Combine(crc32(header11), blockCrc, len) 填 CRC。
+- [x] open blob；把「19B 头 + fd + offset + len」经注入的 deliver 交给连接层 sendFile；连接接管 fd。
+- [x] header 先 send 再由 sendFile 等 outputBuffer 空；每轮 ≤1MB / EAGAIN 由 TcpConnection 保证（P0-6 已交付）。
+- [x] 单测：4MB 帧与缓冲路径逐字节一致；末块；sidecar 缺失回退；fd 关闭；prelude 顺序。
+
+**实施记录（2026-10-19）：**
+- 实际落点：`server/logic/sendfile_block_sender.{h,cpp}`、`server/logic/block_sender_factory.{h,cpp}`、`server/tests/logic/test_block_sender_sendfile.cpp`（计划里 `server/logic/tests/` 是笔误）。
+- `sendfile_block_sender.{h,cpp}` 整体 `#if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)` 包裹；OFF 构建下不产生符号，工厂 `BlockSenderFactory::select()` 返回 Buffered。
+- 线程边界：sendBlock 在业务线程完成 touch（Redis）+ 查 blob（MySQL）+ 块范围校验 + `readBlockCrc`（小读）；sidecar 缺失/该块 crc==0 时投 IO 池 `ensureBlockCrc` 懒填充（读块算 CRC pwrite，一次性例外）；懒填充失败调用注入的 fallback 委托 D-3 缓冲路径（本类不再回调 done）。本类不 include net：deliver 注入，`deliver(header19, fd, offset, len)` 返回 true 后 fd 归连接关闭。
+- 帧头合成：`makeHeader19` 写 magic/version/type(10011)/len/seq，CRC = `crc32Combine(crc32(header[4..14]), blockCrc, len)`，与 D-3 缓冲路径的 `crc32(header11||payload)` 由 H1 对拍保证一致。零拷贝稳态不读 4MB 块进用户态。
+- 顺序保证：deliver 契约是「先 send(header) 再 sendFile(fd,offset,len)」；`TcpConnection::sendFile`（P0-6）内部先刷空 outputBuffer（帧头）再 sendfile，每轮 ≤1MB、EAGAIN 继续，均由连接层负责。
+- 工厂：`BlockSenderKind{Buffered,Sendfile}` + `BlockSenderFactory::select()`（编译期选择）；缓冲实现即 D-3 BlockSender（未改动其文件）。
+- 单测 6 例（5 例 sendfile 仅 ON 编译、1 例工厂两种构建都跑）：MatchesBuffered 用同一 blob 分别走缓冲/sendfile 断言 19B 头与 payload 逐字节一致；LastShort/HeaderBeforePayload 校验末块 len 与帧头各字段+CRC；MissingSidecarFallsBack 用「DB 有行、磁盘无文件无 sidecar」触发懒填充读块失败回退并断言 done 不被调用；FdClosed 断言 deliver 拒绝后 fd 已关闭（fcntl EBADF）；FactorySelectsBufferedWhenDisabled 在 OFF 断言 Buffered、ON 断言 Sendfile。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - SendfileBlockMatchesBuffered
@@ -1317,9 +1330,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - BlockSenderFactorySelectsBufferedWhenDisabled（OFF 构建，工厂测试）
 
 **验收标准:**
-- [ ] ON 构建下 4MB 块字节/CRC 与 OFF 一致。
-- [ ] 零拷贝路径用户态不分配 4MB payload（代码审查 + 峰值 RSS 对比记录）。
-- [ ] sidecar 损坏/缺失不影响下载成功，只回退变慢。
+- [x] ON 构建下 4MB 块字节/CRC 与 OFF 一致（2026-10-19：build-on / build-off 均 make -j8 零警告 EXIT=0；`--gtest_list_tests` ON 命中 6 例、OFF 命中 1 例工厂；ON 档 SendfileBlockSenderTest.*:BlockSenderFactoryTest.* 6/6 passed 272ms，MatchesBuffered 断言 19B 头与 payload 逐字节一致）
+- [x] 零拷贝路径用户态不分配 4MB payload（代码审查：makeHeader19 只组 19B 头，payload 由 fd+sendfile 由内核发送；峰值 RSS 对比留 E 段）
+- [x] sidecar 损坏/缺失不影响下载成功，只回退变慢（MissingSidecarFallsBack 通过：DB 有行、磁盘无文件无 sidecar → 懒填充读块失败 → fallback 回调、done 不被调用；工厂测试 OFF 档 BlockSenderFactoryTest 1/1 passed 断言 Buffered）
+- [x] 验收侧复验：build-on 全量 99/99 连跑两遍（4114ms / 3713ms）、ctest 32/32；build-off 零警告，`--gtest_list_tests` 命中 1 例工厂（sendfile 被 #if 正确编译掉）、工厂 1/1 passed；四表零残留、Redis 键零残留、mkdtemp 临时目录 0 个；sendfile/factory 无 net/mysql.h/hiredis；sendfile_block_sender.cpp 无 pread/read/readv（4MB 块不读进用户态）
 
 **风险:**
 - 帧头 CRC 合成错误 → H1 对拍 + D-4 与缓冲路径逐字节对比双重保证。
