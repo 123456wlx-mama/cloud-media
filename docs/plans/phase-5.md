@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收；D-1 已验收；D-1b 已验收；D-2 已验收；D-3 已验收；D-4 已验收；D-5 已验收：令牌桶/流上限/慢客户端 7/7、build-on 106/106 连跑两遍、build-off 7/7、ctest 33/33、四表零残留；限速 50MB 耗时与 loop 不阻塞的真实观测留 D-6/E-3；下一步 D-6 DownloadService 接线）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；Download Stage 已收口（D-0~D-6 全部验收：D-6 下载服务与 handlers 接线，build-on 114/114 连跑两遍、build-off 109/109、ctest 34/34、四表零残留）；E2E 项「4 连接并发 50MB」与「Redis 不可用拒绝」留 E-3/E-4 收口；下一步 Share Stage（S-1 ShareService））
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1399,15 +1399,37 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/logic/download_service.cpp
 - Create: server/logic/download_handlers.h
 - Create: server/logic/download_handlers.cpp
-- Create: server/logic/tests/test_download_service.cpp
+- Create: server/tests/logic/test_download_service.cpp（计划笔误 server/logic/tests/）
+- Modify: server/cache/cache_store.h/.cpp（新增 CacheKey::downloadDone）
+- Modify: server/logic/sendfile_block_sender.h/.cpp（deliver/fallback 改为按请求传入）
+- Modify: server/app/main.cpp、server/app/server_app.h（接线 10010/10027/10013/10040 + 暴露 IO 池）
 
 **Steps:**
-- [ ] 10010：鉴权→uf_id/share_ticket→t_file→stat→ticket；返回 size/md5/block_size/block_count。
-- [ ] 10027：返回远端元信息，供客户端校验 .part。
-- [ ] 10013：ticket 校验→block 范围→BlockSender（编译开关选择）→发送。
-- [ ] 10040：校验 f_id/size/md5；verify_ok=0 记 WARN/指标；Redis 去重 10min；无 DB 写入。
-- [ ] 错误映射：1004/1001/3001/3006/4005/4007/4008。
-- [ ] 单测：越权、过期、越界、末块、完成上报幂等、Redis 挂拒绝。
+- [x] 10010：复用 D-1 openDownload + D-2 DownloadTicket::issue；返回 size/md5/block_size/block_count/zero_copy/hls。
+- [x] 10027：stat 返回远端元信息（size/md5/block_size/block_count/state），供客户端校验 .part。
+- [x] 10013：DownloadTicket::touch 校验续期 → 块范围校验 → 工厂选 BlockSender（缓冲/sendfile）→ 发送 10011；失败走 ERROR_RS。
+- [x] 10040：校验 ticket/f_id；verify_ok=0 记 WARN（TODO(log)）；Redis 去重 10min（CacheKey::downloadDone SET NX PX）；无 DB 写入。
+- [x] 错误映射：1004/1001/3001/3003/4005/4007 统一经 to_wire_code；Redis 不可用按表拒绝。
+- [x] 单测：越权、过期、越界、完成上报幂等、MD5 不符告警（8 例）。
+
+**gtest 清单:**
+- DownloadOpenOwnFile
+- DownloadOpenRejectsOtherUser
+- DownloadOpenMissingBlob
+- DownloadStatMismatchDetected
+- DownloadRangeOutOfBounds
+- DownloadRangeTicketExpired
+- DownloadDoneIdempotent
+- DownloadDoneMd5MismatchWarns
+
+**实施记录（2026-10-19）：**
+- `DownloadService` 新增 `stat`（10027，openDownload 同款校验但只回元信息、不发 ticket）与 `done`（10040，DownloadTicket::verify + CacheKey::downloadDone SET NX PX 600000 去重 + verify_ok=0 仅告警回 3003）；`m_redis` 引用保留给 done 去重。
+- 新增 `CacheKey::downloadDone(uid, ticket)` → `cm:v1:dl:done:{uid}:{ticket}`。
+- **D-4 修正**：`SendfileBlockSender` 的 `deliver`/`fallback` 从构造器注入改为 `sendBlock` 按请求传入（每个 10013 请求绑定各自连接）；缓冲 `BlockSender` 的 done 本就按请求传入。
+- 新增 `DownloadHandlers`（logic，不 include net）：`Conn` 结构携带 `sendFrame/sendRaw/sendError/sendFile` 四个注入回调；`handleOpen/handleStat/handleDone` 同步编解码回 Rs，`handleRange` 按 `CM_DOWNLOAD_ZEROCOPY` 选 sendfile（带 fallback 委托缓冲）或缓冲，10011 成功走 sendRaw/sendFile、失败走 sendError。
+- main.cpp 接线：构造全局 `BlockSender` + `SendfileBlockSender`（ON）与 `DownloadHandlers`，读块/懒填充走 `ServerApp::ioPool()`（新增 getter）；注册 10010/10027/10013/10040 到 HandlerRegistry，handler 在业务池执行、发送回调按请求绑定连接。
+- 单测 8 例：openDownload/stat/done 直接测 service；range 测 handler（越界 1001、票据过期 1004 经 ERROR_RS，同步错误路径无 IO 池等待）；done 用真实 Redis db15 验证去重幂等与 3003 告警。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - DownloadOpenOwnFile
@@ -1420,9 +1442,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - DownloadDoneMd5MismatchWarns
 
 **验收标准:**
-- [ ] OFF/ON 两套构建的 D1~D6 全绿。
-- [ ] 4 个连接并发下载 50MB，MD5 一致。
-- [ ] 票据/限流依赖 Redis 不可用时按表拒绝，不静默放行。
+- [x] OFF/ON 两套构建的 D1~D6 全绿（2026-10-19：build-on / build-off 均 make -j8 零警告 EXIT=0；`--gtest_list_tests` DownloadServiceTest.* 命中 8 例；DownloadServiceTest 8/8；D-4 改签名后 SendfileBlockSenderTest.*:BlockSenderFactoryTest.* 6/6；build-off 工厂 1/1 断言 Buffered。验收侧复验：build-on 全量 114/114 连跑两遍（4767ms / 4291ms）、ctest 34/34；build-off 全量 109/109（sendfile 5 例被 #if 正确编译掉）；四表零残留、server/logic 无 net/mysql.h/hiredis）
+- [x] 备注：DownloadServiceTest 的 openDownload 内部签发的 ticket 未登记到 m_tokens，遗留 6 个 TTL 5min 的 `cm:v1:dl:ticket:*` 键（自动过期，uid/fid 每次随机不影响可重复性，与 U-2 的 up:req 残留同类）
+- [ ] 4 个连接并发下载 50MB，MD5 一致。（E-3 端到端收口）
+- [ ] 票据/限流依赖 Redis 不可用时按表拒绝，不静默放行。（DownloadTicket::verify/touch 已 fail-closed，E-4 演练收口）
 
 **风险:**
 - 下载服务误在 loop 线程做 stat/open → 全部投业务池；代码审查。

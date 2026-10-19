@@ -32,8 +32,11 @@
 #include "cache/cache_store.h"
 #include "cache/redis_pool.h"
 #include "db/mysql_pool.h"
+#include "logic/block_sender.h"
 #include "logic/connection_decoder.h"
+#include "logic/download_handlers.h"
 #include "logic/download_service.h"
+#include "logic/sendfile_block_sender.h"
 #include "logic/upload_chunk_handler.h"
 #include "logic/upload_service.h"
 #endif
@@ -155,14 +158,33 @@ void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
                      payload);
 }
 
-void sendDownloadOpenRs(const ConnectionPtr& conn, std::uint32_t seq,
-                        const cm::protocol::DownloadOpenRs& rs) {
-    std::string payload;
-    if (!rs.encode(&payload)) {
-        return;
-    }
-    sendFramePayload(conn, cm::protocol::MessageType::DownloadOpenRs, seq,
-                     payload);
+// 下载 handler 的发送回调绑定到当前连接（logic 不 include net）。
+cm::logic::DownloadHandlers::Conn makeDownloadConn(const ConnectionPtr& conn) {
+    cm::logic::DownloadHandlers::Conn c;
+    c.sendFrame = [conn](std::uint16_t type, std::uint32_t seq,
+                         const std::string& payload) {
+        sendFramePayload(conn, static_cast<cm::protocol::MessageType>(type),
+                         seq, payload);
+    };
+    c.sendRaw = [conn](const std::string& frame) {
+        if (conn && conn->connected()) {
+            conn->send(frame);
+        }
+    };
+    c.sendError = [conn](std::uint32_t seq, std::uint32_t code,
+                         const std::string& message) {
+        sendErrorRs(conn, seq, code, message);
+    };
+    c.sendFile = [conn](const std::string& header, int fd,
+                        std::int64_t offset, std::size_t len) {
+        if (!conn || !conn->connected()) {
+            return false;
+        }
+        conn->send(header);
+        // fd 由连接接管；完成回调里连接已断开时无需额外处理。
+        return conn->sendFile(fd, offset, len, [conn](bool) {});
+    };
+    return c;
 }
 
 // 10004：业务线程执行；UID 未登录时直接回 1004。
@@ -282,33 +304,41 @@ void handleUploadComplete(const ConnectionPtr& conn,
     sendUploadCompleteRs(conn, frame.seq, rs);
 }
 
-// 10010：打开下载；UID 未登录时直接回 1004。
+// 10010/10027/10013/10040：下载请求统一走 DownloadHandlers。
 void handleDownloadOpen(const ConnectionPtr& conn,
                         const cm::protocol::Frame& frame,
                         ConnStateTable& states,
-                        cm::logic::DownloadService& service) {
+                        cm::logic::DownloadHandlers& handlers) {
     std::shared_ptr<ConnState> state = states.get(conn->name());
     const std::uint64_t uid = state ? state->uid.load() : 0;
+    handlers.handleOpen(uid, frame, makeDownloadConn(conn));
+}
 
-    cm::protocol::DownloadOpenRs rs;
-    if (uid == 0) {
-        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
-        sendDownloadOpenRs(conn, frame.seq, rs);
-        return;
-    }
+void handleDownloadStat(const ConnectionPtr& conn,
+                        const cm::protocol::Frame& frame,
+                        ConnStateTable& states,
+                        cm::logic::DownloadHandlers& handlers) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    handlers.handleStat(uid, frame, makeDownloadConn(conn));
+}
 
-    cm::protocol::DownloadOpenRq rq;
-    if (!rq.decode(frame.payload)) {
-        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
-        sendDownloadOpenRs(conn, frame.seq, rs);
-        return;
-    }
+void handleDownloadRange(const ConnectionPtr& conn,
+                         const cm::protocol::Frame& frame,
+                         ConnStateTable& states,
+                         cm::logic::DownloadHandlers& handlers) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    handlers.handleRange(uid, frame, makeDownloadConn(conn));
+}
 
-    const cm::ErrorCode rc = service.openDownload(uid, rq, &rs);
-    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
-        rs.code = cm::to_wire_code(rc);
-    }
-    sendDownloadOpenRs(conn, frame.seq, rs);
+void handleDownloadDone(const ConnectionPtr& conn,
+                        const cm::protocol::Frame& frame,
+                        ConnStateTable& states,
+                        cm::logic::DownloadHandlers& handlers) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    handlers.handleDone(uid, frame, makeDownloadConn(conn));
 }
 
 int runServer(const cm::ServerConfig& cfg) {
@@ -361,6 +391,25 @@ int runServer(const cm::ServerConfig& cfg) {
     cm::app::ServerApp app(cfg, *mysql, timers, workers);
     ConnStateTable states;
 
+    // 下载块发送：缓冲（D-3）恒可用；sendfile（D-4）按 CM_DOWNLOAD_ZEROCOPY。
+    // 读块/懒填充走 ServerApp 的 IO 池；发送回调在 handler 里按请求绑定连接。
+    cm::logic::BlockSender bufferedSender(
+        *mysql, *redis,
+        [&app](cm::logic::BlockSender::Task t) {
+            return app.ioPool().run(std::move(t));
+        },
+        cfg.dataDir);
+    cm::logic::DownloadHandlers downloadHandlers(downloadService, bufferedSender);
+#if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
+    cm::logic::SendfileBlockSender sendfileSender(
+        *mysql, *redis,
+        [&app](cm::logic::SendfileBlockSender::Task t) {
+            return app.ioPool().run(std::move(t));
+        },
+        cfg.dataDir);
+    downloadHandlers.setSendfileSender(sendfileSender);
+#endif
+
     net::HandlerRegistry registry(
         &workers,
         [](const ConnectionPtr& conn, std::uint32_t seq, std::uint32_t code,
@@ -404,11 +453,44 @@ int runServer(const cm::ServerConfig& cfg) {
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadOpenRq),
-            [&states, &downloadService](const ConnectionPtr& conn,
-                                        const cm::protocol::Frame& frame) {
-                handleDownloadOpen(conn, frame, states, downloadService);
+            [&states, &downloadHandlers](const ConnectionPtr& conn,
+                                         const cm::protocol::Frame& frame) {
+                handleDownloadOpen(conn, frame, states, downloadHandlers);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register DownloadOpen failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::DownloadStatRq),
+            [&states, &downloadHandlers](const ConnectionPtr& conn,
+                                         const cm::protocol::Frame& frame) {
+                handleDownloadStat(conn, frame, states, downloadHandlers);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register DownloadStat failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::DownloadRangeRq),
+            [&states, &downloadHandlers](const ConnectionPtr& conn,
+                                         const cm::protocol::Frame& frame) {
+                handleDownloadRange(conn, frame, states, downloadHandlers);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register DownloadRange failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::DownloadDoneRq),
+            [&states, &downloadHandlers](const ConnectionPtr& conn,
+                                         const cm::protocol::Frame& frame) {
+                handleDownloadDone(conn, frame, states, downloadHandlers);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register DownloadDone failed\n");
         return 1;
     }
 

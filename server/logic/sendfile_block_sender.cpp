@@ -50,14 +50,10 @@ void makeHeader19(std::uint32_t seq, std::uint32_t len, std::uint32_t blockCrc,
 SendfileBlockSender::SendfileBlockSender(cm::db::MysqlPool& mysql,
                                          cm::cache::RedisPool& redis,
                                          Executor executor,
-                                         Deliver deliver,
-                                         Fallback fallback,
                                          const std::string& dataDir)
     : m_mysql(mysql),
       m_ticket(redis),
       m_executor(std::move(executor)),
-      m_deliver(std::move(deliver)),
-      m_fallback(std::move(fallback)),
       m_dataDir(dataDir) {
 }
 
@@ -66,6 +62,8 @@ void SendfileBlockSender::sendBlock(std::uint64_t uid,
                                     std::uint64_t fid,
                                     std::uint32_t blockIndex,
                                     std::uint32_t seq,
+                                    Deliver deliver,
+                                    Fallback fallback,
                                     DoneCallback done) {
     if (!done) {
         return;
@@ -125,6 +123,8 @@ void SendfileBlockSender::sendBlock(std::uint64_t uid,
     item.uid = uid;
     item.ticket = ticket;
     item.fid = fid;
+    item.deliver = std::move(deliver);
+    item.fallback = std::move(fallback);
     item.done = std::move(done);
 
     // 4. 查 sidecar 块 CRC（业务线程，小读）。
@@ -167,9 +167,10 @@ void SendfileBlockSender::openAndDeliver(const WorkItem& item,
     makeHeader19(item.seq, item.len, blockCrc, &header);
 
     bool accepted = false;
-    if (m_deliver) {
-        accepted = m_deliver(header, fd, static_cast<std::int64_t>(item.offset),
-                             item.len);
+    if (item.deliver) {
+        accepted = item.deliver(header, fd,
+                                static_cast<std::int64_t>(item.offset),
+                                item.len);
     }
     if (accepted) {
         item.done(ErrorCode::Ok);  // 连接接管 fd
@@ -185,9 +186,9 @@ void SendfileBlockSender::fillAndDeliver(const WorkItem& item) {
         ensureBlockCrc(item.blobPath, item.size, item.blockIndex, &blockCrc);
     if (rc != ErrorCode::Ok) {
         // 懒填充失败：回退缓冲路径，不阻断下载。fd 尚未打开，无需 close。
-        if (m_fallback) {
-            m_fallback(item.uid, item.ticket, item.fid, item.blockIndex,
-                       item.seq);
+        if (item.fallback) {
+            item.fallback(item.uid, item.ticket, item.fid, item.blockIndex,
+                          item.seq);
         }
         return;
     }

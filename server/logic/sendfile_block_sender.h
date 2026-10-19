@@ -50,13 +50,12 @@ public:
     SendfileBlockSender(cm::db::MysqlPool& mysql,
                         cm::cache::RedisPool& redis,
                         Executor executor,
-                        Deliver deliver,
-                        Fallback fallback,
                         const std::string& dataDir);
 
     SendfileBlockSender(const SendfileBlockSender&) = delete;
     SendfileBlockSender& operator=(const SendfileBlockSender&) = delete;
 
+    // deliver/fallback 按请求传入（绑定到发起请求的连接）。
     // done(Ok) = 已受理（连接接管 fd）；done(非 Ok) = 拒绝（1004/1001/3001/超时等）。
     // 懒填充失败走 fallback 时不再回调 done。
     void sendBlock(std::uint64_t uid,
@@ -64,6 +63,8 @@ public:
                    std::uint64_t fid,
                    std::uint32_t blockIndex,
                    std::uint32_t seq,
+                   Deliver deliver,
+                   Fallback fallback,
                    DoneCallback done);
 
 private:
@@ -77,6 +78,8 @@ private:
         std::uint64_t uid;
         std::string ticket;
         std::uint64_t fid;
+        Deliver deliver;
+        Fallback fallback;
         DoneCallback done;
     };
 
@@ -86,8 +89,6 @@ private:
     cm::db::MysqlPool& m_mysql;
     DownloadTicket m_ticket;
     Executor m_executor;
-    Deliver m_deliver;
-    Fallback m_fallback;
     std::string m_dataDir;
 };
 

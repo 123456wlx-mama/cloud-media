@@ -138,6 +138,11 @@ std::string CacheKey::downloadTicket(const std::string& token) {
     return join("cm:v1:dl:ticket:", token);
 }
 
+std::string CacheKey::downloadDone(std::uint64_t uid,
+                                   const std::string& ticket) {
+    return join("cm:v1:dl:done:" + std::to_string(uid) + ":", ticket);
+}
+
 std::int64_t jitterTtlMs(std::int64_t baseMs, int jitterPercent,
                          int randPercent) {
     if (baseMs <= 0) {

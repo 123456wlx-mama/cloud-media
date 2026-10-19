@@ -42,6 +42,9 @@ public:
     // 取消 tick、停止 IO 池（会 drain 已投递的目录删除）。
     void stop();
 
+    // 下载回退读块/合并等阻塞磁盘 IO 共用的 IO 池。
+    cm::ThreadPool& ioPool() { return m_ioPool; }
+
 private:
     void onTick();
 

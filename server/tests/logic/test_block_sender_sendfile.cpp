@@ -270,10 +270,11 @@ TEST_F(SendfileBlockSenderTest, SendfileBlockMatchesBuffered) {
         [&ioPool](cm::logic::SendfileBlockSender::Task t) {
             return ioPool.run(std::move(t));
         },
-        deliver, cm::logic::SendfileBlockSender::Fallback(), m_root);
+        m_root);
 
     cm::ErrorCode sfResult = cm::ErrorCode::UnknownError;
     sender.sendBlock(m_uid, ticket, fid, 0, seq,
+                     deliver, cm::logic::SendfileBlockSender::Fallback(),
                      [&](cm::ErrorCode code) { sfResult = code; });
     // 已知 sidecar：同步交付。
     ASSERT_EQ(cm::ErrorCode::Ok, sfResult);
@@ -317,10 +318,11 @@ TEST_F(SendfileBlockSenderTest, SendfileBlockLastShort) {
         [&ioPool](cm::logic::SendfileBlockSender::Task t) {
             return ioPool.run(std::move(t));
         },
-        deliver, cm::logic::SendfileBlockSender::Fallback(), m_root);
+        m_root);
 
     cm::ErrorCode sfResult = cm::ErrorCode::UnknownError;
     sender.sendBlock(m_uid, ticket, fid, 1, 7,
+                     deliver, cm::logic::SendfileBlockSender::Fallback(),
                      [&](cm::ErrorCode code) { sfResult = code; });
     ASSERT_EQ(cm::ErrorCode::Ok, sfResult);
 
@@ -369,10 +371,11 @@ TEST_F(SendfileBlockSenderTest, SendfileMissingSidecarFallsBack) {
         [&ioPool](cm::logic::SendfileBlockSender::Task t) {
             return ioPool.run(std::move(t));
         },
-        cm::logic::SendfileBlockSender::Deliver(), fallback, m_root);
+        m_root);
 
     cm::ErrorCode sfResult = cm::ErrorCode::UnknownError;
     sender.sendBlock(m_uid, ticket, fid, 0, 3,
+                     cm::logic::SendfileBlockSender::Deliver(), fallback,
                      [&](cm::ErrorCode code) { sfResult = code; });
 
     // fallback 在 IO 池线程异步调用。
@@ -412,10 +415,11 @@ TEST_F(SendfileBlockSenderTest, SendfileHeaderBeforePayload) {
         [&ioPool](cm::logic::SendfileBlockSender::Task t) {
             return ioPool.run(std::move(t));
         },
-        deliver, cm::logic::SendfileBlockSender::Fallback(), m_root);
+        m_root);
 
     cm::ErrorCode sfResult = cm::ErrorCode::UnknownError;
     sender.sendBlock(m_uid, ticket, fid, 0, seq,
+                     deliver, cm::logic::SendfileBlockSender::Fallback(),
                      [&](cm::ErrorCode code) { sfResult = code; });
     ASSERT_EQ(cm::ErrorCode::Ok, sfResult);
 
@@ -461,10 +465,11 @@ TEST_F(SendfileBlockSenderTest, SendfileFdClosed) {
         [&ioPool](cm::logic::SendfileBlockSender::Task t) {
             return ioPool.run(std::move(t));
         },
-        deliver, cm::logic::SendfileBlockSender::Fallback(), m_root);
+        m_root);
 
     cm::ErrorCode sfResult = cm::ErrorCode::UnknownError;
     sender.sendBlock(m_uid, ticket, fid, 0, 1,
+                     deliver, cm::logic::SendfileBlockSender::Fallback(),
                      [&](cm::ErrorCode code) { sfResult = code; });
     ASSERT_EQ(cm::ErrorCode::NetworkError, sfResult);
     ASSERT_GE(capturedFd, 0);

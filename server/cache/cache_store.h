@@ -30,6 +30,7 @@ public:
     static std::string rateLimitIp(const std::string& ip, std::int64_t window);
     static std::string rebuildLock(const std::string& key);
     static std::string downloadTicket(const std::string& token);
+    static std::string downloadDone(std::uint64_t uid, const std::string& ticket);
 
     static bool isSafeKey(const std::string& key);
 

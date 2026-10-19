@@ -2,9 +2,12 @@
 
 #include <unistd.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 
+#include "cache/cache_store.h"
+#include "cache/redis_pool.h"
 #include "db/file_dao.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
@@ -28,7 +31,7 @@ std::uint8_t zeroCopyFlag() {
 DownloadService::DownloadService(cm::db::MysqlPool& mysql,
                                  cm::cache::RedisPool& redis,
                                  const std::string& dataDir)
-    : m_mysql(mysql), m_ticket(redis), m_dataDir(dataDir) {
+    : m_mysql(mysql), m_redis(redis), m_ticket(redis), m_dataDir(dataDir) {
 }
 
 ErrorCode DownloadService::openDownload(
@@ -132,6 +135,150 @@ ErrorCode DownloadService::openDownload(
     out->zeroCopy = zeroCopyFlag();
     out->hls = (::access(hlsPath.c_str(), F_OK) == 0) ? 1 : 0;
     conn.reset();
+    return ErrorCode::Ok;
+}
+
+ErrorCode DownloadService::stat(
+    std::uint64_t uid,
+    const cm::protocol::DownloadStatRq& rq,
+    cm::protocol::DownloadStatRs* out) {
+    if (out == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::DownloadStatRs();
+
+    if (uid == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+        return ErrorCode::PermissionDenied;
+    }
+    if (rq.ufId == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+        return ErrorCode::NotFound;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode code = (m_mysql.lastError() == ErrorCode::Ok)
+                                   ? ErrorCode::DbPoolTimeout
+                                   : m_mysql.lastError();
+        out->code = static_cast<std::uint32_t>(code);
+        return code;
+    }
+
+    cm::db::FileDao dao(*conn);
+
+    cm::db::UserFileRow node;
+    ErrorCode rc = dao.findUserFile(uid, rq.ufId, &node);
+    if (rc == ErrorCode::NotFound) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+        return ErrorCode::NotFound;
+    }
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+    if (node.deletedAt != cm::db::FileDao::activeDeletedAt()) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+        return ErrorCode::NotFound;
+    }
+    if (node.isDir) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+    if (node.fid == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+        return ErrorCode::NotFound;
+    }
+
+    cm::db::BlobRow blob;
+    rc = dao.getBlobById(node.fid, &blob);
+    if (rc == ErrorCode::NotFound) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+        return ErrorCode::FileGone;
+    }
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+    if (blob.state != 1 || blob.size == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+        return ErrorCode::FileGone;
+    }
+
+    const std::uint64_t blockCount =
+        (blob.size + kChunkSize - 1) / kChunkSize;
+    if (blockCount == 0 || blockCount > 0xFFFFFFFFULL) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    out->code = 0;
+    out->fId = blob.fid;
+    out->size = blob.size;
+    out->fileMd5 = blob.md5;
+    out->blockSize = kChunkSize;
+    out->blockCount = static_cast<std::uint32_t>(blockCount);
+    out->state = blob.state;
+    out->updatedAtMs = 0;  // BlobRow 未含 updated_at，本期不返回
+    conn.reset();
+    return ErrorCode::Ok;
+}
+
+ErrorCode DownloadService::done(
+    std::uint64_t uid,
+    const cm::protocol::DownloadDoneRq& rq,
+    cm::protocol::DownloadDoneRs* out) {
+    if (out == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::DownloadDoneRs();
+
+    if (uid == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+        return ErrorCode::PermissionDenied;
+    }
+
+    // 1. 校验 ticket（verify 不续期）。uid/fid 不符/过期 → 1004。
+    DownloadTicketInfo info;
+    ErrorCode rc = m_ticket.verify(rq.ticket, uid, rq.fId, &info);
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+
+    // 2. Redis 去重 10min：SET cm:v1:dl:done:{uid}:{ticket} NX PX 600000。
+    //    已存在 → 幂等返回；Redis 不可用 → 跳过去重（06 §10.1，重复计数可接受）。
+    bool alreadyReported = false;
+    std::unique_ptr<cm::cache::RedisConn> redisConn = m_redis.acquire();
+    if (redisConn) {
+        const std::string key =
+            cm::cache::CacheKey::downloadDone(uid, rq.ticket);
+        if (!key.empty()) {
+            if (redisConn->setNxPx(key, "1",
+                                   std::chrono::milliseconds(600000))) {
+                // 首次上报，继续。
+            } else if (redisConn->lastError() == ErrorCode::Ok) {
+                alreadyReported = true;
+            }
+        }
+    }
+
+    if (alreadyReported) {
+        out->code = 0;
+        out->accepted = 1;
+        return ErrorCode::Ok;
+    }
+
+    // 3. 校验结果：verify_ok=0 仅告警，不阻断（下载正确性由客户端整文件 MD5 保证）。
+    if (rq.verifyOk == 0) {
+        // TODO(log): 记 WARN（客户端整文件 MD5 与 10012 返回不符）。
+        out->code = static_cast<std::uint32_t>(ErrorCode::Md5Mismatch);
+        out->accepted = 0;
+        return ErrorCode::Md5Mismatch;
+    }
+
+    out->code = 0;
+    out->accepted = 1;
     return ErrorCode::Ok;
 }
 
