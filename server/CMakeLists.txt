@@ -39,11 +39,20 @@ if(BUILD_STORAGE)
         logic/upload_chunk_handler.cpp
         logic/upload_fs.cpp
         logic/expiry_job.cpp
+        logic/download_service.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic
         PUBLIC cm_protocol cm_storage cm_cache
         PRIVATE net Threads::Threads)
+
+    # D-0：H1 通过后默认 ON；OFF 仍可构建，下载回退缓冲路径。
+    # PUBLIC 让测试能断言 zero_copy 与编译期开关一致。
+    if(CM_DOWNLOAD_ZEROCOPY)
+        target_compile_definitions(cm_logic PUBLIC CM_DOWNLOAD_ZEROCOPY=1)
+    else()
+        target_compile_definitions(cm_logic PUBLIC CM_DOWNLOAD_ZEROCOPY=0)
+    endif()
 endif()
 
 add_executable(cloud-media-server

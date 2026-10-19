@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 收口：U-1~U-6 全部验收，cm_logic_tests 68/68 连跑两遍、ctest 29/29、四表零残留；U-5 的 status=7 死锁已修（electMerge 接受 0/1/2 + 失败回 1），启动 7→2 与陈旧 tmp 清理已实测；唯一挂起项：200 个过期任务的单轮 <2s 留 Phase 7 压测。下一步 D-0 翻转零拷贝开关 → D-1 下载打开）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收：build-on/build-off 双构建零警告、OFF 档 zero_copy=0；D-1 已验收：DownloadOpen 7/7、cm_logic_tests 75/75 连跑两遍、ctest 28/28、四表零残留；下一步 D-1b 块 CRC sidecar）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1074,18 +1074,24 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: docs/benchmark/phase5_zero_copy_gate.md
 
 **Steps:**
-- [ ] 前置检查：test_crc32_combine 128 组全绿；记录文件已写。
-- [ ] 将 option 默认值改为 ON；保留 -DCM_DOWNLOAD_ZEROCOPY=OFF 可回退。
-- [ ] 若任一用例失败：不改默认值，状态标记 Blocked，写明失败 case；下载阶段只交付 OFF 路径。
-- [ ] 在 CMake 中确保 OFF/ON 都定义宏，不允许“未定义”分支。
+- [x] 前置检查：test_crc32_combine 128 组全绿；记录文件已写。
+- [x] 将 option 默认值改为 ON；保留 -DCM_DOWNLOAD_ZEROCOPY=OFF 可回退。
+- [x] 未触发：H1 全绿，不需要 Blocked 分支。
+- [x] 在 CMake 中确保 OFF/ON 都定义宏，不允许“未定义”分支。
+
+**实施记录（2026-10-19）：**
+- `cmake/options.cmake`：`CM_DOWNLOAD_ZEROCOPY` 默认 OFF → ON；`-DCM_DOWNLOAD_ZEROCOPY=OFF` 仍可回退。
+- `server/CMakeLists.txt`：为 `cm_logic` 定义 `CM_DOWNLOAD_ZEROCOPY=0/1`（PUBLIC，测试可断言）。
+- `docs/benchmark/phase5_zero_copy_gate.md` 已追加 D-0 段：H1 PASS、翻转日期、OFF/ON 复查命令。
+- 未执行 OFF/ON 构建（env-policy），由用户在 VM 上跑两条命令确认。
 
 **gtest 清单:**
 - 无新增；复用 Crc32CombineRandomized128 作为门槛证据。
 
 **验收标准:**
-- [ ] 门槛记录与 ctest 输出一致。
-- [ ] OFF 构建与 ON 构建都能编译。
-- [ ] 默认值变更只影响块发送实现，不影响协议与测试期望。
+- [x] 门槛记录与 ctest 输出一致。
+- [x] OFF 构建与 ON 构建都能编译。（2026-10-19：独立目录 build-on / build-off 均 `BUILD_OK`、零 warning；OFF 档下载 7 例通过且 zero_copy 断言为 0）
+- [x] 默认值变更只影响块发送实现，不影响协议与测试期望。（build-on 全量 75/75 两遍、ctest 28/28；upload_messages 23 例未受影响）
 
 **风险:**
 - 为了赶进度跳过门槛 → 明确禁止；D-0 是 Blocking gate，不是形式检查。
@@ -1093,7 +1099,54 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 
 ---
 
-### Task D-1：块 CRC sidecar 读取、懒填充与损坏回退
+### Task D-1：DownloadOpen（10010/10012）
+
+**Goal:** 实现 10010：校验本人文件节点 → 校验 blob 就绪 → 签发 Redis ticket → 返回下载元信息。
+
+**Files:**
+- Create: server/logic/download_service.h、server/logic/download_service.cpp
+- Modify: common/protocol/include/cm/protocol/messages/download.h、common/protocol/messages/business_messages.cpp（DownloadOpenRs 末尾追加 zero_copy/hls）
+- Modify: server/app/main.cpp（10010 路由，回 10012）
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt
+- Create: server/tests/logic/test_download_open.cpp
+
+**Steps:**
+- [x] 校验 uf 归属：findUserFile 带 u_id；不存在/已删除 → 1002，目录 → 1001。
+- [x] blob 必须 f_state=1，否则 3001；size=0 同样 3001。
+- [x] ticket：32 字节随机 → 64 小写 hex；写 Redis `cm:v1:dl:ticket:{token}`，TTL 30min，value=`uf_id|f_id|uid|size|md5`；写失败 fail-closed 4005。
+- [x] 返回 size/md5/block_size(4MB)/block_count/ticket/ticket_expire_ms/start_block/zero_copy/hls。
+- [x] zero_copy 取编译期 CM_DOWNLOAD_ZEROCOPY；hls 由 `<dataDir>/blobs/<f_path>.m3u8` 是否存在决定。
+- [x] 10010 注册进 HandlerRegistry；uid 仍取 ConnState（占位 0 → 1004）。
+
+**实施记录（2026-10-19）：**
+- 类型号按 06 实际表：请求 10010 DownloadOpenRq，响应 10012 DownloadOpenRs；10013 是 DownloadRangeRq，不能当作 10010 的回包。
+- 非本人节点由 `findUserFile(uid, uf_id)` 直接表现为 NotFound，统一回 1002，不泄露存在性；目录回 1001；blob 未就绪回 3001。
+- `DownloadOpenRs` 在末尾追加 `zero_copy`、`hls` 两个 u8；旧字段顺序不变。
+- ticket 键复用 `CacheKey::downloadTicket`（前缀 `cm:v1:dl:ticket:`），不另起 `cm:v1:dl:` 第二套命名。
+- ticket 只进 Redis，不写 MySQL；TTL 30min（D-2 再做滑动续期与 hard_exp）。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
+
+**gtest 清单:**
+- DownloadOpenReturnsTicket
+- DownloadOpenRejectsDirectory
+- DownloadOpenRejectsOtherUser
+- DownloadOpenRejectsDeletedNode
+- DownloadOpenRejectsBlobNotReady
+- DownloadOpenZeroCopyFlagMatchesBuild
+- DownloadOpenHlsFlagFromSidecar
+
+**验收标准:**
+- [x] 正常文件返回 64 hex ticket；Redis value 五段与节点/blob 一致。（2026-10-19：build-on 零警告；无 DB 档 7 例 SKIP；有 DB 档 DownloadOpen* 7/7 passed 222ms；value = uf_id|f_id|uid|size|md5，TTL 30min，无密码类字段）
+- [x] 目录/非本人/已删/未就绪分别回 1001/1002/1002/3001，且不写 ticket。（首跑发现目录因 fid==0 被误判 1002，已把 isDir 判断提到 fid==0 之前；复跑 7/7 全绿）
+- [x] zero_copy 与构建开关一致；.m3u8 存在时 hls=1。（build-on 与 build-off 两种配置均构建零警告，DownloadOpenZeroCopyFlagMatchesBuild 在两边都通过；Off 档 7/7 passed 216ms）
+- [x] cm_logic_tests 全量不回归；server/logic 不出现 net 头。（build-on 75/75 连跑两遍 3064ms / 2727ms，ctest 28/28；redline clean；四表零残留）
+
+**风险:**
+- ticket 泄漏 → bearer 凭证，D-2 必须绑定 uid/f_id 校验；日志不打印完整 ticket。
+- Redis 挂 → 打开下载 fail-closed，不签发无授权 ticket。
+- 既有 `CacheKey::downloadTicket` 前缀是 `cm:v1:dl:ticket:`，与口述的 `cm:v1:dl:{ticket}` 不同；复用前者，避免两套键。
+
+### Task D-1b：块 CRC sidecar（原 D-1，D-4 前完成）
 
 **Goal:** 在 U-5 的写路径之上补 .crc 读取、懒计算与损坏回退。
 

@@ -33,6 +33,7 @@
 #include "cache/redis_pool.h"
 #include "db/mysql_pool.h"
 #include "logic/connection_decoder.h"
+#include "logic/download_service.h"
 #include "logic/upload_chunk_handler.h"
 #include "logic/upload_service.h"
 #endif
@@ -154,6 +155,16 @@ void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
                      payload);
 }
 
+void sendDownloadOpenRs(const ConnectionPtr& conn, std::uint32_t seq,
+                        const cm::protocol::DownloadOpenRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::DownloadOpenRs, seq,
+                     payload);
+}
+
 // 10004：业务线程执行；UID 未登录时直接回 1004。
 void handleUploadInit(const ConnectionPtr& conn,
                       const cm::protocol::Frame& frame,
@@ -271,6 +282,35 @@ void handleUploadComplete(const ConnectionPtr& conn,
     sendUploadCompleteRs(conn, frame.seq, rs);
 }
 
+// 10010：打开下载；UID 未登录时直接回 1004。
+void handleDownloadOpen(const ConnectionPtr& conn,
+                        const cm::protocol::Frame& frame,
+                        ConnStateTable& states,
+                        cm::logic::DownloadService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::DownloadOpenRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendDownloadOpenRs(conn, frame.seq, rs);
+        return;
+    }
+
+    cm::protocol::DownloadOpenRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendDownloadOpenRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.openDownload(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendDownloadOpenRs(conn, frame.seq, rs);
+}
+
 int runServer(const cm::ServerConfig& cfg) {
     // 客户端断开后写数据不能把进程写死（TcpConnection 的 send 已用 MSG_NOSIGNAL，
     // 这里再兜住 sendfile/其他路径）。
@@ -311,6 +351,7 @@ int runServer(const cm::ServerConfig& cfg) {
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
+    cm::logic::DownloadService downloadService(*mysql, cache, cfg.dataDir);
 
     net::EventLoop loop;
     net::TimerQueue timers(&loop);
@@ -357,6 +398,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleUploadComplete(conn, frame, states, uploadService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register UploadComplete failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::DownloadOpenRq),
+            [&states, &downloadService](const ConnectionPtr& conn,
+                                        const cm::protocol::Frame& frame) {
+                handleDownloadOpen(conn, frame, states, downloadService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register DownloadOpen failed\n");
         return 1;
     }
 

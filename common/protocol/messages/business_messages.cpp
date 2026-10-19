@@ -418,10 +418,20 @@ bool DownloadOpenRq::decode(const std::string& payload) {
 
 DownloadOpenRs::DownloadOpenRs()
     : code(0), fId(0), size(0), blockSize(0), blockCount(0),
-      ticketExpireMs(0), startBlock(0) {}
+      ticketExpireMs(0), startBlock(0), zeroCopy(0), hls(0) {}
 
 bool DownloadOpenRs::encode(std::string* out) const {
-    if (out == NULL || !isValidMd5(fileMd5) || !isValidTicket(ticket)) {
+    if (out == NULL) {
+        return false;
+    }
+    // 错误包的 file_md5/ticket 允许为空，否则业务失败时无法编码 10012。
+    if (!fileMd5.empty() && !isValidMd5(fileMd5)) {
+        return false;
+    }
+    if (!ticket.empty() && !isValidTicket(ticket)) {
+        return false;
+    }
+    if (code == 0 && (!isValidMd5(fileMd5) || !isValidTicket(ticket))) {
         return false;
     }
     Writer writer;
@@ -429,7 +439,8 @@ bool DownloadOpenRs::encode(std::string* out) const {
         !writer.writeU64(size) || !writer.writeString(fileMd5) ||
         !writer.writeU32(blockSize) || !writer.writeU32(blockCount) ||
         !writer.writeString(ticket) || !writer.writeU64(ticketExpireMs) ||
-        !writer.writeU32(startBlock)) {
+        !writer.writeU32(startBlock) || !writeU8Max(&writer, zeroCopy, 1) ||
+        !writeU8Max(&writer, hls, 1)) {
         return false;
     }
     *out = writer.data();
@@ -438,12 +449,25 @@ bool DownloadOpenRs::encode(std::string* out) const {
 
 bool DownloadOpenRs::decode(const std::string& payload) {
     Reader reader(payload);
-    return reader.readU32(&code) && reader.readU64(&fId) &&
-           reader.readU64(&size) && reader.readString(&fileMd5) &&
-           isValidMd5(fileMd5) && reader.readU32(&blockSize) &&
-           reader.readU32(&blockCount) && reader.readString(&ticket) &&
-           isValidTicket(ticket) && reader.readU64(&ticketExpireMs) &&
-           reader.readU32(&startBlock);
+    if (!reader.readU32(&code) || !reader.readU64(&fId) ||
+        !reader.readU64(&size) || !reader.readString(&fileMd5) ||
+        !reader.readU32(&blockSize) || !reader.readU32(&blockCount) ||
+        !reader.readString(&ticket) || !reader.readU64(&ticketExpireMs) ||
+        !reader.readU32(&startBlock) ||
+        !readU8Max(&reader, &zeroCopy, 1) ||
+        !readU8Max(&reader, &hls, 1)) {
+        return false;
+    }
+    if (!fileMd5.empty() && !isValidMd5(fileMd5)) {
+        return false;
+    }
+    if (!ticket.empty() && !isValidTicket(ticket)) {
+        return false;
+    }
+    if (code == 0 && (!isValidMd5(fileMd5) || !isValidTicket(ticket))) {
+        return false;
+    }
+    return true;
 }
 
 DownloadStatRq::DownloadStatRq() : ufId(0) {}

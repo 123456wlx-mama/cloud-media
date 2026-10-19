@@ -41,6 +41,29 @@ ctest -R crc32_combine --output-on-failure
 - 本记录依据用户确认的结果；原始 ctest 输出由用户保留。
 - 若后续修改 `crc32Combine` 或 `Crc32`，必须重新执行 128 组对拍，并重新评估默认值。
 
+## D-0 默认翻转（2026-10-19）
+
+- **H1 状态：** PASS（见上节结论）。
+- **改动：** `cmake/options.cmake` 的 `CM_DOWNLOAD_ZEROCOPY` 默认值 `OFF` → `ON`。
+- **编译接线：** `server/CMakeLists.txt` 对 `cm_logic` 定义 `CM_DOWNLOAD_ZEROCOPY=0/1`（PUBLIC，测试可断言）。
+- **回退方式：** 配置时加 `-DCM_DOWNLOAD_ZEROCOPY=OFF`，无需改代码/协议。
+
+**复查命令（两种配置都必须配置成功并完成构建）：**
+
+~~~bash
+# ON（默认，零拷贝路径）
+mkdir -p build-on && cd build-on
+cmake .. -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON
+make -j8
+
+# OFF（回退，缓冲路径）
+mkdir -p build-off && cd build-off
+cmake .. -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON -DCM_DOWNLOAD_ZEROCOPY=OFF
+make -j8
+~~~
+
+> 说明：D-1 的 `DownloadOpenRs.zero_copy` 直接反映该编译期开关；D-3/D-4 才真正实现两条块发送路径。
+
 ## 待补记录
 
 执行后在此追加：

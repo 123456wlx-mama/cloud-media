@@ -31,6 +31,8 @@ struct DownloadOpenRs {
     std::string ticket;
     std::uint64_t ticketExpireMs;
     std::uint32_t startBlock;
+    std::uint8_t zeroCopy;  // 1=服务端按 CM_DOWNLOAD_ZEROCOPY 构建
+    std::uint8_t hls;       // 1=<md5>.m3u8 sidecar 存在
 
     DownloadOpenRs();
     bool encode(std::string* out) const;
