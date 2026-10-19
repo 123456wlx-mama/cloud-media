@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 已验收（46d6609，ctest 18/18）；DAO-3 TransferDao 已验收：VM 构建零警告，ctest 19/19 通过，transfer_dao 有 DB 8/8 连跑两遍全绿，t_transfer_task/t_chunk/t_user 零残留）
+**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 已验收（46d6609）；DAO-3 已验收（2331507）；DAO-4 ShareDao+PlayDao 已验收：构建零警告，ctest 21/21，share_dao 5/5 + play_dao 2/2 连跑两遍全绿，三表零残留）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -616,10 +616,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/tests/logic/test_play_dao.cpp
 
 **Steps:**
-- [ ] ShareDao：insert（捕获 1062 由服务层重试）、findByCode、listByUser（游标）、cancel、listActiveByUfId、sweepExpired。
-- [ ] PlayDao：upsertLww（position/duration/finished/updated_at=NOW(6)）、findByUserFile、listRecent。
-- [ ] 分享码列按 CHAR(6) 读写；s_file_id 目录为 NULL。
-- [ ] 单测：重复 code 插入 1062；取消幂等；播放 upsert 不产生第二行；LWW 覆盖旧值。
+- [x] ShareDao：insert（捕获 1062 由服务层重试）、findByCode、listByUser（游标）、cancel、listActiveByUfId、sweepExpired。
+- [x] PlayDao：upsertLww（position/duration/finished/updated_at=NOW(6)）、findByUserFile、listRecent。
+- [x] 分享码列按 CHAR(6) 读写；s_file_id 目录为 NULL。
+- [x] 单测：重复 code 插入 1062；取消幂等；播放 upsert 不产生第二行；LWW 覆盖旧值。
 
 **gtest 清单:**
 - ShareDaoInsertDuplicateCode
@@ -631,9 +631,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - PlayDaoOneRowPerUserFile
 
 **验收标准:**
-- [ ] 有 DB 集成全绿。
-- [ ] 分享列表按 s_created_at DESC, s_id DESC 稳定。
-- [ ] 播放表唯一键 (p_user_id,p_file_id) 生效。
+- [x] 有 DB 集成全绿。（2026-10-19：构建零警告；无 DB 档 7 例 SKIP；有 DB 档 share_dao 5/5、play_dao 2/2，连跑两遍全绿；ctest 全量 21/21）
+- [x] 分享列表按 s_created_at DESC, s_id DESC 稳定。（ShareDaoListCursor 断言 (created_at, s_id) 严格递减且 7 条分 3 页无重无漏）
+- [x] 播放表唯一键 (p_user_id,p_file_id) 生效。（PlayDaoOneRowPerUserFile 连续 5 次 upsert 后 COUNT(*)=1 且 p_id 不变）
+- [x] 测试数据零残留。（跑完 t_share / t_play_record / t_user 均为 0 行）
 
 **风险:**
 - 分享码生成冲突由服务层重试 5 次；DAO 只负责抛 1062，不吞错。

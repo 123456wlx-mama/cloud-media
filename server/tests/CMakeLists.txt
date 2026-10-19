@@ -146,3 +146,29 @@ set_target_properties(test_transfer_dao PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME transfer_dao COMMAND test_transfer_dao)
+
+add_executable(test_share_dao
+    logic/test_share_dao.cpp
+)
+target_link_libraries(test_share_dao PRIVATE
+    cm_storage
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_share_dao PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME share_dao COMMAND test_share_dao)
+
+add_executable(test_play_dao
+    logic/test_play_dao.cpp
+)
+target_link_libraries(test_play_dao PRIVATE
+    cm_storage
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_play_dao PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME play_dao COMMAND test_play_dao)

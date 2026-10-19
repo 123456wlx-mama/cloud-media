@@ -15,6 +15,8 @@ if(BUILD_STORAGE)
         db/user_dao.cpp
         db/file_dao.cpp
         db/transfer_dao.cpp
+        db/share_dao.cpp
+        db/play_dao.cpp
     )
     target_include_directories(cm_storage PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_storage
