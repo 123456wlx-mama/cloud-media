@@ -2,6 +2,7 @@
 
 #include <cstddef>
 
+#include "cm/protocol/messages/auth.h"
 #include "cm/protocol/messages/list.h"
 #include "cm/protocol/messages/play.h"
 #include "cm/protocol/messages/recycle.h"
@@ -16,6 +17,10 @@ namespace {
 const std::size_t kMaxNameBytes = 255;
 const std::size_t kMaxTicketBytes = 128;
 const std::size_t kMaxAccessCodeBytes = 4;
+// 认证字段上限与 t_user 列宽一致（u_tel 20 / u_name 45）。
+const std::size_t kMaxTelBytes = 20;
+const std::size_t kMaxAuthPasswordBytes = 64;
+const std::size_t kMaxUserNameBytes = 45;
 
 bool isHexN(const std::string& value, std::size_t len) {
     if (value.size() != len) {
@@ -82,6 +87,21 @@ bool isNameOk(const std::string& value, bool allowEmpty) {
         return allowEmpty;
     }
     return value.size() <= kMaxNameBytes;
+}
+
+bool isTelOk(const std::string& value) {
+    return !value.empty() && value.size() <= kMaxTelBytes;
+}
+
+bool isAuthPasswordOk(const std::string& value) {
+    return !value.empty() && value.size() <= kMaxAuthPasswordBytes;
+}
+
+bool isUserNameOk(const std::string& value, bool allowEmpty) {
+    if (value.empty()) {
+        return allowEmpty;
+    }
+    return value.size() <= kMaxUserNameBytes;
 }
 
 bool writeU8Max(Writer* writer, std::uint8_t value, std::uint8_t maxValue) {
@@ -1143,6 +1163,95 @@ bool PlayReportRs::encode(std::string* out) const {
 bool PlayReportRs::decode(const std::string& payload) {
     Reader reader(payload);
     return reader.readU32(&code) && readU8Max(&reader, &saved, 1);
+}
+
+// ------------------------------------------------------------------ auth ----
+
+RegisterRq::RegisterRq() {
+}
+
+bool RegisterRq::encode(std::string* out) const {
+    if (out == NULL || !isTelOk(tel) || !isAuthPasswordOk(password) ||
+        !isUserNameOk(name, false)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeString(tel) || !writer.writeString(password) ||
+        !writer.writeString(name)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool RegisterRq::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readString(&tel) && isTelOk(tel) &&
+           reader.readString(&password) && isAuthPasswordOk(password) &&
+           reader.readString(&name) && isUserNameOk(name, false);
+}
+
+RegisterRs::RegisterRs() : code(0), uid(0) {
+}
+
+bool RegisterRs::encode(std::string* out) const {
+    if (out == NULL) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeU32(code) || !writer.writeU64(uid)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool RegisterRs::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readU32(&code) && reader.readU64(&uid);
+}
+
+LoginRq::LoginRq() {
+}
+
+bool LoginRq::encode(std::string* out) const {
+    if (out == NULL || !isTelOk(tel) || !isAuthPasswordOk(password)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeString(tel) || !writer.writeString(password)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool LoginRq::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readString(&tel) && isTelOk(tel) &&
+           reader.readString(&password) && isAuthPasswordOk(password);
+}
+
+LoginRs::LoginRs() : code(0), uid(0) {
+}
+
+bool LoginRs::encode(std::string* out) const {
+    if (out == NULL || !isUserNameOk(name, true)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeU32(code) || !writer.writeU64(uid) ||
+        !writer.writeString(name)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool LoginRs::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readU32(&code) && reader.readU64(&uid) &&
+           reader.readString(&name) && isUserNameOk(name, true);
 }
 
 }  // namespace protocol

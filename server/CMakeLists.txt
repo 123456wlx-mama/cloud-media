@@ -47,6 +47,7 @@ if(BUILD_STORAGE)
         logic/sendfile_block_sender.cpp
         logic/rate_limiter.cpp
         logic/download_handlers.cpp
+        logic/auth_service.cpp
         logic/share_service.cpp
         logic/recycle_service.cpp
         logic/file_service.cpp

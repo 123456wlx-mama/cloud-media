@@ -27,6 +27,7 @@ add_executable(cm_logic_tests
     test_recycle_service.cpp
     test_file_list.cpp
     test_play_service.cpp
+    test_auth_service.cpp
     test_gc_job.cpp
     test_timers_integration.cpp
 )
@@ -71,5 +72,6 @@ add_test(NAME share_service COMMAND cm_logic_tests --gtest_filter=ShareServiceTe
 add_test(NAME recycle_service COMMAND cm_logic_tests --gtest_filter=RecycleServiceTest.*)
 add_test(NAME file_service COMMAND cm_logic_tests --gtest_filter=FileList*)
 add_test(NAME play_service COMMAND cm_logic_tests --gtest_filter=PlayServiceTest.*)
+add_test(NAME auth_service COMMAND cm_logic_tests --gtest_filter=AuthServiceTest.*)
 add_test(NAME gc_job COMMAND cm_logic_tests --gtest_filter=Gc*:ShareExpiry*:PlayCleanup*)
 add_test(NAME timers COMMAND cm_logic_tests --gtest_filter=Timer*)

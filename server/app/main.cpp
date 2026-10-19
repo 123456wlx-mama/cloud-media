@@ -15,6 +15,7 @@
 #include "cm/config/server_config.h"
 #include "cm/protocol/codec.h"
 #include "cm/protocol/message_type.h"
+#include "cm/protocol/messages/auth.h"
 #include "cm/protocol/messages/list.h"
 #include "cm/protocol/messages/play.h"
 #include "cm/protocol/messages/upload.h"
@@ -36,6 +37,7 @@
 #include "db/mysql_pool.h"
 #include "logic/block_sender.h"
 #include "logic/connection_decoder.h"
+#include "logic/auth_service.h"
 #include "logic/download_handlers.h"
 #include "logic/download_service.h"
 #include "logic/file_service.h"
@@ -120,6 +122,24 @@ void sendErrorRs(const ConnectionPtr& conn, std::uint32_t seq,
     }
     sendFramePayload(conn, cm::protocol::MessageType::ErrorRs, seq,
                      writer.data());
+}
+
+void sendRegisterRs(const ConnectionPtr& conn, std::uint32_t seq,
+                      const cm::protocol::RegisterRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::RegisterRs, seq, payload);
+}
+
+void sendLoginRs(const ConnectionPtr& conn, std::uint32_t seq,
+                 const cm::protocol::LoginRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::LoginRs, seq, payload);
 }
 
 void sendUploadInitRs(const ConnectionPtr& conn, std::uint32_t seq,
@@ -208,6 +228,58 @@ cm::logic::DownloadHandlers::Conn makeDownloadConn(const ConnectionPtr& conn) {
         return conn->sendFile(fd, offset, len, [conn](bool) {});
     };
     return c;
+}
+
+// 10000：注册；成功后绑定本连接 uid。
+void handleRegister(const ConnectionPtr& conn,
+                    const cm::protocol::Frame& frame,
+                    ConnStateTable& states,
+                    cm::logic::AuthService& service) {
+    cm::protocol::RegisterRs rs;
+    cm::protocol::RegisterRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendRegisterRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.registerUser(rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    if (rc == cm::ErrorCode::Ok) {
+        std::shared_ptr<ConnState> state = states.get(conn->name());
+        if (state) {
+            state->uid.store(rs.uid);
+        }
+    }
+    sendRegisterRs(conn, frame.seq, rs);
+}
+
+// 10002：登录；成功后绑定本连接 uid。
+void handleLogin(const ConnectionPtr& conn,
+                 const cm::protocol::Frame& frame,
+                 ConnStateTable& states,
+                 cm::logic::AuthService& service) {
+    cm::protocol::LoginRs rs;
+    cm::protocol::LoginRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendLoginRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.login(rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    if (rc == cm::ErrorCode::Ok) {
+        std::shared_ptr<ConnState> state = states.get(conn->name());
+        if (state) {
+            state->uid.store(rs.uid);
+        }
+    }
+    sendLoginRs(conn, frame.seq, rs);
 }
 
 // 10004：业务线程执行；UID 未登录时直接回 1004。
@@ -461,6 +533,7 @@ int runServer(const cm::ServerConfig& cfg) {
     cm::cache::CacheStore cache(*redis, cacheOptions);
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
+    cm::logic::AuthService authService(*mysql);
     cm::logic::FileService fileService(*mysql);
     cm::logic::PlayService playService(*mysql);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
@@ -499,6 +572,28 @@ int runServer(const cm::ServerConfig& cfg) {
            const std::string& message) {
             sendErrorRs(conn, seq, code, message);
         });
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::RegisterRq),
+            [&states, &authService](const ConnectionPtr& conn,
+                                    const cm::protocol::Frame& frame) {
+                handleRegister(conn, frame, states, authService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register Register failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::LoginRq),
+            [&states, &authService](const ConnectionPtr& conn,
+                                    const cm::protocol::Frame& frame) {
+                handleLogin(conn, frame, states, authService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register Login failed\n");
+        return 1;
+    }
 
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
