@@ -21,6 +21,7 @@ add_library(cm_protocol STATIC
     protocol/version.cpp
     protocol/serialize.cpp
     protocol/codec.cpp
+    protocol/messages/business_messages.cpp
 )
 target_include_directories(cm_protocol PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/protocol/include

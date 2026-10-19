@@ -44,6 +44,18 @@ TEST(ErrorCodeTest, RetryableClassification) {
     EXPECT_FALSE(cm::is_retryable(cm::ProtocolError::Crc));
 }
 
+TEST(ErrorCodeTest, Phase5BusinessCodes) {
+    EXPECT_EQ(3007, static_cast<int>(cm::ErrorCode::TaskExpired));
+    EXPECT_EQ(3008, static_cast<int>(cm::ErrorCode::TooManyNodes));
+
+    EXPECT_EQ(std::string("TaskExpired"), cm::to_string(cm::ErrorCode::TaskExpired));
+    EXPECT_EQ(std::string("TooManyNodes"), cm::to_string(cm::ErrorCode::TooManyNodes));
+
+    // 3007 需要重新 init，3008 需要分批删除，都不是原样重试能解决的。
+    EXPECT_FALSE(cm::is_retryable(cm::ErrorCode::TaskExpired));
+    EXPECT_FALSE(cm::is_retryable(cm::ErrorCode::TooManyNodes));
+}
+
 TEST(ErrorCodeTest, ProtocolCodesAreStable) {
     EXPECT_EQ(9001u, static_cast<std::uint32_t>(cm::ProtocolError::BadFrame));
     EXPECT_EQ(9002u, static_cast<std::uint32_t>(cm::ProtocolError::Version));

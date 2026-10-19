@@ -27,6 +27,8 @@ enum class ErrorCode {
     TaskNotFound = 3004,
     TaskStateInvalid = 3005,
     RateLimited = 3006,
+    TaskExpired = 3007,   // 上传任务已过期，需重新初始化
+    TooManyNodes = 3008,  // 彻底删除的子树节点数超过 10000
 
     // 存储层错误码（Phase 4）
     DbUnavailable = 4001,

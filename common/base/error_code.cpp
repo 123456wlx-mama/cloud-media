@@ -26,6 +26,8 @@ const char* to_string(ErrorCode code) {
         case ErrorCode::TaskNotFound: return "TaskNotFound";
         case ErrorCode::TaskStateInvalid: return "TaskStateInvalid";
         case ErrorCode::RateLimited: return "RateLimited";
+        case ErrorCode::TaskExpired: return "TaskExpired";
+        case ErrorCode::TooManyNodes: return "TooManyNodes";
         case ErrorCode::DbUnavailable: return "DbUnavailable";
         case ErrorCode::DbPoolTimeout: return "DbPoolTimeout";
         case ErrorCode::DbQueryFailed: return "DbQueryFailed";
@@ -53,6 +55,9 @@ bool is_retryable(ErrorCode code) {
         case ErrorCode::RateLimitUnavailable:
         case ErrorCode::NeedMore:
             return true;
+        case ErrorCode::TaskExpired:
+        case ErrorCode::TooManyNodes:
+            return false;  // 3007 需重新 init；3008 需分批删除，重试无意义
         default:
             return false;
     }

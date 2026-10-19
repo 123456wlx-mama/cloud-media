@@ -5,42 +5,54 @@
 namespace cm {
 namespace protocol {
 
+// 类型号与 docs/specs/06-业务设计.md 第 3 节逐项一致。
+// 10011 / 10024 是 02 里废弃的槽位，Phase 5 复用为 DownloadDataRs / QuickUploadRs；
+// 9007（ERR_DEPRECATED）保留给未来真正退役的类型。
 enum class MessageType : std::uint16_t {
     RegisterRq = 10000,
     RegisterRs = 10001,
     LoginRq = 10002,
     LoginRs = 10003,
-    UploadFileRq = 10004,
-    UploadFileRs = 10005,
-    FileContentRq = 10006,
-    FileContentRs = 10007,
-    GetFileInfoRq = 10008,
-    GetFileInfoRs = 10009,
-    DownloadFileRq = 10010,
-    DownloadFolderRq = 10011,
-    DownloadFileRs = 10012,
-    FileHeaderRq = 10013,
-    FileHeaderRs = 10014,
+    UploadInitRq = 10004,
+    UploadInitRs = 10005,
+    UploadChunkRq = 10006,   // bulk 帧：4MB 分片数据，CRC 由业务线程校验
+    UploadChunkRs = 10007,
+    ListFileRq = 10008,
+    ListFileRs = 10009,
+    DownloadOpenRq = 10010,
+    DownloadDataRs = 10011,  // 原 DownloadFolderRq（废弃槽位复用）：纯 raw 块
+    DownloadOpenRs = 10012,
+    DownloadRangeRq = 10013,
+    DownloadStatRs = 10014,
     AddFolderRq = 10015,
     AddFolderRs = 10016,
-    QuickUploadRs = 10017,
-    ShareFileRq = 10018,
-    ShareFileRs = 10019,
-    MyShareRq = 10020,
-    MyShareRs = 10021,
-    GetShareRq = 10022,
-    GetShareRs = 10023,
-    FolderHeaderRq = 10024,
+    QuickUploadRq = 10017,
+    ShareCreateRq = 10018,
+    ShareCreateRs = 10019,
+    ShareListRq = 10020,
+    ShareListRs = 10021,
+    ShareOpenRq = 10022,
+    ShareOpenRs = 10023,
+    QuickUploadRs = 10024,   // 原 FolderHeaderRq（废弃槽位复用）
     DeleteFileRq = 10025,
     DeleteFileRs = 10026,
-    ContinueDownloadRq = 10027,
+    DownloadStatRq = 10027,
     ContinueUploadRq = 10028,
     ContinueUploadRs = 10029,
-
-    // Phase 5：业务语义别名。与既有号段同值，Wire 格式不变，只为可读性。
-    // 10006 是唯一的 bulk 帧类型（4MB 分片数据），CRC 由业务线程校验。
-    UploadChunkRq = 10006,
-    UploadChunkRs = 10007,
+    UploadCompleteRq = 10030,
+    UploadCompleteRs = 10031,
+    PlayReportRq = 10032,
+    PlayReportRs = 10033,
+    RecycleListRq = 10034,
+    RecycleListRs = 10035,
+    RestoreRq = 10036,
+    RestoreRs = 10037,
+    PurgeRq = 10038,
+    PurgeRs = 10039,
+    DownloadDoneRq = 10040,
+    DownloadDoneRs = 10041,
+    ShareCancelRq = 10042,
+    ShareCancelRs = 10043,
 
     HelloReq = 11000,
     HelloRs = 11001,
@@ -58,6 +70,9 @@ inline bool isKnownType(std::uint16_t type) {
         case 10015: case 10016: case 10017: case 10018: case 10019:
         case 10020: case 10021: case 10022: case 10023: case 10024:
         case 10025: case 10026: case 10027: case 10028: case 10029:
+        case 10030: case 10031: case 10032: case 10033: case 10034:
+        case 10035: case 10036: case 10037: case 10038: case 10039:
+        case 10040: case 10041: case 10042: case 10043:
         case 11000: case 11001: case 11002: case 11003: case 11004:
         case 11005:
             return true;

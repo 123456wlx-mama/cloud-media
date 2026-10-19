@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 全绿；DAO Stage 收口：DAO-1~DAO-4 已验收；DAO-5 已验收——cm_logic_tests 合并 30 个用例，构建零警告，有 DB 连跑两遍 30/30，七张表零残留，ctest 22/22；下一步进入 Upload Stage（U-1 业务消息）
+**Status:** In Progress（DAO Stage 已收口：cm_logic_tests 30 例、七表零残留；U-1 已验收：类型表与 06 §3 逐项一致，37 个消息编解码 + 3007/3008，upload_messages 23/23、ctest 23/23；下一步 U-2 UploadInit + 秒传）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -700,11 +700,18 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: common/CMakeLists.txt、common/tests/CMakeLists.txt
 
 **Steps:**
-- [ ] 类型号按 06 第 3 节：10011→DownloadDataRs、10024→QuickUploadRs、新增 10030~10043；message_type.h 与枚举 isKnownType 同步。
-- [ ] 为 10004~10043 每个消息实现 encode/decode（Writer/Reader），字段顺序与 06 第 4 节逐项一致；10011 是纯 raw payload，不实现字段解析。
-- [ ] 校验字符串上限、md5 32 hex、bitmap 长度、bad_indexes 数量上限（≤1024）、权限码/策略枚举取值。
-- [ ] 新增 3007 TaskExpired、3008 TooManyNodes；to_string/is_retryable 同步。
-- [ ] 单测：每类消息正常往返、截断、超长字符串、错误 md5、bitmap 长度不符、非法枚举。
+- [x] 类型号按 06 第 3 节：10011→DownloadDataRs、10024→QuickUploadRs、新增 10030~10043；message_type.h 与枚举 isKnownType 同步。
+- [x] 为 10004~10043 每个消息实现 encode/decode（Writer/Reader），字段顺序与 06 第 4 节逐项一致；10011 是纯 raw payload，不实现字段解析。
+- [x] 校验字符串上限、md5 32 hex、bitmap 长度、bad_indexes 数量上限（≤1024）、权限码/策略枚举取值。
+- [x] 新增 3007 TaskExpired、3008 TooManyNodes；to_string/is_retryable 同步。
+- [x] 单测：每类消息正常往返、截断、超长字符串、错误 md5、bitmap 长度不符、非法枚举。
+
+**实施记录（2026-10-19）：**
+- 类型表按 06 §3 重写：10011 DownloadDataRs、10017 QuickUploadRq、10024 QuickUploadRs，新增 10030~10043；10015/10016 保留旧语义（本期不使用）。
+- 六个头文件 `messages/{upload,download,share,recycle,list,play}.h` 只放结构体与 encode/decode 声明；实现在 `messages/business_messages.cpp` 单个 TU。
+- `count` / `bad_count` 一律由 vector.size() 派生，不单独留字段，避免两处不一致。
+- 校验点：md5/task_id 32 hex；分享码 6 位 31 字符表；提取码空或 4 位数字；ticket ≤128 字节 hex；bitmap 长度必须等于 ceil(total_chunks/8) 且 total_chunks ≤524288；bad_indexes ≤1024（编码截断、解码拒绝）；sort≤2、expire_policy≤2、status≤7、布尔字段只接受 0/1。
+- 10011 只有 `MessageType::DownloadDataRs`，不定义结构体：payload 是纯 raw 块，块号靠 10013 的 SEQ 关联。
 
 **gtest 清单:**
 - UploadInitRoundTrip
@@ -726,9 +733,9 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - ErrorCodeNewValuesUnique
 
 **验收标准:**
-- [ ] ctest -R upload_messages 全绿。
-- [ ] 序列化结果与 06 字段表逐项一致（review 对照）。
-- [ ] 不依赖 Qt/FFmpeg。
+- [x] ctest -R upload_messages 全绿。（2026-10-19：VM 构建零警告；upload_messages 23/23 passed（13 个计划内往返 + 4 个补充消息 + 类型表 + 3 个拒绝用例 + 错误码），cm_common_tests 通过，全量 ctest 23/23）
+- [x] 序列化结果与 06 字段表逐项一致（review 对照）。（逐条对齐 §4.1~§4.19，字段顺序未调整）
+- [x] 不依赖 Qt/FFmpeg。（只 include serialize.h 与 std 头；grep 无 Q*/libav/socket）
 
 **风险:**
 - 10011/10024 复用与 02 旧表冲突 → 以 06 附录 A 为准；02 修订列入收尾。

@@ -30,3 +30,17 @@ set_target_properties(test_crc32_combine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME crc32_combine COMMAND test_crc32_combine)
+
+# 业务消息编解码（06 第 3/4 节）：独立 target，短名 upload_messages。
+add_executable(test_business_messages
+    ../protocol/tests/test_business_messages.cpp
+)
+target_link_libraries(test_business_messages PRIVATE
+    cm_protocol
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_business_messages PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME upload_messages COMMAND test_business_messages)
