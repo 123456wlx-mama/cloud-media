@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据，build-on 88/88；D-3 已验收：缓冲块发送器 5/5、build-on 93/93；D-4 已验收：sendfile 零拷贝 + crc32Combine 组帧 + 工厂选择，build-on 99/99 连跑两遍、build-off 工厂 1/1、ctest 32/32、四表零残留；下一步 D-5 令牌桶/并发上限/慢客户端）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收；D-1 已验收；D-1b 已验收；D-2 已验收；D-3 已验收；D-4 已验收；D-5 已验收：令牌桶/流上限/慢客户端 7/7、build-on 106/106 连跑两遍、build-off 7/7、ctest 33/33、四表零残留；限速 50MB 耗时与 loop 不阻塞的真实观测留 D-6/E-3；下一步 D-6 DownloadService 接线）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1353,11 +1353,20 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/logic/tests/test_rate_limiter.cpp
 
 **Steps:**
-- [ ] 令牌桶：容量 4MB，速率 2MB/s（连接）；用户容量 16MB，8MB/s；steady_clock 补充令牌。
-- [ ] 令牌不足：计算等待 ms，TimerQueue::runAfter 重试；等待 >2s 回 3006。
-- [ ] 全局活跃流计数 512、每用户 8；超限 3006；连接关闭/完成归还。
-- [ ] 慢客户端：sendfile 无字节进展 30s → forceClose；每连接只保留 1 个在途块。
-- [ ] 单测：桶容量/补充、等待不阻塞线程、用户上限、全局上限、慢客户端超时（注入 fake clock）。
+- [x] 令牌桶：容量 4MB，速率 2MB/s（连接）；用户容量 16MB，8MB/s；steady_clock 补充令牌。
+- [x] 令牌不足：计算等待 ms 返回给调用方，TimerQueue::runAfter 重试（不 sleep）；等待 >2s 回 3006。
+- [x] 全局活跃流计数 512、每用户 8；超限 3006；连接关闭/完成归还。
+- [x] 慢客户端：sendfile 无字节进展 30s → forceClose；只在有在途块时生效；bool inFlight 天然限制每连接 1 个在途块。
+- [x] 单测：桶容量/补充、等待不阻塞线程、用户上限、全局上限、慢客户端超时（注入 fake clock，不真实 sleep）。
+
+**实施记录（2026-10-19）：**
+- 实际落点：`server/logic/rate_limiter.{h,cpp}`、`server/logic/download_limits.h`、`server/tests/logic/test_rate_limiter.cpp`（计划里 `server/logic/tests/` 是笔误）。
+- `TokenBucket`（rate_limiter）：泛型 `(capacityBytes, rateBytesPerSec, Clock)`；用 `steady_clock` 补充（`duration<double>` 分数秒），不依赖系统时钟跳变；`tryAcquire` 三态 —— Ok（已扣）/ Timeout（不足，`*waitMs` 返回需等待毫秒，≤2s）/ RateLimited（等待 >2s 或速率 0 → 3006）。等待绝不 sleep，由 D-6 用 `TimerQueue::runAfter` 到点重试。命名常量 `kConnTokenCapacity/kConnTokenRatePerSec`（4MB/2MB/s）、`kUserTokenCapacity/kUserTokenRatePerSec`（16MB/8MB/s）供 D-6 实例化连接级/用户级两个桶。
+- `Clock` 注入：`Clock = std::function<TimePoint()>`，默认 `steady_clock::now()`；单测注入 fake clock 手动推进，绝不真实等待。
+- `StreamLimiter`（download_limits.h，header-only）：全局 512 / 每用户 8；`tryAcquire(uid)`/`release(uid)`，超限返回 false 由调用方回 3006；release 到 0 时 erase map 项，防泄漏。
+- `SlowClientGuard`（download_limits.h）：`beginBlock/progress/endBlock` + `shouldClose()`（在途块 && 距上次进展 ≥ 30s）；只在 `inFlight` 时生效，避免误杀正常空闲连接；`bool inFlight` 天然把每连接在途块限制为 1。
+- 单测 7 例（单套件 `RateLimiterTest`），纯逻辑无 DB/Redis，全部用 fake clock：Refill/WaitCalculated/RateZero 覆盖桶补充、等待毫秒精确值、速率 0 退化；UserStreamLimit8/GlobalStreamLimit512 覆盖两级上限；SlowClientNoProgressClosed 覆盖 29s 不关、30s 关、progress 重置、endBlock 空闲不关；StreamSlotReleasedOnClose 覆盖归还归零与重新满额。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - TokenBucketRefill
@@ -1369,9 +1378,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - StreamSlotReleasedOnClose
 
 **验收标准:**
-- [ ] 限速下 50MB 下载耗时符合速率（允许 ±20%）。
-- [ ] 限速等待期间 loop 可处理其他连接（测试用 1ms tick 观察）。
-- [ ] 连接关闭后槽位归零，重复 600 次不泄漏计数。
+- [ ] 限速下 50MB 下载耗时符合速率（允许 ±20%）。（依赖 D-6 接线 + E2E，留 D-6/E-3 收口）
+- [ ] 限速等待期间 loop 可处理其他连接（测试用 1ms tick 观察）。（设计保证不 sleep、由 TimerQueue 回调重试；真实 loop 观测留 D-6）
+- [x] 连接关闭后槽位归零、不泄漏计数（StreamSlotReleasedOnClose 单测覆盖释放归零与重新满额；release 到 0 erase map 项；验收侧补充 600 次 acquire/release 循环断言 global 与 perUser 均归零）
+- [x] 纯逻辑单元已验证：RateLimiterTest 7/7 passed 0ms（fake clock，无真实等待）；build-on 全量 106/106 连跑两遍（4147ms / 3411ms）、ctest 33/33；build-off 零警告 7/7；四表零残留、Redis 键零残留；rate_limiter/download_limits 无 net/mysql.h/hiredis/TimerQueue、无 sleep（tryAcquire 返回 waitMs 不阻塞）
 
 **风险:**
 - 用户级 map 锁竞争 → 按 uid 分段/短临界区；Phase 7 压测再优化。

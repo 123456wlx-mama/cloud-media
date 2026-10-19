@@ -19,6 +19,7 @@ add_executable(cm_logic_tests
     test_download_ticket.cpp
     test_block_sender_buffered.cpp
     test_block_sender_sendfile.cpp
+    test_rate_limiter.cpp
 )
 # test_file_dao 的 FileDaoNoOffsetSql 要扫描源码。
 target_compile_definitions(cm_logic_tests PRIVATE
@@ -55,3 +56,4 @@ add_test(NAME block_crc COMMAND cm_logic_tests --gtest_filter=BlockCrc*)
 add_test(NAME download_ticket COMMAND cm_logic_tests --gtest_filter=DownloadTicket*)
 add_test(NAME block_sender COMMAND cm_logic_tests --gtest_filter=BlockSenderBufferedTest.*)
 add_test(NAME block_sender_sendfile COMMAND cm_logic_tests --gtest_filter=SendfileBlockSenderTest.*:BlockSenderFactoryTest.*)
+add_test(NAME rate_limiter COMMAND cm_logic_tests --gtest_filter=RateLimiterTest.*)
