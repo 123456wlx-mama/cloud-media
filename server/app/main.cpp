@@ -15,6 +15,7 @@
 #include "cm/config/server_config.h"
 #include "cm/protocol/codec.h"
 #include "cm/protocol/message_type.h"
+#include "cm/protocol/messages/list.h"
 #include "cm/protocol/messages/upload.h"
 #include "cm/protocol/serialize.h"
 #include "cm/protocol/version.h"
@@ -36,6 +37,7 @@
 #include "logic/connection_decoder.h"
 #include "logic/download_handlers.h"
 #include "logic/download_service.h"
+#include "logic/file_service.h"
 #include "logic/sendfile_block_sender.h"
 #include "logic/upload_chunk_handler.h"
 #include "logic/upload_service.h"
@@ -146,6 +148,15 @@ void sendContinueUploadRs(const ConnectionPtr& conn, std::uint32_t seq,
     }
     sendFramePayload(conn, cm::protocol::MessageType::ContinueUploadRs, seq,
                      payload);
+}
+
+void sendListFileRs(const ConnectionPtr& conn, std::uint32_t seq,
+                    const cm::protocol::ListFileRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::ListFileRs, seq, payload);
 }
 
 void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
@@ -275,6 +286,35 @@ void handleContinueUpload(const ConnectionPtr& conn,
     sendContinueUploadRs(conn, frame.seq, rs);
 }
 
+// 10008：只读列表；UID 未登录时直接回 1004。
+void handleListFile(const ConnectionPtr& conn,
+                    const cm::protocol::Frame& frame,
+                    ConnStateTable& states,
+                    cm::logic::FileService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::ListFileRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendListFileRs(conn, frame.seq, rs);
+        return;
+    }
+
+    cm::protocol::ListFileRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendListFileRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.list(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendListFileRs(conn, frame.seq, rs);
+}
+
 // 10030：合并 + 落库；UID 未登录时直接回 1004。
 void handleUploadComplete(const ConnectionPtr& conn,
                           const cm::protocol::Frame& frame,
@@ -380,6 +420,7 @@ int runServer(const cm::ServerConfig& cfg) {
     cm::cache::CacheStore cache(*redis, cacheOptions);
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
+    cm::logic::FileService fileService(*mysql);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
     cm::logic::DownloadService downloadService(*mysql, *redis, cfg.dataDir);
 
@@ -436,6 +477,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleContinueUpload(conn, frame, states, uploadService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register ContinueUpload failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ListFileRq),
+            [&states, &fileService](const ConnectionPtr& conn,
+                                    const cm::protocol::Frame& frame) {
+                handleListFile(conn, frame, states, fileService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ListFile failed\n");
         return 1;
     }
 

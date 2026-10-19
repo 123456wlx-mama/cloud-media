@@ -87,6 +87,10 @@ public:
     // 节点上仍然有效的分享码（用于删除/改名后失效缓存）。s_uf_id 全局唯一，无需 uid。
     ErrorCode listActiveByUfId(std::uint64_t ufId, std::vector<std::string>* codes);
 
+    // 在调用方事务内，把指向某节点、仍有效的分享全部置为已取消（s_status=1）。
+    // 用于彻底删除：节点物理删除后，分享随之取消；返回受影响行数。
+    ErrorCode cancelActiveByUfIdInTx(std::uint64_t ufId, std::uint64_t* affected);
+
     // 每日扫描：s_status=0 且 s_expire_at < NOW(6) 的置 1，返回受影响行数。
     ErrorCode sweepExpired(std::size_t limit, std::uint64_t* affected);
 

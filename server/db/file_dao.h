@@ -33,6 +33,9 @@ struct UserFileRow {
     std::string deletedAt;  // 等于 activeDeletedAt() 表示未删除
     std::string createdAt;  // DATETIME(6) 文本，可原样作为游标回传
     std::string updatedAt;
+    // 仅 listByParent 通过 LEFT JOIN t_file 填充；其余查询保持 0 / 空。
+    std::uint64_t size;
+    std::string md5;
 
     UserFileRow();
 };
@@ -81,6 +84,46 @@ struct RestoreOutcome {
     RestoreOutcome();
 };
 
+// 回收站列表项：deletedAtMs 由 SQL 内 UNIX_TIMESTAMP 计算，避免应用侧解析 UTC 文本。
+struct RecycleNode {
+    std::uint64_t ufId;
+    std::uint64_t fid;  // 目录为 0
+    std::string name;
+    bool isDir;
+    std::uint64_t parentId;
+    std::uint64_t deletedAtMs;
+    std::uint64_t size;  // 文件节点取 blob 大小；目录为 0
+
+    RecycleNode();
+};
+
+struct RecycleListQuery {
+    std::uint64_t uid;
+    std::size_t limit;
+    std::uint64_t cursorDeletedMs;  // 0 + cursorId==0 表示首页
+    std::uint64_t cursorId;
+
+    RecycleListQuery();
+};
+
+struct RecycleListPage {
+    std::vector<RecycleNode> rows;
+    bool hasMore;
+    std::uint64_t nextDeletedMs;
+    std::uint64_t nextId;
+
+    RecycleListPage();
+};
+
+// 彻底删除一批节点的计数汇总。
+struct PurgeBatchResult {
+    std::uint32_t filesDeleted;
+    std::uint32_t dirsDeleted;
+    std::uint32_t blobsOrphaned;  // 本次减到 0 置孤儿的 blob 数
+
+    PurgeBatchResult();
+};
+
 // t_file（blob）与 t_user_file（用户节点）的 DAO。
 // 不持有连接池，调用方用 MysqlPool::acquire 取得连接后构造。
 // 所有 SQL 均为预处理语句；本类不拼接用户输入。
@@ -93,6 +136,9 @@ public:
 
     // uf_deleted_at 的“未删除”哨兵值（DATETIME(6) 文本）。
     static const char* activeDeletedAt();
+
+    // countByParent 超时（3024）时的返回值；与 wire 的“未知”哨兵一致。
+    static const std::uint64_t kUnknownCount = 0xFFFFFFFFFFFFFFFFULL;
 
     ErrorCode findBlobByMd5(const std::string& md5, BlobRow* out);
     ErrorCode getBlobById(std::uint64_t fid, BlobRow* out);
@@ -145,7 +191,10 @@ public:
     ErrorCode findUserFile(std::uint64_t uid, std::uint64_t ufId, UserFileRow* out);
 
     // 只列未删除节点；取 limit+1 行判断 has_more。
+    // LEFT JOIN t_file 回填 size / md5（目录 f_id 为 NULL，得 0 / 空串）。
     ErrorCode listByParent(const FileListQuery& query, FileListPage* page);
+    // 首页 COUNT：200ms 上限 + LIMIT 10001 截断（最多返回 10001）。
+    // 命中 max_execution_time（3024）时返回 Ok 且 *count = kUnknownCount，由调用方降级展示。
     ErrorCode countByParent(std::uint64_t uid, std::uint64_t parentId, std::uint64_t* count);
 
     // 同一事务内：置 uf_deleted_at、文件节点条件减引用计数、归零置 f_state=2。
@@ -163,6 +212,25 @@ public:
     // 物理删除单个节点行。目录子树由服务层按批次调用本方法。
     // 从未软删过的文件节点在此补减一次计数；已软删的不再减（避免无符号下溢）。
     ErrorCode purgeNode(std::uint64_t uid, std::uint64_t ufId, bool* deleted);
+
+    // 回收站列表：排序 (uf_deleted_at_ms DESC, uf_id DESC)，keyset 游标 (ms, id)。
+    // 用 UNIX_TIMESTAMP 把 DATETIME(6) 折算成毫秒，与 wire 的 cursor_deleted_ms 口径一致，
+    // 避免「ms 游标 + 微秒 DATETIME 排序」丢行。
+    ErrorCode listRecycle(const RecycleListQuery& query, RecycleListPage* page);
+
+    // BFS 收集整棵子树（含软删后代），根在最前；超过 maxNodes 返回 TooManyNodes(3008)。
+    // 用于彻底删除目录：先收集、判上限，再按批物理删除。
+    ErrorCode listSubtree(std::uint64_t uid,
+                          std::uint64_t rootUfId,
+                          std::size_t maxNodes,
+                          std::vector<UserFileRow>* out);
+
+    // 在调用方事务内批量物理删除节点（彻底删除目录，200 行/事务）。
+    // 每个节点：锁行 → DELETE → 活跃文件节点补减计数（已软删不二次减）。
+    // 已不存在的节点跳过（重跑幂等）。
+    ErrorCode purgeNodesInTx(std::uint64_t uid,
+                             const std::vector<std::uint64_t>& ufIds,
+                             PurgeBatchResult* out);
 
 private:
     // 不含事务：调用方负责 BEGIN/COMMIT（createUserFileAutoRename 与秒传落库复用）。

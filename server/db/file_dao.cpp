@@ -14,6 +14,12 @@ const char kActiveDeletedAt[] = "1970-01-01 00:00:00.000000";
 const std::size_t kMaxListLimit = 200;
 const int kMaxRenameAttempt = 99;
 
+// MySQL 3024：语句执行时间超过 MAX_EXECUTION_TIME 提示。
+bool isExecutionTimeout(const std::string& message) {
+    return message.find("maximum statement execution time") != std::string::npos ||
+           message.find("Query execution was interrupted") != std::string::npos;
+}
+
 bool isDuplicateEntry(const std::string& message) {
     return message.find("Duplicate entry") != std::string::npos ||
            message.find("ER_DUP_ENTRY") != std::string::npos;
@@ -86,7 +92,10 @@ ErrorCode lockUserFile(MysqlConn& conn,
 }
 
 // 减到 0 只置孤儿，不 unlink：GC 任务在 24h 宽限后回收 blob 与 .crc。
-ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid) {
+ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid, bool* orphaned) {
+    if (orphaned != NULL) {
+        *orphaned = false;
+    }
     std::unique_ptr<PreparedStatement> drop = conn.prepare(
         "UPDATE t_file SET f_ref_count = f_ref_count - 1 "
         "WHERE f_id = ? AND f_ref_count > 0");
@@ -110,6 +119,9 @@ ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid) {
     }
     if (!orphan->execute()) {
         return orphan->lastError();
+    }
+    if (orphaned != NULL) {
+        *orphaned = orphan->affectedRows() > 0;
     }
     return ErrorCode::Ok;
 }
@@ -137,8 +149,10 @@ BlobRow::BlobRow()
 }
 
 UserFileRow::UserFileRow()
-    : ufId(0), uid(0), parentId(0), fid(0), isDir(false) {
+    : ufId(0), uid(0), parentId(0), fid(0), isDir(false), size(0) {
 }
+
+const std::uint64_t FileDao::kUnknownCount;
 
 FileListQuery::FileListQuery()
     : uid(0), parentId(0), sort(FileListSort::NameAsc), limit(0), cursorId(0) {
@@ -148,6 +162,22 @@ FileListPage::FileListPage() : hasMore(false), nextId(0) {
 }
 
 RestoreOutcome::RestoreOutcome() : fid(0), alreadyRestored(false) {
+}
+
+RecycleNode::RecycleNode()
+    : ufId(0), fid(0), isDir(false), parentId(0), deletedAtMs(0), size(0) {
+}
+
+RecycleListQuery::RecycleListQuery()
+    : uid(0), limit(0), cursorDeletedMs(0), cursorId(0) {
+}
+
+RecycleListPage::RecycleListPage()
+    : hasMore(false), nextDeletedMs(0), nextId(0) {
+}
+
+PurgeBatchResult::PurgeBatchResult()
+    : filesDeleted(0), dirsDeleted(0), blobsOrphaned(0) {
 }
 
 FileDao::FileDao(MysqlConn& conn) : m_conn(conn) {
@@ -527,10 +557,15 @@ ErrorCode FileDao::listByParent(const FileListQuery& query, FileListPage* page) 
     }
 
     // keyset 分页：游标是索引 seek，(key, uf_id) 保证同微秒多行也稳定。
+    // LEFT JOIN t_file 回填 size/md5；目录 f_id 为 NULL，COALESCE 后是 0 / 空串。
+    // keyset 谓词里的 uf_name / uf_created_at / uf_updated_at / uf_id 只存在于
+    // t_user_file，保持不限定表名，避免 filesort 之外的语义变化。
     static const char* kSelectPrefix =
-        "SELECT uf_id, u_id, uf_parent_id, f_id, uf_name, uf_is_dir, "
-        "uf_deleted_at, uf_created_at, uf_updated_at FROM t_user_file "
-        "WHERE u_id = ? AND uf_parent_id = ? AND uf_deleted_at = ? ";
+        "SELECT uf.uf_id, uf.u_id, uf.uf_parent_id, uf.f_id, uf.uf_name, "
+        "uf.uf_is_dir, uf.uf_deleted_at, uf.uf_created_at, uf.uf_updated_at, "
+        "COALESCE(f.f_size, 0), COALESCE(f.f_md5, '') "
+        "FROM t_user_file uf LEFT JOIN t_file f ON f.f_id = uf.f_id "
+        "WHERE uf.u_id = ? AND uf.uf_parent_id = ? AND uf.uf_deleted_at = ? ";
 
     std::string sql = kSelectPrefix;
     switch (query.sort) {
@@ -592,6 +627,8 @@ ErrorCode FileDao::listByParent(const FileListQuery& query, FileListPage* page) 
         }
         UserFileRow row;
         fillUserFileRow(*stmt, &row);
+        row.size = stmt->getUInt64(9);
+        row.md5 = stmt->getString(10);
         page->rows.push_back(row);
         if (page->rows.size() > query.limit) {
             // 多取的一行只用于 has_more，不返回给客户端。
@@ -620,9 +657,12 @@ ErrorCode FileDao::countByParent(std::uint64_t uid,
     }
     *count = 0;
 
+    // 200ms 提示 + LIMIT 10001：大目录只统计到“超过 1 万”，不扫全表。
     std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
-        "SELECT COUNT(*) FROM t_user_file "
-        "WHERE u_id = ? AND uf_parent_id = ? AND uf_deleted_at = ?");
+        "SELECT /*+ MAX_EXECUTION_TIME(200) */ COUNT(*) FROM ("
+        "SELECT 1 FROM t_user_file "
+        "WHERE u_id = ? AND uf_parent_id = ? AND uf_deleted_at = ? LIMIT 10001"
+        ") t");
     if (!stmt) {
         return m_conn.lastError();
     }
@@ -631,6 +671,11 @@ ErrorCode FileDao::countByParent(std::uint64_t uid,
         return stmt->lastError();
     }
     if (!stmt->execute()) {
+        if (isExecutionTimeout(stmt->lastErrorMessage())) {
+            // 超时只降级为“未知”，列表本身照常返回。
+            *count = kUnknownCount;
+            return ErrorCode::Ok;
+        }
         return stmt->lastError();
     }
 
@@ -686,7 +731,7 @@ ErrorCode FileDao::softDelete(std::uint64_t uid,
     }
 
     if (!isDir && fid != 0) {
-        const ErrorCode decremented = decrementBlobRef(m_conn, fid);
+        const ErrorCode decremented = decrementBlobRef(m_conn, fid, NULL);
         if (decremented != ErrorCode::Ok) {
             return decremented;
         }
@@ -813,7 +858,7 @@ ErrorCode FileDao::purgeNode(std::uint64_t uid,
 
     // 软删时已减过计数；只有从未软删过的活跃文件节点需要在此补减一次。
     if (!isDir && fid != 0 && deletedAt == kActiveDeletedAt) {
-        const ErrorCode decremented = decrementBlobRef(m_conn, fid);
+        const ErrorCode decremented = decrementBlobRef(m_conn, fid, NULL);
         if (decremented != ErrorCode::Ok) {
             return decremented;
         }
@@ -823,6 +868,211 @@ ErrorCode FileDao::purgeNode(std::uint64_t uid,
         return tx.lastError();
     }
     *deleted = true;
+    return ErrorCode::Ok;
+}
+
+ErrorCode FileDao::listRecycle(const RecycleListQuery& query,
+                               RecycleListPage* page) {
+    if (page == NULL || query.uid == 0 || query.limit == 0 ||
+        query.limit > kMaxListLimit) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    page->rows.clear();
+    page->hasMore = false;
+    page->nextDeletedMs = 0;
+    page->nextId = 0;
+
+    const bool firstPage = query.cursorDeletedMs == 0 && query.cursorId == 0;
+    if (!firstPage && (query.cursorDeletedMs == 0 || query.cursorId == 0)) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    // 用 UNIX_TIMESTAMP 把 DATETIME(6) 折算成毫秒，排序键与 wire 游标同口径：
+    // 同毫秒多行由 uf_id 兜底，(ms, id) 是精确 keyset，不丢行不重复。
+    const char* kMsExpr =
+        "CAST(UNIX_TIMESTAMP(uf.uf_deleted_at)*1000 AS UNSIGNED)";
+    std::string sql =
+        "SELECT uf.uf_id, uf.f_id, uf.uf_name, uf.uf_is_dir, uf.uf_parent_id, ";
+    sql += kMsExpr;
+    sql += " AS deleted_ms, COALESCE(f.f_size, 0) AS size "
+           "FROM t_user_file uf LEFT JOIN t_file f ON f.f_id = uf.f_id "
+           "WHERE uf.u_id = ? AND uf.uf_deleted_at > ? ";
+    if (!firstPage) {
+        sql += "AND (";
+        sql += kMsExpr;
+        sql += ", uf.uf_id) < (?, ?) ";
+    }
+    sql += "ORDER BY ";
+    sql += kMsExpr;
+    sql += " DESC, uf.uf_id DESC LIMIT ?";
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(sql);
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, query.uid) || !stmt->bindString(1, kActiveDeletedAt)) {
+        return stmt->lastError();
+    }
+
+    std::size_t limitIndex = 2;
+    if (!firstPage) {
+        if (!stmt->bindUInt64(2, query.cursorDeletedMs) ||
+            !stmt->bindUInt64(3, query.cursorId)) {
+            return stmt->lastError();
+        }
+        limitIndex = 4;
+    }
+    if (!stmt->bindUInt64(limitIndex,
+                          static_cast<std::uint64_t>(query.limit + 1))) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    for (;;) {
+        const PreparedStatement::FetchStatus status = stmt->fetchRow();
+        if (status == PreparedStatement::FetchStatus::End) {
+            break;
+        }
+        if (status == PreparedStatement::FetchStatus::Error) {
+            return stmt->lastError();
+        }
+        RecycleNode row;
+        row.ufId = stmt->getUInt64(0);
+        row.fid = stmt->isNull(1) ? 0 : stmt->getUInt64(1);
+        row.name = stmt->getString(2);
+        row.isDir = stmt->getUInt64(3) != 0;
+        row.parentId = stmt->getUInt64(4);
+        row.deletedAtMs = stmt->getUInt64(5);
+        row.size = stmt->getUInt64(6);
+        page->rows.push_back(row);
+        if (page->rows.size() > query.limit) {
+            page->rows.pop_back();
+            page->hasMore = true;
+            break;
+        }
+    }
+
+    if (!page->rows.empty()) {
+        page->nextDeletedMs = page->rows.back().deletedAtMs;
+        page->nextId = page->rows.back().ufId;
+    }
+    return ErrorCode::Ok;
+}
+
+ErrorCode FileDao::listSubtree(std::uint64_t uid,
+                               std::uint64_t rootUfId,
+                               std::size_t maxNodes,
+                               std::vector<UserFileRow>* out) {
+    if (out == NULL || uid == 0 || rootUfId == 0 || maxNodes == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    out->clear();
+
+    UserFileRow root;
+    const ErrorCode rootRc = findUserFile(uid, rootUfId, &root);
+    if (rootRc != ErrorCode::Ok) {
+        return rootRc;
+    }
+    out->push_back(root);
+
+    // BFS：逐层列子节点（不过滤 deleted_at，软删后代也要一并物理删除）。
+    std::vector<std::uint64_t> queue;
+    queue.push_back(rootUfId);
+    std::size_t head = 0;
+    while (head < queue.size()) {
+        const std::uint64_t parentId = queue[head++];
+
+        std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+            "SELECT uf_id, u_id, uf_parent_id, f_id, uf_name, uf_is_dir, "
+            "uf_deleted_at, uf_created_at, uf_updated_at FROM t_user_file "
+            "WHERE u_id = ? AND uf_parent_id = ? ORDER BY uf_id");
+        if (!stmt) {
+            return m_conn.lastError();
+        }
+        if (!stmt->bindUInt64(0, uid) || !stmt->bindUInt64(1, parentId)) {
+            return stmt->lastError();
+        }
+        if (!stmt->execute()) {
+            return stmt->lastError();
+        }
+
+        for (;;) {
+            const PreparedStatement::FetchStatus status = stmt->fetchRow();
+            if (status == PreparedStatement::FetchStatus::End) {
+                break;
+            }
+            if (status == PreparedStatement::FetchStatus::Error) {
+                return stmt->lastError();
+            }
+            UserFileRow child;
+            fillUserFileRow(*stmt, &child);
+            out->push_back(child);
+            if (out->size() > maxNodes) {
+                return ErrorCode::TooManyNodes;
+            }
+            if (child.isDir) {
+                queue.push_back(child.ufId);
+            }
+        }
+    }
+    return ErrorCode::Ok;
+}
+
+ErrorCode FileDao::purgeNodesInTx(std::uint64_t uid,
+                                  const std::vector<std::uint64_t>& ufIds,
+                                  PurgeBatchResult* out) {
+    if (out == NULL || uid == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = PurgeBatchResult();
+
+    // 调用方必须已 BEGIN；这里只做锁行 → DELETE → 补减计数。
+    for (std::size_t i = 0; i < ufIds.size(); ++i) {
+        std::uint64_t fid = 0;
+        bool isDir = false;
+        std::string deletedAt;
+        const ErrorCode locked =
+            lockUserFile(m_conn, uid, ufIds[i], &fid, &isDir, &deletedAt, NULL);
+        if (locked == ErrorCode::NotFound) {
+            continue;  // 已删（重跑幂等），跳过
+        }
+        if (locked != ErrorCode::Ok) {
+            return locked;
+        }
+
+        std::unique_ptr<PreparedStatement> del = m_conn.prepare(
+            "DELETE FROM t_user_file WHERE uf_id = ? AND u_id = ?");
+        if (!del) {
+            return m_conn.lastError();
+        }
+        if (!del->bindUInt64(0, ufIds[i]) || !del->bindUInt64(1, uid)) {
+            return del->lastError();
+        }
+        if (!del->execute()) {
+            return del->lastError();
+        }
+
+        // 从未软删过的活跃文件节点在此补减一次计数；已软删的不再减。
+        if (!isDir && fid != 0 && deletedAt == kActiveDeletedAt) {
+            bool orphaned = false;
+            const ErrorCode decremented = decrementBlobRef(m_conn, fid, &orphaned);
+            if (decremented != ErrorCode::Ok) {
+                return decremented;
+            }
+            if (orphaned) {
+                ++out->blobsOrphaned;
+            }
+        }
+
+        if (isDir) {
+            ++out->dirsDeleted;
+        } else {
+            ++out->filesDeleted;
+        }
+    }
     return ErrorCode::Ok;
 }
 

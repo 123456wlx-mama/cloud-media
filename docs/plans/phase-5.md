@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；Download Stage 已收口（D-0~D-6）；S-1 已验收：ShareService 9/9、build-on 123/123 连跑两遍、build-off 9/9、ctest 35/35、四表零残留；下一步 S-2 RecycleService）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；Download Stage 已收口（D-0~D-6）；S-1 已验收：ShareService 9/9、build-on 123/123 连跑两遍、build-off 9/9、ctest 35/35、四表零残留；S-2 RecycleService 已验收：BUILD_OK、--gtest_list_tests 命中 7 例、目标用例 7/7 无 SKIP（软删/恢复/彻底删除/回收站列表）；下一步 S-3 FileService）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1514,14 +1514,28 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 **Files:**
 - Create: server/logic/recycle_service.h
 - Create: server/logic/recycle_service.cpp
-- Create: server/logic/tests/test_recycle_service.cpp
+- Create: server/tests/logic/test_recycle_service.cpp（计划原文写 server/logic/tests/，实际落 server/tests/logic/）
+- Modify: server/db/file_dao.h/.cpp（listRecycle / listSubtree / purgeNodesInTx / decrementBlobRef 加 orphaned 出参）
+- Modify: server/db/share_dao.h/.cpp（cancelActiveByUfIdInTx）
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt
 
 **Steps:**
-- [ ] 删除：事务锁节点→已删短路→置 deleted_at→文件减计数→0 置孤儿→失效分享缓存。
-- [ ] 恢复：父节点缺失/已删→根；名称冲突自动改名；已恢复幂等返回。
-- [ ] 彻底删除：文件只删行；目录 BFS 子树，>10000 返回 3008，200 行/事务，活跃文件补减计数，已软删不二次减。
-- [ ] 每批取消指向该子树的分享。
-- [ ] 测试：删除/恢复/彻底删除计数轨迹；目录子树；超限；重复调用幂等。
+- [x] 删除：复用 FileDao.softDelete（事务锁行→已删短路→置 deleted_at→文件减计数→0 置孤儿）；服务层再失效分享缓存。
+- [x] 恢复：父缺失/已删/非目录→回根；名称冲突自动改名（复用 FileDao.restore）；已恢复幂等返回。
+- [x] 彻底删除：文件只删行；目录 BFS 子树（listSubtree），>maxPurgeNodes 返回 3008 不部分删除；200 行/事务（purgeNodesInTx）；活跃文件补减计数、已软删不二次减（条件 >0 + 事务内重读 deleted_at 前置校验）。
+- [x] 每批取消指向该子树的分享（ShareDao.cancelActiveByUfIdInTx，事务内 s_status=1）。
+- [x] 测试：删除/恢复/彻底删除计数轨迹；目录子树；超限；重复调用幂等（7 例）。
+
+**实施记录（2026-10-19）：**
+- `RecycleService` 只经 `FileDao`/`ShareDao` 与 `CacheStore` 访问存储，不 include mysql.h/hiredis/net。
+- `maxPurgeNodes` 可注入（默认 10000），`PurgeTreeTooLarge` 用 3 上限避免造 10001 行；`kPurgeBatchSize=200`。
+- 软删复用 `FileDao.softDelete`（已含锁行/短路/减计数/置孤儿），服务层随后 `listActiveByUfId` + `CacheKey::share` DEL 失效缓存。
+- 恢复复用 `FileDao.restore`；父目录解析在服务层（缺失/已删/非目录 → 根 0）；`renamed` 由「最终名 ≠ 请求名」判定，`alreadyRestored` 强制 renamed=0。
+- 彻底删除目录：`listSubtree` BFS 收集（含软删后代，超上限回 3008）→ 反序（子先父后、根最后）→ 每批 200 行一个 `Transaction`：`purgeNodesInTx`（锁行→DELETE→活跃文件补减）+ `cancelActiveByUfIdInTx`（取消分享）。
+- `purgeNodesInTx` 在事务内重读 `deleted_at` 判断「活跃才补减」，避免依赖 BFS 快照；`decrementBlobRef` 增加 `orphaned` 出参统计 `blobsOrphaned`；已删节点 NotFound 跳过（重跑幂等）。
+- 回收站列表：`listRecycle` 用 `CAST(UNIX_TIMESTAMP(uf_deleted_at)*1000 AS UNSIGNED)` 把 DATETIME(6) 折算成毫秒，排序键与 wire 的 `cursor_deleted_ms` 同口径，(ms, uf_id) 是精确 keyset，避免「ms 游标 + 微秒 DATETIME 排序」丢行；LEFT JOIN t_file 取 size（目录/blob 已 GC 为 0）。
+- 修复：`kPurgeBatchSize`/`kDefaultMaxPurgeNodes` 被 `std::min(kPurgeBatchSize, remaining)` 以 const 引用绑定构成 odr-use，缺类外定义导致链接失败（`undefined reference to cm::logic::RecycleService::kPurgeBatchSize`）；已在 .cpp 补两个静态成员的类外定义。
+- 验收（2026-10-19，VM build-on）：`make -j8` BUILD_OK；`--gtest_list_tests` 命中 RecycleServiceTest.* 7 例；`CM_TEST_MYSQL=1 CM_TEST_REDIS=1 CM_TEST_MYSQL_PASSWORD=*** ./bin/cm_logic_tests --gtest_filter='RecycleServiceTest.*'` 7/7 passed（251ms，0 SKIP，退出码 0）。
 
 **gtest 清单:**
 - DeleteDecrementsOnce
@@ -1533,13 +1547,14 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - RecycleListCursorStable
 
 **验收标准:**
-- [ ] 删除→恢复→再删除→彻底删除后 ref_count 与节点状态一致。
-- [ ] 10001 节点目录返回 3008，不部分删除。
-- [ ] 彻底删除后回收站列表不再出现。
+- [x] 删除→恢复→再删除→彻底删除后 ref_count 与节点状态一致。（DeleteDecrementsOnce / RestoreIncrementsOnce / PurgeFileNoDoubleDecrement 覆盖）
+- [x] 超限目录返回 3008，不部分删除。（PurgeTreeTooLarge 以 maxPurgeNodes=3 注入覆盖）
+- [x] 彻底删除后节点 NotFound，回收站列表不再出现。（purge 物理删行；listRecycle 只返回 deleted_at 非空行）
+- [x] ctest -R recycle_service 命中 7 例且全绿（2026-10-19：BUILD_OK；7 例；目标 7/7 passed，251ms，0 SKIP，退出码 0）。
 
 **风险:**
-- 目录子树长事务 → 200 行/事务、根最后删、可重跑。
-- 计数下溢 → 条件 >0 + 前置校验；测试覆盖。
+- 目录子树长事务 → 200 行/事务、根最后删、可重跑（listSubtree 超上限提前回 3008，不删任何行）。
+- 计数下溢 → 条件 >0 + 事务内重读 deleted_at 前置校验；测试覆盖。
 
 ---
 

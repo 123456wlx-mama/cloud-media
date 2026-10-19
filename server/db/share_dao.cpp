@@ -360,6 +360,29 @@ ErrorCode ShareDao::listActiveByUfId(std::uint64_t ufId,
     return ErrorCode::Ok;
 }
 
+ErrorCode ShareDao::cancelActiveByUfIdInTx(std::uint64_t ufId,
+                                           std::uint64_t* affected) {
+    if (affected == NULL || ufId == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    *affected = 0;
+
+    // 调用方已 BEGIN；只做单条条件 UPDATE，不开事务。
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "UPDATE t_share SET s_status = 1 WHERE s_uf_id = ? AND s_status = 0");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, ufId)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+    *affected = stmt->affectedRows();
+    return ErrorCode::Ok;
+}
+
 ErrorCode ShareDao::sweepExpired(std::size_t limit, std::uint64_t* affected) {
     if (affected == NULL || limit == 0 || limit > kMaxSweepLimit) {
         return ErrorCode::InvalidArgument;

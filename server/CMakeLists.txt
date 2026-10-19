@@ -48,6 +48,8 @@ if(BUILD_STORAGE)
         logic/rate_limiter.cpp
         logic/download_handlers.cpp
         logic/share_service.cpp
+        logic/recycle_service.cpp
+        logic/file_service.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic
