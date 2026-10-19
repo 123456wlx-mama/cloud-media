@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 UserDao 已验收：VM 构建零警告，ctest 17/17 通过，user_dao 5 例有 DB 全绿，提交 2c10fce）
+**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 FileDao 已验收：VM 构建零警告，ctest 18/18 通过，file_dao 有 DB 8/8 全绿，测试数据零残留）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -539,11 +539,11 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/tests/logic/test_file_dao.cpp
 
 **Steps:**
-- [ ] 方法：findBlobByMd5、insertBlobOnDuplicateIncrement、getBlobById、createUserFileAutoRename、listByParent（三种排序 + 游标）、softDelete、restore、purgeNode、findUserFile、countByParent。
-- [ ] createUserFileAutoRename 在事务内尝试原名与 (2)…(99)，捕获 1062 继续；返回最终名。
-- [ ] softDelete 在同一事务内减 ref_count（条件 >0）并在 0 时置 f_state=2。
-- [ ] 列表 SQL 用行构造器游标，禁止 OFFSET；limit+1 判断 has_more。
-- [ ] 单测：同名自动改名、软删只减一次、恢复加一次、游标同微秒稳定。
+- [x] 方法：findBlobByMd5、insertBlobOnDuplicateIncrement、getBlobById、createUserFileAutoRename、listByParent（三种排序 + 游标）、softDelete、restore、purgeNode、findUserFile、countByParent。
+- [x] createUserFileAutoRename 在事务内尝试原名与 (2)…(99)，捕获 1062 继续；返回最终名。
+- [x] softDelete 在同一事务内减 ref_count（条件 >0）并在 0 时置 f_state=2。
+- [x] 列表 SQL 用行构造器游标，禁止 OFFSET；limit+1 判断 has_more。
+- [x] 单测：同名自动改名、软删只减一次、恢复加一次、游标同微秒稳定。
 
 **gtest 清单:**
 - FileDaoFindBlobByMd5
@@ -556,9 +556,9 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - FileDaoNoOffsetSql（静态检查/字符串断言）
 
 **验收标准:**
-- [ ] 有 DB 集成全绿；引用计数轨迹 -1/+1 正确。
-- [ ] 分页 1000 行、每页 50 无重复/漏行。
-- [ ] SQL 中无 LIMIT ?,? 形式的大偏移。
+- [x] 有 DB 集成全绿；引用计数轨迹 -1/+1 正确。（2026-10-19：无 DB 档 7 SKIP + 静态 1 例通过；有 DB 档 8/8 passed，181ms；跑完 t_user/t_user_file/t_file 残留均为 0）
+- [ ] 分页 1000 行、每页 50 无重复/漏行。（DAO 层以 12 行/5 与 7 行/3 覆盖翻页与同微秒；1000 行规模留到 S-3 FileService 验收）
+- [x] SQL 中无 LIMIT ?,? 形式的大偏移。（由 FileDaoNoOffsetSql 静态断言锁死）
 
 **风险:**
 - 自动改名在事务内 99 次重试 → 最坏 99 条语句；实际冲突极少，设置上限并返回 1003。
