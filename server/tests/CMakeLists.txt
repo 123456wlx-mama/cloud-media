@@ -106,3 +106,6 @@ add_test(NAME schema_v2_2 COMMAND test_schema_v2_2)
 # DAO 测试：五个测试源编进同一个 cm_logic_tests（见 logic/CMakeLists.txt）。
 # 无 CM_TEST_MYSQL=1 时用例内部 GTEST_SKIP，ctest 仍视为通过。
 add_subdirectory(logic)
+
+# 路由注册表：纯内存单测，不需要 DB/Redis。
+add_subdirectory(net)

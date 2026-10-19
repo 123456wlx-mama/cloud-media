@@ -40,6 +40,25 @@ const char* to_string(ErrorCode code) {
     return "UnknownError";
 }
 
+std::uint32_t to_wire_code(ErrorCode code) {
+    if (code == ErrorCode::Ok) {
+        return 0;
+    }
+    // 06 §4.2 的 TaskNotFound 是 3004；U-3b 统一映射表要求回 3002，
+    // 这里按指令覆盖。服务层若已显式写入 rs->code，则以服务层为准。
+    if (code == ErrorCode::TaskNotFound) {
+        return static_cast<std::uint32_t>(ErrorCode::ChunkMissing);
+    }
+    return static_cast<std::uint32_t>(code);
+}
+
+std::uint32_t decode_failure_wire_code(bool crcMismatch) {
+    if (crcMismatch) {
+        return static_cast<std::uint32_t>(ProtocolError::Crc);
+    }
+    return static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+}
+
 bool is_retryable(ErrorCode code) {
     switch (code) {
         case ErrorCode::Timeout:

@@ -74,10 +74,19 @@ void TcpServer::newConnection(int sockfd, const std::string& peer) {
   ConnectionPtr conn = std::make_shared<TcpConnection>(loop_, connName, sockfd, peer);
   conn->setMessageCallback(messageCallback_);
   conn->setConnectionCallback(connectionCallback_);
-  conn->setCloseCallback(std::bind(&TcpServer::removeConnection, this, std::placeholders::_1));
+  conn->setCloseCallback(std::bind(&TcpServer::handleConnectionClose, this,
+                                  std::placeholders::_1));
 
   connections_[connName] = conn;
   conn->connectEstablished();
+}
+
+void TcpServer::handleConnectionClose(const ConnectionPtr& conn) {
+  // 先通知业务层清理连接状态，再摘除连接表；两步都在 loop 线程。
+  if (closeCallback_) {
+    closeCallback_(conn);
+  }
+  removeConnection(conn);
 }
 
 void TcpServer::removeConnection(const ConnectionPtr& conn) {

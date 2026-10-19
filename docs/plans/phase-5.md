@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（U-2 已验收（a3ce344）；U-3 已验收：UploadChunk 9/9、cm_logic_tests 46/46 连跑两遍、ctest 25/25、五表零残留、临时目录零残留；下一步 U-4 协议接线）
+**Status:** In Progress（U-3 已验收（ab6c0c1）；U-3b 已验收：路由 + NetServer 接线，ctest 26/26、cm_logic_tests 46/46 连跑两遍，实测未登录 10004 回 1004 且连接保持，服务端可启动监听并优雅退出；下一步 U-4 ContinueUpload 位图）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -225,6 +225,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 | P0 | P0-6 sendFile | prelude+sendfile+pauseRead | send_file 7 例全绿；fd 不泄漏 |
 | DAO | DAO-1~5 | 5 个 DAO + 测试夹具 | 无 DB 单测 + 有 DB 集成全绿 |
 | Upload | U-1~U-6 | 消息、初始化、分片、续传、合并、恢复 | U1~U11 对应服务层用例全绿 |
+| Upload | U-3b 路由接线 | HandlerRegistry、10004/10006、NetServer 接线 | handler_registry 全绿；IO 线程零存储调用 |
 | Download | D-0~D-6 | 门槛翻转、sidecar、票据、两条块路径、限流、服务 | OFF/ON 两套构建全绿；D1~D6 全绿 |
 | Share/Recycle/List | S-1~S-4 | 分享、回收站、列表、播放 | S1~S5/R1~R4/P1~P2 全绿 |
 | Timers | T-1~T-3 | 过期、GC、分享扫描 | 批量/幂等/宽限用例全绿 |
@@ -840,6 +841,67 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - 每连接 2 个在途仍可能塞满业务池 → 业务池队列上限 + 1006/背压。
 
 ---
+
+### Task U-3b：10004/10006 路由与 NetServer 接线
+
+**Goal:** 把 10004/10006 从「服务类可直接调用」推进到「真实连接可路由」：IO 线程只解帧、查表、投递，业务线程执行服务并经 loop 线程回包；10006 的每连接背压闸门收进分发路径；全程不在 IO 线程访问 DB/Redis/磁盘。
+
+**Files:**
+- Create: server/net/handler_registry.h
+- Create: server/net/handler_registry.cpp
+- Create: server/tests/net/test_handler_registry.cpp
+- Create: server/tests/net/CMakeLists.txt
+- Modify: server/logic/connection_decoder.h
+- Modify: server/logic/connection_decoder.cpp
+- Modify: server/net/TcpServer.h
+- Modify: server/net/TcpServer.cpp
+- Modify: common/include/cm/base/error_code.h
+- Modify: common/base/error_code.cpp
+- Modify: server/app/main.cpp
+- Modify: server/CMakeLists.txt
+- Modify: server/net/CMakeLists.txt
+- Modify: server/tests/CMakeLists.txt
+- Modify: server/tests/logic/CMakeLists.txt
+- Modify: server/logic/tests/CMakeLists.txt
+
+**Steps:**
+- [x] 新增 HandlerRegistry：type → handler 注册表；registerHandler 重复注册、type=0、空 handler 返回 InvalidArgument。
+- [x] dispatch 在 IO 线程只做「查表 → 准入 → 投递业务池」；未注册类型回 9003；准入/投递失败回 1006。
+- [x] dispatchInline 供业务线程使用（10006 CRC 校验完成后），不再二次投递。
+- [x] 10004/10006 注册进 registry；10006 的 UploadInFlightGate.tryBegin/end 收进注册表的 Admission/Release，pauseRead/resumeRead 绑定 TcpConnection。
+- [x] 统一错误映射 cm::to_wire_code：InvalidArgument→1001、NotFound→1002、AlreadyExists→1003、Md5Mismatch→3003、TaskNotFound→3002、TaskExpired→3007、TooManyNodes→3008、Timeout→1006；Db*/Redis* 沿用 4xxx。服务层已显式写入 rs.code 时以服务层为准。
+- [x] ConnectionDecoder：解码失败回 1001（BadCrc 仍回 9005）；bulk 校验通过后 resumeRead 并 drain Buffer 中已粘的下一帧。
+- [x] TcpServer 增加 close callback，并在保留原 removeConnection 逻辑的前提下串联。
+- [x] main 接线：加载 ini、创建 MySQL/Redis 池、业务线程池、registry、连接级 decoder/gate、SIGINT/SIGTERM 优雅退出；退出顺序 server.stop → workers.stop → 池关闭。
+- [x] uid 采用连接级占位 0（登录 10002/10003 尚未实现）；10004/10006 在 uid=0 时回 1004，后续登录任务只需写 ConnState.uid。
+- [x] 测试覆盖：注册/分发、重复注册、未知类型 9003、解码失败 1001（BadCrc 9005）、准入失败 1006、类型表与 U-1 一致、统一错误映射。
+
+**gtest 清单:**
+- HandlerRegistryTest.RegistersAndDispatches
+- HandlerRegistryTest.RejectsDuplicateRegistration
+- HandlerRegistryTest.RejectsUnknownTypeWith9003
+- HandlerRegistryTest.MapsDecodeFailuresTo1001
+- HandlerRegistryTest.AppliesAdmissionBeforeHandler
+- HandlerRegistryTest.TypeTableMatchesU1
+- HandlerRegistryTest.MapsBusinessErrorCodes
+
+**验收标准:**
+- [ ] ctest -R handler_registry --output-on-failure 全绿；cm_logic_tests 既有 46 例不回归。
+- [x] test_handler_registry --gtest_list_tests 输出 7 个用例，确认 filter 命中数不为 0。（2026-10-19：7 个，RegistersAndDispatches / RejectsDuplicateRegistration / RejectsUnknownTypeWith9003 / MapsDecodeFailuresTo1001 / AppliesAdmissionBeforeHandler / TypeTableMatchesU1 / MapsBusinessErrorCodes）
+- [x] grep 确认 HandlerRegistry 的 IO 线程路径与 ConnectionDecoder 不出现 mysql_/redisCommand/read/write/open/unlink。（io-clean）
+- [x] 未登录连接发 10004/10006 均回 1004，且连接保持；未注册的合法类型回 9003。（真实连接冒烟：127.0.0.1:18005 连发两帧 10004，均回 10005 UploadInitRs code=1004 且连接未断；9003 由 RejectsUnknownTypeWith9003 覆盖）
+- [x] 回归：VM 构建零警告，ctest 26/26（bulk_gate 0.18s、logic_unit、handler_registry 全绿），cm_logic_tests 46/46 连跑两遍（1658ms / 1713ms），`cloud-media-server --version` 正常，启动后监听 0.0.0.0:18004，SIGTERM 退出码 0。
+
+**实施记录（2026-10-19）：**
+- 未注册类型码按协议文档取 9003（9004 在 ErrorCode 中是 PayloadTooLarge，不占用）。
+- 10006 的 CRC 仍在业务线程验证（H2）；IO 线程只做 decodeBulk 的 4MB 一次性搬移与 shrinkTo(64KB)。
+- 解码失败统一 1001，BadCrc 保留 9005；bulk 校验失败由 decoder 回 9005 后 forceClose。
+- drain 由 ConnectionDecoder 在 onBulkVerified(true) 后回调 main 注入的动作，避免 ET 下粘包帧丢失。
+- U-4（ContinueUpload）编号与内容保持不变。
+
+**风险:**
+- uid 占位 0 意味着本任务后 10004/10006 仍不可端到端成功；登录/会话接入是后续任务的前置。
+- TaskNotFound→3002 是 U-3b 指令映射，与 06 §4.2 的 3004 不同；UploadChunkHandler 仍显式写 3004，统一映射只作兜底。评审若要求回到 3004，只改 to_wire_code 一处。
 
 ### Task U-4：ContinueUpload 位图
 

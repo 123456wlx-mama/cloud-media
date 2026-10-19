@@ -11,13 +11,14 @@ add_library(net STATIC
     TcpServer.cpp
     TimerQueue.cpp
     SignalHandler.cpp
+    handler_registry.cpp
 )
 
 target_include_directories(net PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(net PUBLIC cm_common)
+target_link_libraries(net PUBLIC cm_common cm_protocol)
 
 if(WIN32)
     # Windows 下 epoll 为编译占位实现，仅用于 CI 编译验证

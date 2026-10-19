@@ -56,6 +56,17 @@ enum class ProtocolError : std::uint32_t {
 const char* to_string(ErrorCode code);
 bool is_retryable(ErrorCode code);
 
+// 业务层 ErrorCode → wire code（U-3b 统一映射）。
+// 只覆盖与枚举值不同的两处：Ok→0、TaskNotFound→3002（按 U-3b 指令）；
+// 其余 1xxx/2xxx/3xxx/4xxx 与枚举值一致，直接沿用。
+// CacheStore 的 Busy 由服务层转成 Timeout(1006)，不在本函数出现。
+std::uint32_t to_wire_code(ErrorCode code);
+
+// 解码失败 → wire code：BadCrc 回 9005（02 §2.2 的“回 ERROR_RS 且不带 payload”），
+// 其余（BadMagic/BadVersion/BadLength/UnknownType）统一回 1001。
+// 放在 common 而不是 net，避免 connection_decoder（logic）反向依赖 net。
+std::uint32_t decode_failure_wire_code(bool crcMismatch);
+
 const char* to_string(ProtocolError code);
 bool is_retryable(ProtocolError code);
 

@@ -7,6 +7,7 @@ target_include_directories(test_bulk_gate PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 target_link_libraries(test_bulk_gate PRIVATE
+    net
     cm_protocol
     GTest::gtest
     GTest::gtest_main

@@ -4,22 +4,39 @@
 #include <utility>
 
 #include "cm/base/byte_order.h"
+#include "cm/base/error_code.h"
 #include "cm/protocol/codec.h"
 #include "cm/protocol/message_type.h"
 
 namespace cm {
 namespace logic {
+namespace {
+
+// 失败时 Buffer 尚未消费；足够 19 字节就能取出 SEQ 用于 ERROR_RS 回显。
+std::uint32_t frameSeq(const Buffer& in) {
+    if (in.readableBytes() < protocol::kHeaderSize) {
+        return 0;
+    }
+    return readU32BE(
+        reinterpret_cast<const std::uint8_t*>(in.peek()) + 11);
+}
+
+}  // namespace
 
 ConnectionDecoder::ConnectionDecoder(FrameHandler frameHandler,
                                      BulkHandler bulkHandler,
                                      Action pauseRead, Action resumeRead,
-                                     Action forceClose, Post post)
+                                     Action forceClose, Post post,
+                                     Action drain, ErrorHandler errorHandler)
     : frameHandler_(frameHandler),
       bulkHandler_(bulkHandler),
       pauseRead_(pauseRead),
       resumeRead_(resumeRead),
       forceClose_(forceClose),
       post_(post),
+      drain_(drain),
+      errorHandler_(errorHandler),
+      bulkSeq_(0),
       bulkPending_(false),
       closed_(false) {
 }
@@ -49,10 +66,11 @@ ConnectionDecoder::Result ConnectionDecoder::onData(Buffer& in) {
                 return Result::NeedMore;
             }
             if (code != ErrorCode::Ok || status != protocol::DecodeStatus::Ok) {
-                fail();
+                fail(frameSeq(in), status);
                 return Result::Error;
             }
 
+            bulkSeq_ = raw.seq;
             bulkPending_ = true;
             if (pauseRead_) {
                 pauseRead_();
@@ -86,7 +104,7 @@ ConnectionDecoder::Result ConnectionDecoder::onData(Buffer& in) {
             return Result::NeedMore;
         }
         if (code != ErrorCode::Ok || status != protocol::DecodeStatus::Ok) {
-            fail();
+            fail(frameSeq(in), status);
             return Result::Error;
         }
         if (frameHandler_) {
@@ -102,19 +120,33 @@ void ConnectionDecoder::onBulkVerified(bool ok) {
     }
     bulkPending_ = false;
     if (!ok) {
-        fail();
+        fail(bulkSeq_, protocol::DecodeStatus::BadCrc);
         return;
     }
     if (resumeRead_) {
         resumeRead_();
     }
+    // ET 下粘在 Buffer 里的下一帧不会再有 EPOLLIN，必须在这里继续 drain。
+    if (drain_) {
+        drain_();
+    }
 }
 
-void ConnectionDecoder::fail() {
+void ConnectionDecoder::fail(std::uint32_t seq,
+                             protocol::DecodeStatus status) {
     if (closed_) {
         return;
     }
     closed_ = true;
+    if (errorHandler_) {
+        const char* message =
+            status == protocol::DecodeStatus::BadCrc ? "crc mismatch"
+                                                     : "bad frame";
+        errorHandler_(
+            seq,
+            cm::decode_failure_wire_code(status == protocol::DecodeStatus::BadCrc),
+            std::string(message));
+    }
     if (forceClose_) {
         forceClose_();
     }

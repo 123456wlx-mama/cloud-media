@@ -20,6 +20,7 @@ target_link_libraries(cm_logic_tests PRIVATE
     cm_logic
     cm_storage
     cm_cache
+    net
     GTest::gtest
     GTest::gtest_main
 )

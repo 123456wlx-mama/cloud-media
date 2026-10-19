@@ -40,11 +40,14 @@ class TcpServer {
   void setConnectionCallback(const std::function<void(const ConnectionPtr&)>& cb) {
     connectionCallback_ = cb;
   }
+  // 连接关闭（对端 FIN、错误、forceClose）时调用；先于连接对象销毁。
+  void setCloseCallback(const CloseCallback& cb) { closeCallback_ = cb; }
 
   size_t connectionCount() const { return connections_.size(); }
 
  private:
   void newConnection(int sockfd, const std::string& peer);
+  void handleConnectionClose(const ConnectionPtr& conn);
   void removeConnection(const ConnectionPtr& conn);
   void removeConnectionInLoop(const ConnectionPtr& conn);
 
@@ -54,6 +57,7 @@ class TcpServer {
   std::map<std::string, ConnectionPtr> connections_;
   MessageCallback messageCallback_;
   std::function<void(const ConnectionPtr&)> connectionCallback_;
+  CloseCallback closeCallback_;
   int nextConnId_;
 };
 

@@ -34,6 +34,7 @@ if(BUILD_STORAGE)
 
     # 业务层：只经 DAO 与 CacheStore 访问存储，不出现 MySQL/Redis C API。
     add_library(cm_logic STATIC
+        logic/connection_decoder.cpp
         logic/upload_service.cpp
         logic/upload_chunk_handler.cpp
     )
@@ -48,7 +49,13 @@ add_executable(cloud-media-server
 )
 target_link_libraries(cloud-media-server PRIVATE cm_protocol)
 if(BUILD_STORAGE)
-    target_link_libraries(cloud-media-server PRIVATE cm_storage cm_cache)
+    # main.cpp 用 CM_WITH_STORAGE 区分“有业务层”与“仅骨架”两种构建。
+    target_compile_definitions(cloud-media-server PRIVATE CM_WITH_STORAGE=1)
+    # net 放在 cm_logic 之后：GNU ld 从左到右解析，依赖方必须先出现。
+    target_link_libraries(cloud-media-server PRIVATE
+        cm_logic cm_storage cm_cache net)
+else()
+    target_link_libraries(cloud-media-server PRIVATE net)
 endif()
 set_target_properties(cloud-media-server PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
