@@ -24,6 +24,7 @@ add_executable(cm_logic_tests
     test_share_service.cpp
     test_recycle_service.cpp
     test_file_list.cpp
+    test_play_service.cpp
 )
 # test_file_dao 的 FileDaoNoOffsetSql 要扫描源码。
 target_compile_definitions(cm_logic_tests PRIVATE
@@ -65,3 +66,4 @@ add_test(NAME download_service COMMAND cm_logic_tests --gtest_filter=DownloadSer
 add_test(NAME share_service COMMAND cm_logic_tests --gtest_filter=ShareServiceTest.*)
 add_test(NAME recycle_service COMMAND cm_logic_tests --gtest_filter=RecycleServiceTest.*)
 add_test(NAME file_service COMMAND cm_logic_tests --gtest_filter=FileList*)
+add_test(NAME play_service COMMAND cm_logic_tests --gtest_filter=PlayServiceTest.*)

@@ -174,6 +174,12 @@ public:
                                   std::uint64_t fid,
                                   UserFileRow* out);
 
+    // 跨目录可见性：该用户在任意目录下是否有指向 fid 的未删除节点（LIMIT 1）。
+    // 用于播放进度上报校验“文件属于当前用户”，不关心所在目录。
+    ErrorCode hasVisibleFileByFid(std::uint64_t uid,
+                                  std::uint64_t fid,
+                                  bool* visible);
+
     // 秒传命中落库（06 §5.2 步骤 4），单事务：
     //  1) 同目录同名同 blob 的活跃节点已存在 → 直接复用，ref_count 不变（reused=true）；
     //  2) 否则 INSERT t_file ... ON DUPLICATE +1，再插入 t_user_file（名称冲突自动改名）。

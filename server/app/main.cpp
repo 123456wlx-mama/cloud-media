@@ -16,6 +16,7 @@
 #include "cm/protocol/codec.h"
 #include "cm/protocol/message_type.h"
 #include "cm/protocol/messages/list.h"
+#include "cm/protocol/messages/play.h"
 #include "cm/protocol/messages/upload.h"
 #include "cm/protocol/serialize.h"
 #include "cm/protocol/version.h"
@@ -38,6 +39,7 @@
 #include "logic/download_handlers.h"
 #include "logic/download_service.h"
 #include "logic/file_service.h"
+#include "logic/play_service.h"
 #include "logic/sendfile_block_sender.h"
 #include "logic/upload_chunk_handler.h"
 #include "logic/upload_service.h"
@@ -157,6 +159,16 @@ void sendListFileRs(const ConnectionPtr& conn, std::uint32_t seq,
         return;
     }
     sendFramePayload(conn, cm::protocol::MessageType::ListFileRs, seq, payload);
+}
+
+void sendPlayReportRs(const ConnectionPtr& conn, std::uint32_t seq,
+                      const cm::protocol::PlayReportRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::PlayReportRs, seq,
+                     payload);
 }
 
 void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
@@ -315,6 +327,35 @@ void handleListFile(const ConnectionPtr& conn,
     sendListFileRs(conn, frame.seq, rs);
 }
 
+// 10032：播放进度上报；UID 未登录时直接回 1004。
+void handlePlayReport(const ConnectionPtr& conn,
+                      const cm::protocol::Frame& frame,
+                      ConnStateTable& states,
+                      cm::logic::PlayService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::PlayReportRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendPlayReportRs(conn, frame.seq, rs);
+        return;
+    }
+
+    cm::protocol::PlayReportRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendPlayReportRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.report(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendPlayReportRs(conn, frame.seq, rs);
+}
+
 // 10030：合并 + 落库；UID 未登录时直接回 1004。
 void handleUploadComplete(const ConnectionPtr& conn,
                           const cm::protocol::Frame& frame,
@@ -421,6 +462,7 @@ int runServer(const cm::ServerConfig& cfg) {
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
     cm::logic::FileService fileService(*mysql);
+    cm::logic::PlayService playService(*mysql);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
     cm::logic::DownloadService downloadService(*mysql, *redis, cfg.dataDir);
 
@@ -488,6 +530,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleListFile(conn, frame, states, fileService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register ListFile failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::PlayReportRq),
+            [&states, &playService](const ConnectionPtr& conn,
+                                    const cm::protocol::Frame& frame) {
+                handlePlayReport(conn, frame, states, playService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register PlayReport failed\n");
         return 1;
     }
 

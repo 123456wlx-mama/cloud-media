@@ -384,6 +384,37 @@ ErrorCode FileDao::findActiveNodeByFid(std::uint64_t uid,
     return ErrorCode::Ok;
 }
 
+ErrorCode FileDao::hasVisibleFileByFid(std::uint64_t uid,
+                                       std::uint64_t fid,
+                                       bool* visible) {
+    if (visible == NULL || uid == 0 || fid == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    *visible = false;
+
+    // idx_file (f_id, u_id) 覆盖；只判存在，不取行。
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "SELECT 1 FROM t_user_file "
+        "WHERE u_id = ? AND f_id = ? AND uf_deleted_at = ? LIMIT 1");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, uid) || !stmt->bindUInt64(1, fid) ||
+        !stmt->bindString(2, kActiveDeletedAt)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    const PreparedStatement::FetchStatus status = stmt->fetchRow();
+    if (status == PreparedStatement::FetchStatus::Error) {
+        return stmt->lastError();
+    }
+    *visible = (status == PreparedStatement::FetchStatus::Row);
+    return ErrorCode::Ok;
+}
+
 ErrorCode FileDao::insertNodeWithRename(std::uint64_t uid,
                                        std::uint64_t parentId,
                                        std::uint64_t fid,
