@@ -5,6 +5,7 @@
 
 #include "cm/base/error_code.h"
 #include "cm/protocol/messages/download.h"
+#include "logic/download_ticket.h"
 
 namespace cm {
 
@@ -13,17 +14,17 @@ class MysqlPool;
 }  // namespace db
 
 namespace cache {
-class CacheStore;
+class RedisPool;
 }  // namespace cache
 
 namespace logic {
 
 // 10010 DownloadOpen：只认当前用户名下的文件节点（目录分享在 S-3 处理）。
-// ticket 只写 Redis，不落 MySQL；内容为 uf_id|f_id|uid|size|md5，TTL 30min。
+// ticket 只写 Redis，不落 MySQL；内容与续期语义由 DownloadTicket 统一维护。
 class DownloadService {
 public:
     DownloadService(cm::db::MysqlPool& mysql,
-                    cm::cache::CacheStore& cache,
+                    cm::cache::RedisPool& redis,
                     const std::string& dataDir);
 
     DownloadService(const DownloadService&) = delete;
@@ -35,7 +36,7 @@ public:
 
 private:
     cm::db::MysqlPool& m_mysql;
-    cm::cache::CacheStore& m_cache;
+    DownloadTicket m_ticket;
     std::string m_dataDir;
 };
 

@@ -351,7 +351,7 @@ int runServer(const cm::ServerConfig& cfg) {
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
-    cm::logic::DownloadService downloadService(*mysql, cache, cfg.dataDir);
+    cm::logic::DownloadService downloadService(*mysql, *redis, cfg.dataDir);
 
     net::EventLoop loop;
     net::TimerQueue timers(&loop);

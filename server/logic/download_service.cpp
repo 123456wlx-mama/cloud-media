@@ -2,15 +2,9 @@
 
 #include <unistd.h>
 
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
 #include <memory>
-#include <random>
 #include <string>
 
-#include "cache/cache_store.h"
 #include "db/file_dao.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
@@ -20,31 +14,6 @@ namespace logic {
 namespace {
 
 const std::uint32_t kChunkSize = 4194304;  // 与上传分片/下载块一致
-const std::chrono::milliseconds kTicketTtl(30 * 60 * 1000);
-
-std::uint64_t nowMs() {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
-}
-
-// 32 字节随机 → 64 位小写 hex。每次调用重新播种，避免业务池并发共享生成器。
-std::string makeTicket() {
-    std::random_device device;
-    std::uint64_t seed = (static_cast<std::uint64_t>(device()) << 32) ^
-                         static_cast<std::uint64_t>(device());
-    seed ^= nowMs() * 0x9e3779b97f4a7c15ULL;
-    seed ^= static_cast<std::uint64_t>(::getpid()) << 24;
-
-    std::mt19937_64 generator(seed);
-    char buffer[65];
-    for (int i = 0; i < 4; ++i) {
-        std::snprintf(buffer + i * 16, 17, "%016llx",
-                      static_cast<unsigned long long>(generator()));
-    }
-    return std::string(buffer, 64);
-}
 
 std::uint8_t zeroCopyFlag() {
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
@@ -57,9 +26,9 @@ std::uint8_t zeroCopyFlag() {
 }  // namespace
 
 DownloadService::DownloadService(cm::db::MysqlPool& mysql,
-                                 cm::cache::CacheStore& cache,
+                                 cm::cache::RedisPool& redis,
                                  const std::string& dataDir)
-    : m_mysql(mysql), m_cache(cache), m_dataDir(dataDir) {
+    : m_mysql(mysql), m_ticket(redis), m_dataDir(dataDir) {
 }
 
 ErrorCode DownloadService::openDownload(
@@ -139,16 +108,13 @@ ErrorCode DownloadService::openDownload(
         return ErrorCode::InvalidArgument;
     }
 
-    const std::string ticket = makeTicket();
-    const std::string value = std::to_string(node.ufId) + "|" +
-                              std::to_string(blob.fid) + "|" +
-                              std::to_string(uid) + "|" +
-                              std::to_string(blob.size) + "|" + blob.md5;
-    if (!m_cache.put(cm::cache::CacheKey::downloadTicket(ticket), value,
-                     kTicketTtl)) {
+    std::string ticket;
+    std::uint64_t ticketExpireMs = 0;
+    rc = m_ticket.issue(uid, blob.fid, &ticket, &ticketExpireMs);
+    if (rc != ErrorCode::Ok) {
         // 票据是授权凭证：Redis 写失败必须拒绝，不 fail-open。
-        out->code = static_cast<std::uint32_t>(ErrorCode::RedisUnavailable);
-        return ErrorCode::RedisUnavailable;
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
     }
 
     const std::string hlsPath =
@@ -161,8 +127,7 @@ ErrorCode DownloadService::openDownload(
     out->blockSize = kChunkSize;
     out->blockCount = static_cast<std::uint32_t>(blockCount);
     out->ticket = ticket;
-    out->ticketExpireMs =
-        nowMs() + static_cast<std::uint64_t>(kTicketTtl.count());
+    out->ticketExpireMs = ticketExpireMs;
     out->startBlock = rq.startBlock;
     out->zeroCopy = zeroCopyFlag();
     out->hls = (::access(hlsPath.c_str(), F_OK) == 0) ? 1 : 0;

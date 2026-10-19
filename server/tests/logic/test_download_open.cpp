@@ -109,7 +109,7 @@ protected:
         ASSERT_TRUE(m_redis) << error;
         m_cache.reset(
             new cm::cache::CacheStore(*m_redis, cm::cache::CacheStoreOptions()));
-        m_service.reset(new cm::logic::DownloadService(*m_pool, *m_cache, m_root));
+        m_service.reset(new cm::logic::DownloadService(*m_pool, *m_redis, m_root));
         createUser();
     }
 
@@ -199,15 +199,24 @@ TEST_F(DownloadOpenServiceTest, DownloadOpenReturnsTicket) {
     EXPECT_GT(rs.ticketExpireMs, nowMs());
     EXPECT_EQ(0, static_cast<int>(rs.hls));
 
-    // ticket 只在 Redis：value = uf_id|f_id|uid|size|md5。
+    // ticket 只在 Redis：value = uid|fid|hard_exp|flags。
     std::string cached;
     ASSERT_EQ(cm::cache::CacheStore::Result::Hit,
               m_cache->get(cm::cache::CacheKey::downloadTicket(rs.ticket),
                            &cached));
-    const std::string expected = std::to_string(ufId) + "|" +
-                                 std::to_string(fid) + "|" +
-                                 std::to_string(uid) + "|5000|" + blob.md5;
-    EXPECT_EQ(expected, cached);
+    const std::size_t p1 = cached.find('|');
+    const std::size_t p2 = cached.find('|', p1 + 1);
+    const std::size_t p3 = cached.find('|', p2 + 1);
+    ASSERT_NE(std::string::npos, p1);
+    ASSERT_NE(std::string::npos, p2);
+    ASSERT_NE(std::string::npos, p3);
+    EXPECT_EQ(std::string::npos, cached.find('|', p3 + 1));
+    EXPECT_EQ(std::to_string(uid), cached.substr(0, p1));
+    EXPECT_EQ(std::to_string(fid), cached.substr(p1 + 1, p2 - p1 - 1));
+    const std::uint64_t hardExp =
+        std::strtoull(cached.substr(p2 + 1, p3 - p2 - 1).c_str(), NULL, 10);
+    EXPECT_GT(hardExp, nowMs() + 7000000ULL);  // 硬上限约 2h
+    EXPECT_EQ(std::string("0"), cached.substr(p3 + 1));
 }
 
 TEST_F(DownloadOpenServiceTest, DownloadOpenRejectsDirectory) {

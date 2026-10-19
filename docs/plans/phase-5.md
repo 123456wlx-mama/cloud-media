@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建、OFF 档 zero_copy=0）；D-1 已验收（DownloadOpen 7/7，ctest 28/28）；D-1b 已验收：块 CRC 侧车 6/6、build-on 全量 81/81 连跑两遍、build-off 6/6、四表零残留；下一步 D-2 下载票据语义）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据 issue/verify/touch + 四段 value + Lua 原子续期，build-on 88/88 连跑两遍、build-off 14/14、ctest 30/30、四表零残留；并发取块留 D-5 收口；下一步 D-3 缓冲块发送器）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -184,7 +184,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 | server/logic/file_service.* | Create | 列表/游标/计数 | 禁止 OFFSET |
 | server/logic/play_service.* | Create | 播放上报 | 无缓存 |
 | server/logic/block_crc_sidecar.* | Create | .crc 读写/懒填充 | 与 blob 同生命周期 |
-| server/logic/download_ticket_cache.* | Create | ticket 签发/校验/滑动续期 | Redis 挂 fail-closed |
+| server/logic/download_ticket.* | Create | ticket 签发/校验/滑动续期 | Redis 挂 fail-closed |
 | server/logic/rate_limiter.* | Create | 连接/用户令牌桶 | 不阻塞 loop |
 | server/logic/jobs/expiry_job.* | Create | 上传过期扫描 | 5min/200 |
 | server/logic/jobs/orphan_gc_job.* | Create | 孤儿 blob GC | 24h 宽限/100 行/2GB |
@@ -1196,36 +1196,51 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 
 ### Task D-2：下载票据
 
-**Goal:** 实现 10010 的 ticket 签发、校验、滑动续期与 fail-closed。
+**Goal:** 实现 10010 的 ticket 签发、校验、滑动续期与 fail-closed，并替换 D-1 临时票据。
 
 **Files:**
-- Create: server/logic/download_ticket_cache.h
-- Create: server/logic/download_ticket_cache.cpp
-- Create: server/logic/tests/test_download_ticket.cpp
+- Create: server/logic/download_ticket.h、server/logic/download_ticket.cpp
+- Create: server/tests/logic/test_download_ticket.cpp
+- Modify: server/logic/download_service.h/.cpp、server/app/main.cpp
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt、server/tests/logic/test_download_open.cpp
 
 **Steps:**
-- [ ] 32 字节随机→64 hex；value=uid|fid|hard_exp|flags；SET PX 300000。
-- [ ] 每次成功取块 PEXPIRE 300000，但不超过 hard_exp（2h）。
-- [ ] 校验 uid/fid/过期；不匹配 1004；Redis 错误 4005/4007，拒绝。
-- [ ] 打开时若 uf_id 属于本人且未删，或 share_ticket 有效，签发；目录分享拒绝下载 1001。
-- [ ] 单测：正常签发/校验、过期、uid 不符、fid 不符、hard_exp、Redis 不可用拒绝。
+- [x] 系统随机源读取 32 字节→64 小写 hex；value=uid|fid|hard_exp|flags（毫秒硬上限、flags=0）；SET PX 300000。
+- [x] 提供 issue / verify / touch；verify 不续期；touch 原子比较当前 value 后 PEXPIRE，TTL=min(300000, hard_exp 剩余毫秒)，2h 硬上限不变。
+- [x] 校验 uid/fid/过期；不匹配、畸形值、缺键均 1004；Redis 错误 4005/4007，拒绝授权。
+- [x] D-1 openDownload 调用本模块签发，继续复用 CacheKey::downloadTicket；删除旧五段 value，size/md5 仅由 10012 返回。
+- [x] 保留 D-1 本人/未删除节点校验及目录拒绝；分享票据打开接线留给 Share Stage，本任务不新增第二套授权或 key。
+- [x] 七项测试加入 cm_logic_tests，以 add_test(NAME download_ticket ...) 注册（CMake 3.5）。
 
 **gtest 清单:**
-- TicketIssueAndValidate
-- TicketExpires
-- TicketWrongUser
-- TicketWrongFile
-- TicketHardExpiry
-- TicketRedisDownFailClosed
+- TicketIssueAndVerify
+- RejectsWrongUid
+- RejectsWrongFid
+- ExpiredRejected
+- TouchSlidesWithinHardExp
+- HardExpCapsTouch
+- RedisDownRejects（pool->shutdown()）
 
 **验收标准:**
-- [ ] 4 个连接共享一张票可并发取块。
-- [ ] 超过 5min 未取块后失效；持续取块可滑动到 2h。
-- [ ] Redis 不可用时新取块一律拒绝，不 fail-open。
+- [x] 本轮 build-on make -j8 成功；--gtest_list_tests 命中 7 项；CM_TEST_REDIS=1 目标实跑 7/7，通过且无 SKIP。
+- [x] 测试覆盖初始 5min TTL、verify 不续期、身份/文件不符拒绝、硬过期和缺键拒绝、滑动续期与不足 1s 硬上限、Redis 关闭拒绝、畸形数值拒绝。
+- [ ] 4 个真实下载连接共享票据并发取块（依赖 D-3/D-4 块发送器接线，本轮仍未执行，留 D-5 收口；票据 7 例已用真实 Redis db15 验证，非 mock）。
+- [x] 本轮全量 / build-off 回归已由验收侧复验：build-on 88/88 连跑两遍（3274ms / 3817ms）、ctest 30/30；build-off 14/14（DownloadTicket 7 + DownloadOpen 7，零警告）；四表零残留、server/logic 无 mysql.h/hiredis、Redis 票据键零残留。真实 5min/2h 墙钟等待未做，由 shrinkTtl/overwriteTicket 缩短 TTL 等价覆盖语义（TTL 300s、硬过期封顶、滑动续期均有断言）。
+
+**验证记录（2026-10-19）:**
+- 用户逐项明确授权本轮内网 VM 同步与指定构建/目标测试，作为 Execution Policy 的本轮例外；未下载依赖。
+- 保留已有未提交草稿，按用户确认的恢复路径先补回归断言；修正前同一目标 5/7（畸形数值及不足 1s 续期失败），修正后 7/7。
+- VM 工作目录：/home/colin/cloud-media/build-on。
+- 构建：make -j8（退出码 0）。
+- 列表：./bin/cm_logic_tests --gtest_filter='DownloadTicket*' --gtest_list_tests（7 项，退出码 0）。
+- 实跑：CM_TEST_REDIS=1 ./bin/cm_logic_tests --gtest_filter='DownloadTicket*'（7/7，0 SKIP，退出码 0）。
+- Lua 原子执行当前 value 比较与毫秒续期：先 PEXPIREAT hard_exp 定绝对上限，再 PEXPIRE min(PTTL,300000)；中途失效/被替换返回 1004，不续活。
+- 验收侧修复一处测试缺陷：`DownloadTicketTest::TearDown` 在 `acquire()` 的 conn 尚未归还时就调 `m_redis->shutdown()`，`RedisCore::shutdown` 的 `wait_for(5s, inUse==0)` 因此每个用例硬等 5 秒（7 例共 30s）。已给 conn 加内层作用域先归还再 shutdown，目标用例耗时 30s → 8ms。
 
 **风险:**
 - ticket 泄漏 → 视为 bearer，绑定 uid 校验；日志不打印完整 ticket。
 - 2h 硬上限导致超长下载中断 → 重新 10010（start_block=缺失块）换票，不丢进度。
+- 成功取块后调用 touch 的业务接线由后续块发送器实现；本轮仅交付票据模块与 openDownload 迁移。
 
 ---
 
