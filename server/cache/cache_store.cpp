@@ -143,6 +143,18 @@ std::string CacheKey::downloadDone(std::uint64_t uid,
     return join("cm:v1:dl:done:" + std::to_string(uid) + ":", ticket);
 }
 
+std::string CacheKey::shareTicket(const std::string& token) {
+    return join("cm:v1:share:ticket:", token);
+}
+
+std::string CacheKey::shareFail(const std::string& code,
+                                const std::string& scope) {
+    if (!isValidShareCode(code) || !isSafeKey(scope)) {
+        return std::string();
+    }
+    return "cm:v1:share:fail:" + code + ":" + scope;
+}
+
 std::int64_t jitterTtlMs(std::int64_t baseMs, int jitterPercent,
                          int randPercent) {
     if (baseMs <= 0) {

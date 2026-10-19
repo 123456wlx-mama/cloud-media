@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；Download Stage 已收口（D-0~D-6 全部验收：D-6 下载服务与 handlers 接线，build-on 114/114 连跑两遍、build-off 109/109、ctest 34/34、四表零残留）；E2E 项「4 连接并发 50MB」与「Redis 不可用拒绝」留 E-3/E-4 收口；下一步 Share Stage（S-1 ShareService））
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；Download Stage 已收口（D-0~D-6）；S-1 已验收：ShareService 9/9、build-on 123/123 连跑两遍、build-off 9/9、ctest 35/35、四表零残留；下一步 S-2 RecycleService）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1463,15 +1463,26 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 **Files:**
 - Create: server/logic/share_service.h
 - Create: server/logic/share_service.cpp
-- Create: server/logic/tests/test_share_service.cpp
+- Create: server/tests/logic/test_share_service.cpp（计划原文写 server/logic/tests/，实际落 server/tests/logic/）
+- Modify: server/cache/cache_store.h/.cpp（CacheKey::shareTicket / shareFail）
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt
 
 **Steps:**
-- [ ] 码生成：31 字符表 + 拒绝采样；INSERT 1062 重试 5 次；统一大写。
-- [ ] 有效期：0→9999 哨兵、1→+1d、2→+7d；wire 0 表示永久。
-- [ ] 提取码：1000~9999；5 次/10min 锁定；Redis 不可用 fail-closed 4008。
-- [ ] 缓存：share/{code} 5min±10%；miss 60s；取消/改名/删除失效。
-- [ ] req_id 幂等 10min；Redis 不可用允许重复创建但不损坏数据。
-- [ ] 测试：字符表、碰撞重试、提取码、锁定、过期、取消、引用计数不变。
+- [x] 码生成：31 字符表 + 拒绝采样；INSERT 1062 重试 5 次；统一大写（`ShareService::generateCode` + `create` 内重试循环）。
+- [x] 有效期：0→9999 哨兵、1→+1d、2→+7d；wire 0 表示永久（DAO 在 SQL 内算 DATETIME，服务层返回本地 now+days）。
+- [x] 提取码：1000~9999；5 次/10min 锁定；Redis 不可用 fail-closed 4008（Lua INCR+PEXPIRE 固定窗口）。
+- [x] 缓存：share/{code} 5min±10%；miss 60s；取消失效（CacheStore put/get/invalidate；改名/删除失效留 S-2/S-3 接线）。
+- [x] req_id 幂等 10min；Redis 不可用允许重复创建但不损坏数据（get 命中回放；miss/error 走 DB，uk_s_code 兜底）。
+- [x] 测试：字符表、碰撞重试、提取码、锁定、过期、取消、引用计数不变（8 例 + 补充 Redis 挂 fail-closed 4008 第 9 例）。
+
+**实施记录（2026-10-19）：**
+- `ShareService` 只经 `ShareDao`/`FileDao` 与 `CacheStore`/`RedisPool` 访问存储，不 include mysql.h/hiredis/net。
+- 码生成注入 `ShareCodeGenerator`（默认 `generateCode`，31 字符表 + `uniform_int_distribution` 拒绝采样），碰撞重试用例注入固定序列「222222→333333」。
+- 提取码锁定键 `cm:v1:share:fail:{code}:{scope}`（scope=连接 IP），Lua `INCR + 首次 PEXPIRE 10min`；读计数 ≥5 判定锁定，锁定期间不比较直接 2004；Redis 挂回 4008（fail-closed）。
+- 分享缓存值 = `status|expireAtMs|userId|ufId|fileId|accessRequired|accessCode`（accessCode 末位、4 位数字无 '|'）；fileName/size/md5 仍实时查节点/blob，天然吸收改名；`share:miss` 空值缓存 60s。
+- `open` 归一化码（大写去空格）→ 缓存/回源（fail-open）→ 状态/过期校验 → 提取码 → 节点+blob → 签发 share_ticket（`cm:v1:share:ticket:{token}` 10min，best-effort）。
+- `cancel` 复用 ShareDao.cancel（幂等），成功后 DEL share 缓存；already 时也 DEL 一次覆盖脏缓存。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - ShareCodeAlphabetOnly
@@ -1482,15 +1493,17 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - ShareExpired
 - ShareCancelIdempotent
 - ShareAccessDoesNotChangeRefCount
+- ShareOpenRedisDownRejectsAccessCode（补充：Redis 挂 fail-closed 4008）
 
 **验收标准:**
-- [ ] 1000 次生成无易混字符；重复码重试成功。
-- [ ] 第 6 次错误提取码起锁定 10min；Redis 挂返回 4008。
-- [ ] 访问分享前后 f_ref_count 不变。
+- [x] 1000 次生成无易混字符；重复码重试成功。（ShareCodeAlphabetOnly / ShareCodeCollisionRetry 通过；码生成用 uniform_int_distribution 拒绝采样无模偏差，注入生成器固定「222222→333333」验证 1062 重试 5 次后成功）
+- [x] 第 6 次错误提取码起锁定 10min；Redis 挂返回 4008。（ShareOpenWrongCodeLocks 通过：5 次错误各回 2004，第 6 次给正确码也被拒（锁定期间不比较）；ShareOpenRedisDownRejectsAccessCode 通过：4008 fail-closed）
+- [x] 访问分享前后 f_ref_count 不变。（ShareAccessDoesNotChangeRefCount 通过：loadBlob 前后 refCount 相等）
+- [x] ctest -R share_service 命中 9 例且全绿。（2026-10-19：`--gtest_list_tests` 命中 9 例；有 DB+Redis 档 ShareServiceTest 9/9 passed 326ms；build-on 全量 123/123 连跑两遍（4588ms / 4864ms）、ctest 35/35；build-off 零警告 9/9；四表（t_share/t_user_file/t_file/t_user）零残留、share_service 无 net/mysql.h/hiredis）
 
 **风险:**
 - 枚举 6 位码 → IP 30 次/分钟限流；分享码不是秘密，但不能无限试。
-- 缓存显示名过期 → 改名/移动必须 DEL share key。
+- 缓存显示名过期 → 改名/移动必须 DEL share key（当前 open 实时查节点名，改名后即时正确；改名/删除的缓存失效在 S-2/S-3 接线时补）。
 
 ---
 

@@ -31,6 +31,9 @@ public:
     static std::string rebuildLock(const std::string& key);
     static std::string downloadTicket(const std::string& token);
     static std::string downloadDone(std::uint64_t uid, const std::string& ticket);
+    static std::string shareTicket(const std::string& token);
+    // 提取码失败计数：scope 为连接标识（IP），必须通过 isSafeKey。
+    static std::string shareFail(const std::string& code, const std::string& scope);
 
     static bool isSafeKey(const std::string& key);
 
