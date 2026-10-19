@@ -125,6 +125,9 @@ public:
     ErrorCode listDoneIndexes(const std::string& taskId,
                               std::vector<std::uint32_t>* out);
 
+    // 按 c_index 升序返回任务的全部分片行（含 c_state=0），供合并逐片校验。
+    ErrorCode listChunks(const std::string& taskId, std::vector<ChunkRow>* out);
+
     ErrorCode sumDoneBytes(const std::string& taskId, std::uint64_t* bytes);
 
     // 用 t_chunk 重算出的值修正计数缓存（tr_done_chunks / tr_offset 都是派生值）。

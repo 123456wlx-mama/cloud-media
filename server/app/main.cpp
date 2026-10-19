@@ -143,6 +143,16 @@ void sendContinueUploadRs(const ConnectionPtr& conn, std::uint32_t seq,
                      payload);
 }
 
+void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
+                          const cm::protocol::UploadCompleteRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::UploadCompleteRs, seq,
+                     payload);
+}
+
 // 10004：业务线程执行；UID 未登录时直接回 1004。
 void handleUploadInit(const ConnectionPtr& conn,
                       const cm::protocol::Frame& frame,
@@ -231,6 +241,35 @@ void handleContinueUpload(const ConnectionPtr& conn,
     sendContinueUploadRs(conn, frame.seq, rs);
 }
 
+// 10030：合并 + 落库；UID 未登录时直接回 1004。
+void handleUploadComplete(const ConnectionPtr& conn,
+                          const cm::protocol::Frame& frame,
+                          ConnStateTable& states,
+                          cm::logic::UploadService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::UploadCompleteRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendUploadCompleteRs(conn, frame.seq, rs);
+        return;
+    }
+
+    cm::protocol::UploadCompleteRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendUploadCompleteRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.completeUpload(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendUploadCompleteRs(conn, frame.seq, rs);
+}
+
 int runServer(const cm::ServerConfig& cfg) {
     // 客户端断开后写数据不能把进程写死（TcpConnection 的 send 已用 MSG_NOSIGNAL，
     // 这里再兜住 sendfile/其他路径）。
@@ -269,7 +308,7 @@ int runServer(const cm::ServerConfig& cfg) {
     cm::cache::CacheStoreOptions cacheOptions;
     cm::cache::CacheStore cache(*redis, cacheOptions);
 
-    cm::logic::UploadService uploadService(*mysql, cache);
+    cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
 
     net::EventLoop loop;
@@ -304,6 +343,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleContinueUpload(conn, frame, states, uploadService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register ContinueUpload failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::UploadCompleteRq),
+            [&states, &uploadService](const ConnectionPtr& conn,
+                                      const cm::protocol::Frame& frame) {
+                handleUploadComplete(conn, frame, states, uploadService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register UploadComplete failed\n");
         return 1;
     }
 

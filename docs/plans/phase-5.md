@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（U-3b 已验收（285a820）；U-4 已验收：ContinueUpload 8/8、cm_logic_tests 54/54 连跑两遍、ctest 27/27、五表零残留；下一步 U-5 UploadComplete 合并与落库）
+**Status:** In Progress（U-4 已验收（f029214）；U-5 已验收：UploadComplete 8/8 连跑两遍、cm_logic_tests 62/62 连跑两遍、ctest 28/28、四表零残留；遗留 status=7 重试死锁待 U-6 裁决；下一步 U-6 上传恢复与过期清理）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -956,42 +956,60 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 **Goal:** 实现 10030：选主、逐片校验、整文件 MD5、blob rename、sidecar 生成、事务落库、坏片回传。
 
 **Files:**
-- Modify: server/logic/upload_service.cpp
-- Create: server/logic/upload_merge_job.h
-- Create: server/logic/upload_merge_job.cpp
-- Create: server/logic/tests/test_upload_complete.cpp
+- Modify: server/logic/upload_service.h、server/logic/upload_service.cpp
+- Modify: server/db/transfer_dao.h、server/db/transfer_dao.cpp（listChunks）
+- Modify: server/db/file_dao.h、server/db/file_dao.cpp（事务内插节点、按 blob 查活跃节点）
+- Modify: server/app/main.cpp（10030 路由 + dataDir 注入）
+- Create: server/tests/logic/test_upload_complete.cpp
+- Modify: server/tests/logic/CMakeLists.txt
 
 **Steps:**
-- [ ] 先校验 done_chunks==total 且 SUM(c_size)==total_size；缺片回 3002 + 前 32 个缺失下标。
-- [ ] 条件 UPDATE status 1→7 选主；失败读状态决定幂等/重试/过期。
-- [ ] IO 池合并：1MB 缓冲；逐片 stat+MD5+写 merged；同时更新整文件 MD5 与每 4MB 块 CRC。
-- [ ] 坏片：记录 bad_index，删除坏片行/文件，计数回退，status→1，回 3002 + 列表。
-- [ ] 整文件 MD5 不符：status→3，返回 3003，清理临时目录。
-- [ ] 成功后：fsync merged；用 BlockCrcSidecar::writeFromMerge 写 .crc 临时文件并 fsync；blob 已存在则删 merged，否则 rename；fsync 目录。本任务只实现 sidecar 写入，读取/懒填充在 D-1 扩展。
-- [ ] 事务：INSERT t_file ON DUPLICATE +1 → SELECT f_id → 插入 t_user_file（自动改名/复用）→ status=4；提交后回填 Redis。
-- [ ] 崩溃窗口：blob 已存在但任务 7；重试时校验 MD5 后跳过 rename，直接落库。
+- [x] electMerge 条件 UPDATE（1→7）选主；不存在/非本人/抢不到一律 3004；status=4 幂等回放。
+- [x] 逐片读 tmp/<task>/<index>.bin（1MB 缓冲），流式更新整文件 MD5，并逐片比对 c_md5；缺片/尺寸不符/MD5 不符进 bad_indexes（≤1024）。
+- [x] 坏片：7→1 允许重传，回 1001 + bad_indexes；不 rename、不落库。
+- [x] 整文件 MD5 与 tr_file_md5 不符：7→1，回 3003。
+- [x] blob 已存在则只落节点 + ref_count+1；否则 mkdir + rename；rename 失败回 1005 且保持 status=7。
+- [x] 单事务：INSERT t_file ON DUPLICATE +1 → 插 t_user_file（自动改名）→ status=4 + 计数；事务内无文件 IO。
+- [x] sidecar <md5>.meta（size/md5/created_at）best-effort；成功后清理 tmp/<task_id>。
+
+**实施记录（2026-10-19）：**
+- 合并与落库全部放在 `UploadService::completeUpload`（按本次任务要求），未新增 upload_merge_job.*；文件 IO 在事务外，事务只做 blob/节点/计数/状态。
+- 选主用 `TransferDao::electMerge`（WHERE tr_status IN (0,1)）；抢不到直接 3004，不区分“正在合并/已取消/过期”。
+- 逐片校验复用 `TransferDao::listChunks`（一次查询，按 c_index 升序）；每个分片边读边算 MD5，同时喂给整文件 MD5，坏片最多返回 1024 个。
+- blob 落盘：目标 `<dataDir>/blobs/aa/bb/<md5>`；DB 已有同 md5 或目标文件已存在（并发秒传）则丢弃 merged；rename 失败保留 merged 与 status=7。
+- 落库事务失败时不删已 rename 的 blob，只留 TODO(log) 标注“孤儿 blob 待 GC”（避免误删他人数据）。
+- sidecar 按本次指令落 `<md5>.meta`（size/md5/created_at），与 06 §6.3 的 `.crc`（块 CRC，供 sendfile）不同；D-1/D-4 的零拷贝块 CRC 仍需另行实现，不能依赖本文件。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
-- UploadCompleteMergesAndCreatesBlob
-- UploadCompleteWritesSidecar
-- UploadCompleteBadChunkReturnsIndexes
-- UploadCompleteWholeFileMd5Mismatch
-- UploadCompleteIdempotentDone
-- UploadCompleteMergingReturnsRetry
-- UploadCompleteBlobExistsSkipsRename
-- UploadCompleteAutoRenameAtFinalize
-- UploadCompleteCrashAfterRenameRecovers
+- UploadCompleteMergesAndStores
+- UploadCompleteIdempotent
+- UploadCompleteBadChunkReportsIndexes
+- UploadCompleteWholeMd5Mismatch
+- UploadCompleteElectConflictReturns3004
+- UploadCompleteBlobExistsReusesRef
+- UploadCompleteRenameFailureKeepsStatus7
+- UploadCompleteCleansTmpDir
 
 **验收标准:**
-- [ ] 50MB/13 片合并后 blob 大小/MD5 正确；sidecar block_count=13。
-- [ ] 坏片重传后只需补坏片即可成功。
-- [ ] 同一 task 重复 complete 返回同一 file_id/uf_id，不重复加 ref_count。
-- [ ] 合并期间 loop 不被阻塞（IO 池执行；Complete 请求在业务池等待）。
+- [x] 3 片合并后 blob 大小/整文件 MD5 正确；sidecar 写入 size/md5。（2026-10-19：VM 构建零警告；无 DB 档 8 例 SKIP；有 DB 档 UploadComplete* 8/8 passed 402ms，第二遍 408ms 仍 8/8。MergesAndStores 断言 blob 字节内容 == 拼接原文、`.meta` 含 size/md5、f_state=1、f_path 为 md5 前 2/次 2 分片）
+- [x] 坏片只回 bad_indexes，任务回到 1，tmp 保留可重传。（BadChunkReportsIndexes 断言 bad_indexes={1}、status 回 1、blob 不存在、tmp 目录仍在）
+- [x] 同一 task 重复 complete 返回同一 file_id/uf_id，不重复加 ref_count。（Idempotent 用例通过）
+- [x] 同内容第二个任务复用 blob，ref_count=2、节点自动改名；tmp 成功后被清理。（BlobExistsReusesRef 与 CleansTmpDir 通过）
+- [x] 回归与清理：cm_logic_tests 62/62 连跑两遍（2675ms / 2587ms）、ctest 28/28；t_file/t_user_file/t_transfer_task/t_chunk 零残留；/tmp/cm_complete_* 0 个；server/logic 无 mysql.h/hiredis。
 
 **风险:**
 - 合并占满 IO 池 → 全局并发 2；其余排队，超 30s 回 1006。
 - rename 与已有 blob 竞争 → 同内容只保留已有 inode；绝不覆盖正在读的文件。
 - 99 次改名失败 → 事务回滚并删除本次新建 blob/sidecar；已有 blob 不删。
+- **[U-6 必须修] status=7 的重试死锁**：rename/事务失败后按指令保持 7，但 `electMerge` 只接受 0/1，
+  客户端立刻重试会得到 3004；重启时 `resetMergingOnStartup` 把 7→2，而 electMerge 同样不接受 2，任务永久不可合并。
+  U-6 裁决方案：electMerge 的 WHERE 改为 `tr_status IN (0,1,2)`，失败路径改为回 1（1005 可重试），
+  7 只保留给“进程崩溃中”，由启动 7→2 兜底；同步把 `UploadCompleteRenameFailureKeepsStatus7` 改为
+  `...ReturnsTo1`。
+- sidecar 是 `<md5>.meta`（size/md5/created_at），与 06 §6.3 供 sendfile 的 `.crc` 是两种文件，D-1/D-4 单独实现。
+- 测试可重复性：服务层在事务内插入的 blob 不在 DaoTestBase 登记表里，已在用例 TearDown 按任务 md5 补清；
+  否则第二次运行会命中旧 blob 走复用分支（本次验收即复现：ref_count=2、文件不落盘）。
 
 ---
 

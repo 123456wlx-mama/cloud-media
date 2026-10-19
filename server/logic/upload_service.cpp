@@ -1,13 +1,18 @@
 #include "upload_service.h"
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -90,11 +95,242 @@ bool isExpired(const std::string& expireAt) {
     return !expireAt.empty() && expireAt < nowUtcDatetime();
 }
 
+// 合并时单次读写缓冲；与 06 §5.5 的 1MB 缓冲一致。
+const std::size_t kMergeBufferSize = 1024 * 1024;
+// 10031 的坏片列表上限；超出只返回前 1024 个。
+const std::size_t kMaxBadIndexes = 1024;
+
+bool makeDirs(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::string current;
+    current.reserve(path.size());
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        current.push_back(path[i]);
+        if (path[i] != '/' || current.size() == 1) {
+            continue;
+        }
+        if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+            return false;
+        }
+    }
+    if (::mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
+        return false;
+    }
+    return true;
+}
+
+bool writeAll(int fd, const char* data, std::size_t len) {
+    std::size_t written = 0;
+    while (written < len) {
+        const ssize_t n = ::write(fd, data + written, len - written);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0) {
+            return false;
+        }
+        written += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+std::string chunkFileName(std::uint32_t index) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "%u.bin", index);
+    return std::string(name);
+}
+
+std::uint64_t expectedChunkSize(const cm::db::TransferTaskRow& task,
+                                std::uint32_t index) {
+    const std::uint64_t offset =
+        static_cast<std::uint64_t>(index) * task.chunkSize;
+    if (offset >= task.totalSize) {
+        return 0;
+    }
+    const std::uint64_t remain = task.totalSize - offset;
+    return remain < task.chunkSize ? remain : task.chunkSize;
+}
+
+void addBadIndex(std::vector<std::uint32_t>* bad, std::uint32_t index) {
+    if (bad->size() < kMaxBadIndexes) {
+        bad->push_back(index);
+    }
+}
+
+// 只删本任务目录；rename 成功后目录里只剩分片文件与临时文件。
+void removeTree(const std::string& path) {
+    DIR* dir = ::opendir(path.c_str());
+    if (dir != NULL) {
+        struct dirent* entry = NULL;
+        while ((entry = ::readdir(dir)) != NULL) {
+            const std::string name = entry->d_name;
+            if (name == "." || name == "..") {
+                continue;
+            }
+            removeTree(path + "/" + name);
+        }
+        ::closedir(dir);
+    }
+    ::remove(path.c_str());
+}
+
+std::string utcNowIso8601() {
+    const std::time_t now = std::time(NULL);
+    std::tm tm;
+    std::memset(&tm, 0, sizeof(tm));
+    ::gmtime_r(&now, &tm);
+
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return std::string(buffer);
+}
+
+// sidecar <md5>.meta：size/md5/created_at，失败只影响诊断，不影响主流程。
+bool writeBlobMeta(const std::string& blobPath,
+                   std::uint64_t size,
+                   const std::string& md5) {
+    const std::string tmpPath = blobPath + ".meta.tmp";
+    const std::string finalPath = blobPath + ".meta";
+
+    const int fd = ::open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        return false;
+    }
+
+    char body[160];
+    const int len = std::snprintf(
+        body, sizeof(body), "size=%llu\nmd5=%s\ncreated_at=%s\n",
+        static_cast<unsigned long long>(size), md5.c_str(),
+        utcNowIso8601().c_str());
+    bool ok = len > 0 && static_cast<std::size_t>(len) < sizeof(body) &&
+              writeAll(fd, body, static_cast<std::size_t>(len));
+    if (ok && ::fsync(fd) != 0) {
+        ok = false;
+    }
+    if (::close(fd) != 0) {
+        ok = false;
+    }
+    if (!ok || ::rename(tmpPath.c_str(), finalPath.c_str()) != 0) {
+        ::unlink(tmpPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+// 按 index 升序读分片并写 merged，同时更新整文件 MD5 与逐片 MD5 校验。
+// 坏片只记录下标、不中断扫描；IO 失败返回 NoSpace 并删除半成品。
+cm::ErrorCode mergeChunks(const std::string& dataDir,
+                          const cm::db::TransferTaskRow& task,
+                          const std::map<std::uint32_t, cm::db::ChunkRow>& chunks,
+                          std::string* mergedPath,
+                          std::string* wholeMd5,
+                          std::vector<std::uint32_t>* badIndexes) {
+    const std::string taskDir = dataDir + "/tmp/" + task.taskId;
+    *mergedPath = taskDir + "/merged.bin.tmp";
+    wholeMd5->clear();
+
+    // 零分片的任务也要能进入逐片校验（全部回 bad_indexes），而不是直接报磁盘错误。
+    if (!makeDirs(taskDir)) {
+        return cm::ErrorCode::NoSpace;
+    }
+
+    const int outFd = ::open(mergedPath->c_str(),
+                             O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (outFd < 0) {
+        return cm::ErrorCode::NoSpace;
+    }
+
+    cm::Md5 whole;
+    std::vector<char> buffer(kMergeBufferSize);
+    bool ioFailure = false;
+
+    for (std::uint32_t index = 0; index < task.totalChunks; ++index) {
+        const std::map<std::uint32_t, cm::db::ChunkRow>::const_iterator it =
+            chunks.find(index);
+        if (it == chunks.end() || it->second.state != 1) {
+            addBadIndex(badIndexes, index);  // 缺片或未确认
+            continue;
+        }
+
+        const std::uint64_t expected = expectedChunkSize(task, index);
+        const std::string chunkPath = taskDir + "/" + chunkFileName(index);
+        struct stat st;
+        if (expected == 0 || ::stat(chunkPath.c_str(), &st) != 0 ||
+            static_cast<std::uint64_t>(st.st_size) != expected) {
+            addBadIndex(badIndexes, index);
+            continue;
+        }
+
+        const int inFd = ::open(chunkPath.c_str(), O_RDONLY);
+        if (inFd < 0) {
+            addBadIndex(badIndexes, index);
+            continue;
+        }
+
+        cm::Md5 chunkMd5;
+        bool readOk = true;
+        for (;;) {
+            const ssize_t n = ::read(inFd, &buffer[0], buffer.size());
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                readOk = false;
+                break;
+            }
+            if (n == 0) {
+                break;
+            }
+            chunkMd5.update(&buffer[0], static_cast<std::size_t>(n));
+            whole.update(&buffer[0], static_cast<std::size_t>(n));
+            if (!writeAll(outFd, &buffer[0], static_cast<std::size_t>(n))) {
+                ioFailure = true;
+                break;
+            }
+        }
+        ::close(inFd);
+
+        if (ioFailure) {
+            break;
+        }
+        if (!readOk || chunkMd5.hex() != it->second.md5) {
+            addBadIndex(badIndexes, index);
+        }
+    }
+
+    if (::fsync(outFd) != 0) {
+        ioFailure = true;
+    }
+    if (::close(outFd) != 0) {
+        ioFailure = true;
+    }
+
+    if (ioFailure) {
+        ::unlink(mergedPath->c_str());
+        return cm::ErrorCode::NoSpace;
+    }
+    if (!badIndexes->empty()) {
+        ::unlink(mergedPath->c_str());
+        return cm::ErrorCode::Ok;  // 调用方按 badIndexes 决定回包
+    }
+
+    *wholeMd5 = whole.hex();
+    return cm::ErrorCode::Ok;
+}
+
 }  // namespace
 
 UploadService::UploadService(cm::db::MysqlPool& mysql,
-                             cm::cache::CacheStore& cache)
-    : m_mysql(mysql), m_cache(cache) {
+                             cm::cache::CacheStore& cache,
+                             const std::string& dataDir)
+    : m_mysql(mysql), m_cache(cache), m_dataDir(dataDir) {
 }
 
 ErrorCode UploadService::init(std::uint64_t uid,
@@ -300,6 +536,220 @@ ErrorCode UploadService::doContinue(cm::db::MysqlConn& conn,
     out->doneBytes = doneBytes;
     out->bitmap = bitmap;
     out->expireAtMs = task.expireAtMs;
+    return ErrorCode::Ok;
+}
+
+ErrorCode UploadService::completeUpload(
+    std::uint64_t uid,
+    const cm::protocol::UploadCompleteRq& rq,
+    cm::protocol::UploadCompleteRs* out) {
+    if (out == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::UploadCompleteRs();
+
+    if (uid == 0 || !isHex32(rq.taskId) || m_dataDir.empty()) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode code = (m_mysql.lastError() == ErrorCode::Ok)
+                                   ? ErrorCode::DbPoolTimeout
+                                   : m_mysql.lastError();
+        out->code = static_cast<std::uint32_t>(code);
+        return code;
+    }
+
+    cm::db::FileDao fileDao(*conn);
+    cm::db::TransferDao transferDao(*conn);
+
+    cm::db::TransferTaskRow task;
+    ErrorCode rc = transferDao.findTaskByTaskId(rq.taskId, &task);
+    if (rc == ErrorCode::NotFound) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::TaskNotFound);
+        return ErrorCode::TaskNotFound;
+    }
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+    if (task.userId != uid) {
+        // 不存在与非本人同样回 3004，不泄露任务存在性。
+        out->code = static_cast<std::uint32_t>(ErrorCode::TaskNotFound);
+        return ErrorCode::TaskNotFound;
+    }
+
+    // 已完成：直接回放结果，不重复合并、不重复加引用计数。
+    if (task.status == 4) {
+        out->code = 0;
+        out->fileMd5 = task.fileMd5;
+        out->size = task.totalSize;
+        out->fileName = task.fileName;
+
+        cm::db::BlobRow blob;
+        if (fileDao.findBlobByMd5(task.fileMd5, &blob) == ErrorCode::Ok) {
+            out->fileId = blob.fid;
+            cm::db::UserFileRow node;
+            if (fileDao.findActiveNodeByFid(uid, task.parentUfId, blob.fid,
+                                            &node) == ErrorCode::Ok) {
+                out->ufId = node.ufId;
+                out->fileName = node.name;
+            }
+        }
+        conn.reset();
+        return ErrorCode::Ok;
+    }
+
+    // 选主：status 1→7。抢不到（含正在合并/已取消/过期）一律 3004。
+    bool elected = false;
+    rc = transferDao.electMerge(uid, rq.taskId, &elected);
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+    if (!elected) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::TaskNotFound);
+        return ErrorCode::TaskNotFound;
+    }
+
+    std::vector<cm::db::ChunkRow> chunkRows;
+    rc = transferDao.listChunks(rq.taskId, &chunkRows);
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+    std::map<std::uint32_t, cm::db::ChunkRow> chunks;
+    for (std::size_t i = 0; i < chunkRows.size(); ++i) {
+        chunks[chunkRows[i].index] = chunkRows[i];
+    }
+
+    // 文件 IO 全部在事务外：合并、逐片校验、整文件 MD5。
+    std::string mergedPath;
+    std::string wholeMd5;
+    std::vector<std::uint32_t> badIndexes;
+    rc = mergeChunks(m_dataDir, task, chunks, &mergedPath, &wholeMd5,
+                     &badIndexes);
+    if (rc != ErrorCode::Ok) {
+        // 保留 tmp 与 status=7，等待重启恢复或人工排查。
+        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+
+    // 坏片：7→1 允许重传；merged 已由 mergeChunks 删除。
+    if (!badIndexes.empty()) {
+        std::vector<std::uint8_t> from(1, 7);
+        bool changed = false;
+        // TODO(log): markStatus 失败时记 WARN（任务会停在 7，重启回 2）。
+        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        out->badIndexes = badIndexes;
+        return ErrorCode::InvalidArgument;
+    }
+
+    // 整文件 MD5 与客户端声明不符：7→1，客户端重新 init。
+    if (wholeMd5 != task.fileMd5) {
+        std::vector<std::uint8_t> from(1, 7);
+        bool changed = false;
+        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+        out->code = static_cast<std::uint32_t>(ErrorCode::Md5Mismatch);
+        return ErrorCode::Md5Mismatch;
+    }
+
+    const std::string relPath =
+        wholeMd5.substr(0, 2) + "/" + wholeMd5.substr(2, 2) + "/" + wholeMd5;
+    const std::string blobDir = m_dataDir + "/blobs/" + wholeMd5.substr(0, 2) +
+                                "/" + wholeMd5.substr(2, 2);
+    const std::string blobPath = blobDir + "/" + wholeMd5;
+
+    cm::db::BlobRow existingBlob;
+    bool blobExists = false;
+    if (fileDao.findBlobByMd5(wholeMd5, &existingBlob) == ErrorCode::Ok &&
+        existingBlob.state == 1) {
+        blobExists = true;
+    }
+
+    if (blobExists) {
+        // 已有同内容 blob：只落节点与计数，合并文件丢弃。
+        ::unlink(mergedPath.c_str());
+    } else if (::access(blobPath.c_str(), F_OK) == 0) {
+        // 并发秒传已把文件放到位：丢弃本次合并文件。
+        ::unlink(mergedPath.c_str());
+    } else {
+        if (!makeDirs(blobDir)) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::NoSpace);
+            return ErrorCode::NoSpace;
+        }
+        if (::rename(mergedPath.c_str(), blobPath.c_str()) != 0) {
+            // 保留 status=7 与 tmp，等待重试（重启会把 7 恢复成 2）。
+            out->code = static_cast<std::uint32_t>(ErrorCode::NoSpace);
+            return ErrorCode::NoSpace;
+        }
+    }
+
+    // 合并落库事务：事务内无文件 IO。
+    std::uint64_t fileId = 0;
+    std::uint64_t ufId = 0;
+    std::string finalName;
+    {
+        cm::db::Transaction tx(*conn);
+        if (!tx.valid()) {
+            rc = (conn->lastError() == ErrorCode::Ok) ? ErrorCode::DbUnavailable
+                                                      : conn->lastError();
+        } else {
+            cm::db::BlobWriteKind kind = cm::db::BlobWriteKind::Inserted;
+            rc = fileDao.insertBlobOnDuplicateIncrement(
+                wholeMd5, task.totalSize, relPath, &fileId, &kind);
+            if (rc == ErrorCode::Ok) {
+                rc = fileDao.insertUserFileAutoRenameInTx(
+                    uid, task.parentUfId, fileId, task.fileName, &ufId,
+                    &finalName);
+            }
+            if (rc == ErrorCode::Ok) {
+                rc = transferDao.syncDoneCounters(rq.taskId, task.totalChunks,
+                                                  task.totalSize);
+            }
+            if (rc == ErrorCode::Ok) {
+                std::vector<std::uint8_t> from(1, 7);
+                bool changed = false;
+                rc = transferDao.markStatus(uid, rq.taskId, from, 4, 0,
+                                            &changed);
+                if (rc == ErrorCode::Ok && !changed) {
+                    rc = ErrorCode::TaskNotFound;
+                }
+            }
+            if (rc == ErrorCode::Ok && !tx.commit()) {
+                rc = (tx.lastError() == ErrorCode::Ok) ? ErrorCode::DbQueryFailed
+                                                       : tx.lastError();
+            }
+        }
+    }
+
+    if (rc != ErrorCode::Ok) {
+        // 已 rename 的 blob 不删（避免误删他人数据），留给孤儿 GC 对账。
+        // TODO(log): 记 WARN「孤儿 blob 待 GC」+ md5 + f_path。
+        out->code = (rc == ErrorCode::TaskNotFound)
+                        ? static_cast<std::uint32_t>(ErrorCode::TaskNotFound)
+                        : static_cast<std::uint32_t>(cm::to_wire_code(rc));
+        return rc;
+    }
+
+    // sidecar 失败只 WARN，不影响上传结果。
+    if (!writeBlobMeta(blobPath, task.totalSize, wholeMd5)) {
+        // TODO(log): Logger 就绪后记 WARN（sidecar 写入失败）。
+    }
+
+    // 成功后清理本任务临时目录（分片 + merged 临时文件）。
+    removeTree(m_dataDir + "/tmp/" + rq.taskId);
+
+    out->code = 0;
+    out->fileId = fileId;
+    out->ufId = ufId;
+    out->fileName = finalName;
+    out->fileMd5 = wholeMd5;
+    out->size = task.totalSize;
+    conn.reset();
     return ErrorCode::Ok;
 }
 

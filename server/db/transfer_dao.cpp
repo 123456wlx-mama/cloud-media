@@ -429,6 +429,46 @@ ErrorCode TransferDao::listDoneIndexes(const std::string& taskId,
     return ErrorCode::Ok;
 }
 
+ErrorCode TransferDao::listChunks(const std::string& taskId,
+                                 std::vector<ChunkRow>* out) {
+    if (out == NULL || !isHex32(taskId)) {
+        return ErrorCode::InvalidArgument;
+    }
+    out->clear();
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "SELECT c_index, c_offset, c_size, c_md5, c_state, c_path "
+        "FROM t_chunk WHERE c_task_id = ? ORDER BY c_index ASC");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindString(0, taskId)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    for (;;) {
+        const PreparedStatement::FetchStatus status = stmt->fetchRow();
+        if (status == PreparedStatement::FetchStatus::End) {
+            break;
+        }
+        if (status == PreparedStatement::FetchStatus::Error) {
+            return stmt->lastError();
+        }
+        ChunkRow row;
+        row.index = static_cast<std::uint32_t>(stmt->getUInt64(0));
+        row.offset = stmt->getUInt64(1);
+        row.size = static_cast<std::uint32_t>(stmt->getUInt64(2));
+        row.md5 = stmt->getString(3);
+        row.state = static_cast<std::uint8_t>(stmt->getUInt64(4));
+        row.path = stmt->getString(5);
+        out->push_back(row);
+    }
+    return ErrorCode::Ok;
+}
+
 ErrorCode TransferDao::sumDoneBytes(const std::string& taskId,
                                     std::uint64_t* bytes) {
     if (bytes == NULL || !isHex32(taskId)) {

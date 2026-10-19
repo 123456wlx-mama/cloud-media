@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 #include "cm/base/error_code.h"
 #include "cm/protocol/messages/upload.h"
@@ -23,7 +24,11 @@ namespace logic {
 // 依赖只通过 cm::db 的 DAO 与 cm::cache::CacheStore，不直接使用 MySQL/Redis C API。
 class UploadService {
 public:
-    UploadService(cm::db::MysqlPool& mysql, cm::cache::CacheStore& cache);
+    // dataDir 是 tmp 与 blobs 的共同根（ServerConfig::dataDir）；
+    // 只有 completeUpload 使用，init/continueUpload 不依赖它。
+    UploadService(cm::db::MysqlPool& mysql,
+                  cm::cache::CacheStore& cache,
+                  const std::string& dataDir = std::string());
 
     UploadService(const UploadService&) = delete;
     UploadService& operator=(const UploadService&) = delete;
@@ -40,6 +45,12 @@ public:
                                  const cm::protocol::ContinueUploadRq& rq,
                                  cm::protocol::ContinueUploadRs* out);
 
+    // 10030：选主 → 逐片校验 + 合并 → blob 落盘 → 单事务落库。
+    // 坏片回 1001（带 bad_indexes），整文件 MD5 不符回 3003，rename 失败回 1005。
+    cm::ErrorCode completeUpload(std::uint64_t uid,
+                                 const cm::protocol::UploadCompleteRq& rq,
+                                 cm::protocol::UploadCompleteRs* out);
+
 private:
     cm::ErrorCode doContinue(cm::db::MysqlConn& conn,
                              std::uint64_t uid,
@@ -54,6 +65,7 @@ private:
 
     cm::db::MysqlPool& m_mysql;
     cm::cache::CacheStore& m_cache;
+    std::string m_dataDir;
 };
 
 }  // namespace logic

@@ -114,6 +114,20 @@ public:
                                        std::uint64_t* ufId,
                                        std::string* finalName);
 
+    // 不含事务：调用方必须已 BEGIN（UploadComplete 的合并落库事务复用同一事务）。
+    ErrorCode insertUserFileAutoRenameInTx(std::uint64_t uid,
+                                           std::uint64_t parentId,
+                                           std::uint64_t fid,
+                                           const std::string& name,
+                                           std::uint64_t* ufId,
+                                           std::string* finalName);
+
+    // 幂等回包：同用户同目录下指向该 blob 的活跃节点，取 uf_id 最大的一条。
+    ErrorCode findActiveNodeByFid(std::uint64_t uid,
+                                  std::uint64_t parentId,
+                                  std::uint64_t fid,
+                                  UserFileRow* out);
+
     // 秒传命中落库（06 §5.2 步骤 4），单事务：
     //  1) 同目录同名同 blob 的活跃节点已存在 → 直接复用，ref_count 不变（reused=true）；
     //  2) 否则 INSERT t_file ... ON DUPLICATE +1，再插入 t_user_file（名称冲突自动改名）。

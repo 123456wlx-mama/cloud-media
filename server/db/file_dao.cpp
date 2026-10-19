@@ -305,6 +305,55 @@ ErrorCode FileDao::createUserFileAutoRename(std::uint64_t uid,
     return ErrorCode::Ok;
 }
 
+ErrorCode FileDao::insertUserFileAutoRenameInTx(std::uint64_t uid,
+                                               std::uint64_t parentId,
+                                               std::uint64_t fid,
+                                               const std::string& name,
+                                               std::uint64_t* ufId,
+                                               std::string* finalName) {
+    if (ufId == NULL || finalName == NULL || uid == 0 || fid == 0 ||
+        name.empty() || name.size() > 255) {
+        return ErrorCode::InvalidArgument;
+    }
+    return insertNodeWithRename(uid, parentId, fid, false, name, ufId,
+                                finalName);
+}
+
+ErrorCode FileDao::findActiveNodeByFid(std::uint64_t uid,
+                                       std::uint64_t parentId,
+                                       std::uint64_t fid,
+                                       UserFileRow* out) {
+    if (out == NULL || uid == 0 || fid == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "SELECT uf_id, u_id, uf_parent_id, f_id, uf_name, uf_is_dir, "
+        "uf_deleted_at, uf_created_at, uf_updated_at "
+        "FROM t_user_file WHERE u_id = ? AND uf_parent_id = ? AND f_id = ? "
+        "AND uf_deleted_at = ? ORDER BY uf_id DESC LIMIT 1");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, uid) || !stmt->bindUInt64(1, parentId) ||
+        !stmt->bindUInt64(2, fid) || !stmt->bindString(3, kActiveDeletedAt)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+
+    const PreparedStatement::FetchStatus status = stmt->fetchRow();
+    if (status == PreparedStatement::FetchStatus::End) {
+        return ErrorCode::NotFound;
+    }
+    if (status == PreparedStatement::FetchStatus::Error) {
+        return stmt->lastError();
+    }
+    fillUserFileRow(*stmt, out);
+    return ErrorCode::Ok;
+}
+
 ErrorCode FileDao::insertNodeWithRename(std::uint64_t uid,
                                        std::uint64_t parentId,
                                        std::uint64_t fid,
