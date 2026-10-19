@@ -499,6 +499,29 @@ ErrorCode TransferDao::sumDoneBytes(const std::string& taskId,
     return ErrorCode::Ok;
 }
 
+ErrorCode TransferDao::deleteChunks(const std::string& taskId,
+                                   std::size_t limit,
+                                   std::size_t* deleted) {
+    if (deleted == NULL || !isHex32(taskId) || limit == 0 || limit > 1000) {
+        return ErrorCode::InvalidArgument;
+    }
+    *deleted = 0;
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "DELETE FROM t_chunk WHERE c_task_id = ? LIMIT ?");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindString(0, taskId) || !stmt->bindUInt64(1, limit)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+    *deleted = static_cast<std::size_t>(stmt->affectedRows());
+    return ErrorCode::Ok;
+}
+
 ErrorCode TransferDao::syncDoneCounters(const std::string& taskId,
                                         std::uint32_t doneChunks,
                                         std::uint64_t doneBytes) {
@@ -571,9 +594,11 @@ ErrorCode TransferDao::electMerge(std::uint64_t uid,
     *elected = false;
 
     // 一条条件 UPDATE 完成选举：affected_rows=1 者合并，天然幂等（06 §5.5）。
+    // 2(Paused) 也允许选主：重启把 7 改回 2 后，客户端必须能重新 complete；
+    // 7 只用于崩溃中断，不在候选状态里。
     std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
         "UPDATE t_transfer_task SET tr_status = 7 "
-        "WHERE tr_task_id = ? AND tr_user_id = ? AND tr_status IN (0, 1)");
+        "WHERE tr_task_id = ? AND tr_user_id = ? AND tr_status IN (0, 1, 2)");
     if (!stmt) {
         return m_conn.lastError();
     }
@@ -588,6 +613,8 @@ ErrorCode TransferDao::electMerge(std::uint64_t uid,
     return ErrorCode::Ok;
 }
 
+// 7 只表示「合并过程中进程崩溃」，启动时统一回 2(Paused)；
+// 正常失败的请求会自己回 1，不把 7 留成不可重试的终态。
 ErrorCode TransferDao::resetMergingOnStartup(std::uint64_t* affected) {
     if (affected == NULL) {
         return ErrorCode::InvalidArgument;

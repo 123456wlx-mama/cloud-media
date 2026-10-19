@@ -136,6 +136,12 @@ public:
                                std::uint32_t doneChunks,
                                std::uint64_t doneBytes);
 
+    // 分批删除任务分片（DELETE ... LIMIT ?），返回本批实际删除行数。
+    // 供过期清理使用，可重复调用（幂等）。
+    ErrorCode deleteChunks(const std::string& taskId,
+                           std::size_t limit,
+                           std::size_t* deleted);
+
     // 条件 UPDATE：只有当前状态在 allowedFrom 内才改，changed 反映 affected_rows。
     ErrorCode markStatus(std::uint64_t uid,
                          const std::string& taskId,
@@ -144,7 +150,8 @@ public:
                          std::int32_t errorCode,
                          bool* changed);
 
-    // status 1→7 选主：affected_rows=1 的调用方负责合并。
+    // 0/1/2 → 7 选主：affected_rows=1 的调用方负责合并。
+    // 7 只用于崩溃中断，不参与选主；重启由 resetMergingOnStartup 把 7 改回 2。
     ErrorCode electMerge(std::uint64_t uid, const std::string& taskId, bool* elected);
 
     // 服务启动时调用：合并中断的任务 7→2（回到 Paused），不处理其他状态。

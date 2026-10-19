@@ -20,6 +20,7 @@
 #include "cm/base/md5.h"
 
 #include "cache/cache_store.h"
+#include "logic/upload_fs.h"
 #include "db/file_dao.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
@@ -100,27 +101,6 @@ const std::size_t kMergeBufferSize = 1024 * 1024;
 // 10031 的坏片列表上限；超出只返回前 1024 个。
 const std::size_t kMaxBadIndexes = 1024;
 
-bool makeDirs(const std::string& path) {
-    if (path.empty()) {
-        return false;
-    }
-    std::string current;
-    current.reserve(path.size());
-    for (std::size_t i = 0; i < path.size(); ++i) {
-        current.push_back(path[i]);
-        if (path[i] != '/' || current.size() == 1) {
-            continue;
-        }
-        if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
-            return false;
-        }
-    }
-    if (::mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
-        return false;
-    }
-    return true;
-}
-
 bool writeAll(int fd, const char* data, std::size_t len) {
     std::size_t written = 0;
     while (written < len) {
@@ -160,23 +140,6 @@ void addBadIndex(std::vector<std::uint32_t>* bad, std::uint32_t index) {
     if (bad->size() < kMaxBadIndexes) {
         bad->push_back(index);
     }
-}
-
-// 只删本任务目录；rename 成功后目录里只剩分片文件与临时文件。
-void removeTree(const std::string& path) {
-    DIR* dir = ::opendir(path.c_str());
-    if (dir != NULL) {
-        struct dirent* entry = NULL;
-        while ((entry = ::readdir(dir)) != NULL) {
-            const std::string name = entry->d_name;
-            if (name == "." || name == "..") {
-                continue;
-            }
-            removeTree(path + "/" + name);
-        }
-        ::closedir(dir);
-    }
-    ::remove(path.c_str());
 }
 
 std::string utcNowIso8601() {
@@ -614,9 +577,19 @@ ErrorCode UploadService::completeUpload(
         return ErrorCode::TaskNotFound;
     }
 
+    // 选主成功后任何失败都回 1（可重试），不把 7 留成不可重试的终态；
+    // 7 只表示“合并过程中进程崩溃”，由启动恢复 7→2 兜底。
+    std::function<void()> returnToUploading = [&]() {
+        std::vector<std::uint8_t> from(1, 7);
+        bool changed = false;
+        // TODO(log): markStatus 失败时记 WARN（任务会停在 7，重启回 2）。
+        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+    };
+
     std::vector<cm::db::ChunkRow> chunkRows;
     rc = transferDao.listChunks(rq.taskId, &chunkRows);
     if (rc != ErrorCode::Ok) {
+        returnToUploading();
         out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
         return rc;
     }
@@ -632,17 +605,15 @@ ErrorCode UploadService::completeUpload(
     rc = mergeChunks(m_dataDir, task, chunks, &mergedPath, &wholeMd5,
                      &badIndexes);
     if (rc != ErrorCode::Ok) {
-        // 保留 tmp 与 status=7，等待重启恢复或人工排查。
+        // 保留 tmp 供重试；任务回 1。
+        returnToUploading();
         out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
         return rc;
     }
 
     // 坏片：7→1 允许重传；merged 已由 mergeChunks 删除。
     if (!badIndexes.empty()) {
-        std::vector<std::uint8_t> from(1, 7);
-        bool changed = false;
-        // TODO(log): markStatus 失败时记 WARN（任务会停在 7，重启回 2）。
-        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+        returnToUploading();
         out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
         out->badIndexes = badIndexes;
         return ErrorCode::InvalidArgument;
@@ -650,9 +621,7 @@ ErrorCode UploadService::completeUpload(
 
     // 整文件 MD5 与客户端声明不符：7→1，客户端重新 init。
     if (wholeMd5 != task.fileMd5) {
-        std::vector<std::uint8_t> from(1, 7);
-        bool changed = false;
-        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+        returnToUploading();
         out->code = static_cast<std::uint32_t>(ErrorCode::Md5Mismatch);
         return ErrorCode::Md5Mismatch;
     }
@@ -678,11 +647,13 @@ ErrorCode UploadService::completeUpload(
         ::unlink(mergedPath.c_str());
     } else {
         if (!makeDirs(blobDir)) {
+            returnToUploading();
             out->code = static_cast<std::uint32_t>(ErrorCode::NoSpace);
             return ErrorCode::NoSpace;
         }
         if (::rename(mergedPath.c_str(), blobPath.c_str()) != 0) {
-            // 保留 status=7 与 tmp，等待重试（重启会把 7 恢复成 2）。
+            // 保留 merged 与 tmp，任务回 1，客户端可立即重试。
+            returnToUploading();
             out->code = static_cast<std::uint32_t>(ErrorCode::NoSpace);
             return ErrorCode::NoSpace;
         }
@@ -729,6 +700,7 @@ ErrorCode UploadService::completeUpload(
     if (rc != ErrorCode::Ok) {
         // 已 rename 的 blob 不删（避免误删他人数据），留给孤儿 GC 对账。
         // TODO(log): 记 WARN「孤儿 blob 待 GC」+ md5 + f_path。
+        returnToUploading();
         out->code = (rc == ErrorCode::TaskNotFound)
                         ? static_cast<std::uint32_t>(ErrorCode::TaskNotFound)
                         : static_cast<std::uint32_t>(cm::to_wire_code(rc));

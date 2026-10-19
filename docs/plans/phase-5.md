@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（U-4 已验收（f029214）；U-5 已验收：UploadComplete 8/8 连跑两遍、cm_logic_tests 62/62 连跑两遍、ctest 28/28、四表零残留；遗留 status=7 重试死锁待 U-6 裁决；下一步 U-6 上传恢复与过期清理）
+**Status:** In Progress（Upload Stage 收口：U-1~U-6 全部验收，cm_logic_tests 68/68 连跑两遍、ctest 29/29、四表零残留；U-5 的 status=7 死锁已修（electMerge 接受 0/1/2 + 失败回 1），启动 7→2 与陈旧 tmp 清理已实测；唯一挂起项：200 个过期任务的单轮 <2s 留 Phase 7 压测。下一步 D-0 翻转零拷贝开关 → D-1 下载打开）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -968,7 +968,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - [x] 逐片读 tmp/<task>/<index>.bin（1MB 缓冲），流式更新整文件 MD5，并逐片比对 c_md5；缺片/尺寸不符/MD5 不符进 bad_indexes（≤1024）。
 - [x] 坏片：7→1 允许重传，回 1001 + bad_indexes；不 rename、不落库。
 - [x] 整文件 MD5 与 tr_file_md5 不符：7→1，回 3003。
-- [x] blob 已存在则只落节点 + ref_count+1；否则 mkdir + rename；rename 失败回 1005 且保持 status=7。
+- [x] blob 已存在则只落节点 + ref_count+1；否则 mkdir + rename；rename 失败回 1005 且任务回 1（可重试）。
 - [x] 单事务：INSERT t_file ON DUPLICATE +1 → 插 t_user_file（自动改名）→ status=4 + 计数；事务内无文件 IO。
 - [x] sidecar <md5>.meta（size/md5/created_at）best-effort；成功后清理 tmp/<task_id>。
 
@@ -976,7 +976,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - 合并与落库全部放在 `UploadService::completeUpload`（按本次任务要求），未新增 upload_merge_job.*；文件 IO 在事务外，事务只做 blob/节点/计数/状态。
 - 选主用 `TransferDao::electMerge`（WHERE tr_status IN (0,1)）；抢不到直接 3004，不区分“正在合并/已取消/过期”。
 - 逐片校验复用 `TransferDao::listChunks`（一次查询，按 c_index 升序）；每个分片边读边算 MD5，同时喂给整文件 MD5，坏片最多返回 1024 个。
-- blob 落盘：目标 `<dataDir>/blobs/aa/bb/<md5>`；DB 已有同 md5 或目标文件已存在（并发秒传）则丢弃 merged；rename 失败保留 merged 与 status=7。
+- blob 落盘：目标 `<dataDir>/blobs/aa/bb/<md5>`；DB 已有同 md5 或目标文件已存在（并发秒传）则丢弃 merged；rename 失败保留 merged 与 tmp，任务回 1。
 - 落库事务失败时不删已 rename 的 blob，只留 TODO(log) 标注“孤儿 blob 待 GC”（避免误删他人数据）。
 - sidecar 按本次指令落 `<md5>.meta`（size/md5/created_at），与 06 §6.3 的 `.crc`（块 CRC，供 sendfile）不同；D-1/D-4 的零拷贝块 CRC 仍需另行实现，不能依赖本文件。
 - 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
@@ -988,7 +988,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - UploadCompleteWholeMd5Mismatch
 - UploadCompleteElectConflictReturns3004
 - UploadCompleteBlobExistsReusesRef
-- UploadCompleteRenameFailureKeepsStatus7
+- UploadCompleteRenameFailureReturnsTo1
 - UploadCompleteCleansTmpDir
 
 **验收标准:**
@@ -1002,11 +1002,9 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - 合并占满 IO 池 → 全局并发 2；其余排队，超 30s 回 1006。
 - rename 与已有 blob 竞争 → 同内容只保留已有 inode；绝不覆盖正在读的文件。
 - 99 次改名失败 → 事务回滚并删除本次新建 blob/sidecar；已有 blob 不删。
-- **[U-6 必须修] status=7 的重试死锁**：rename/事务失败后按指令保持 7，但 `electMerge` 只接受 0/1，
-  客户端立刻重试会得到 3004；重启时 `resetMergingOnStartup` 把 7→2，而 electMerge 同样不接受 2，任务永久不可合并。
-  U-6 裁决方案：electMerge 的 WHERE 改为 `tr_status IN (0,1,2)`，失败路径改为回 1（1005 可重试），
-  7 只保留给“进程崩溃中”，由启动 7→2 兜底；同步把 `UploadCompleteRenameFailureKeepsStatus7` 改为
-  `...ReturnsTo1`。
+- **status=7 重试死锁（U-6 已修）**：`electMerge` 的 WHERE 改为 `tr_status IN (0,1,2)`；
+  completeUpload 的失败路径统一回 1（坏片/整文件 MD5/rename/合并/事务失败都可立即重试），
+  7 只保留给“进程崩溃中”，由启动 7→2 兜底；用例已改名 `UploadCompleteRenameFailureReturnsTo1`。
 - sidecar 是 `<md5>.meta`（size/md5/created_at），与 06 §6.3 供 sendfile 的 `.crc` 是两种文件，D-1/D-4 单独实现。
 - 测试可重复性：服务层在事务内插入的 blob 不在 DaoTestBase 登记表里，已在用例 TearDown 按任务 md5 补清；
   否则第二次运行会命中旧 blob 走复用分支（本次验收即复现：ref_count=2、文件不落盘）。
@@ -1019,33 +1017,49 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 
 **Files:**
 - Create: server/app/server_app.h、server/app/server_app.cpp
-- Modify: server/app/main.cpp（改为启动 ServerApp）
-- Create: server/logic/jobs/expiry_job.h
-- Create: server/logic/jobs/expiry_job.cpp
-- Create: server/logic/tests/test_upload_expiry.cpp
+- Modify: server/app/main.cpp（构造 ServerApp，start 后再 listen）
+- Create: server/logic/expiry_job.h、server/logic/expiry_job.cpp
+- Create: server/logic/upload_fs.h、server/logic/upload_fs.cpp（makeDirs/removeTree 复用）
+- Modify: server/db/transfer_dao.h、server/db/transfer_dao.cpp（deleteChunks；electMerge 接受 2）
+- Modify: server/logic/upload_service.cpp（合并失败统一回 1）
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt
+- Create: server/tests/logic/test_expiry_job.cpp
 
 **Steps:**
-- [ ] 启动顺序：DB 池就绪 → UPDATE tr_status=2 WHERE tr_status=7 → 清理 1h 前 merged/tmp → 启动 tick → listen。
-- [ ] ExpiryJob::runOnce：SELECT 0/1/2 且 expire_at<NOW LIMIT 200；逐任务条件 UPDATE→6；删 t_chunk 500/批；投 IO 池删目录。
-- [ ] 单轮 2s 上限；超时留到下轮，不阻塞 TimerQueue。
-- [ ] 测试：过期任务置 6、分片行删除、目录删除；重复 runOnce 幂等；7 不被过期扫描直接清掉。
+- [x] 启动顺序：DB 池就绪 → UPDATE tr_status=2 WHERE tr_status=7 → 清理 1h 前 merged.bin* 与空任务目录 → 注册 tick → listen。
+- [x] ExpiryJob::runOnce：SELECT 0/1/2 且 expire_at<NOW LIMIT 200；逐任务条件 UPDATE→6；删 t_chunk 500/批；目录删除投 IO 池。
+- [x] 单轮 2s 上限；超时留到下轮；已置 6 的任务在新任务预算用尽前完成删行，避免残留。
+- [x] 测试：过期任务置 6、分片行删除、目录投递、重复 runOnce 幂等、7 不被扫、启动 7→2、stale tmp 清理。
+
+**实施记录（2026-10-19）：**
+- A（U-5 死锁）：`electMerge` 候选状态改为 0/1/2；completeUpload 在选主成功后的所有失败分支（listChunks/合并 IO/坏片/MD5/rename/事务）统一 `7→1`，7 只保留给进程崩溃，由启动恢复 7→2 兜底。rename 仍回 1005；事务失败保留原 4xxx 错误码（不误报磁盘满）。
+- B（启动顺序）：`ServerApp::start` 依次执行 recoverOnStartup → cleanStaleTmp(3600) → `timers.runEvery(5min)`；main 在 `server.start(port)` 前调用，失败退出。
+- tick 回调只做 `workers.run`（CAS 防重入），runOnce 在业务池执行；每个任务删完分片后通过 DirDeleter 投 `cm-io` 池做 rm -r，tick 线程不做任何文件 IO。
+- `cleanStaleTmp` 只在启动阶段运行：删除 1h 前的 `tmp/<task>/merged.bin*`，再删空任务目录；失败只 TODO(log)，不阻断启动。
+- `ExpiryJob::runOnce` 2s 预算按“开始处理下一个任务前”判断；当前任务的分片删除会做完（500/批），避免任务已置 6 却残留分片行。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
-- StartupResetsMergingToPaused
-- ExpiryMarksOnlyExpired
-- ExpiryDeletesChunksAndDir
-- ExpiryBatchLimit200
-- ExpiryIdempotent
-- ExpiryDoesNotTouchActiveTask
+- ExpiryJobExpiresIdleTask
+- ExpiryJobKeepsMergingTask
+- ExpiryJobDeletesChunksInBatches
+- ExpiryJobRepeatsIdempotently
+- ExpiryJobRecoversStatus7OnStartup
+- ExpiryJobCleansStaleMergedTemp
 
 **验收标准:**
-- [ ] 重启后 status=7 的任务全部变 2，status=1 不变。
-- [ ] 过期任务后续 Chunk/Continue 返回 3007。
-- [ ] 单轮 200 个任务耗时 <2s（测试库本机）。
+- [x] 重启后 status=7 的任务全部变 2，status=1 不变。（2026-10-19：VM 构建零警告；无 DB 档 6 例 SKIP；有 DB 档 Expiry* 6/6 passed 446ms。真实启动冒烟：手工置 status=7 的任务，服务起来后读回 status=2，同时 3 小时前的 tmp/stale-task/merged.bin.old 被删除、端口正常监听）
+- [x] 过期任务置 6、分片行按 500/批删净、目录删除在 IO 池执行。（ExpiresIdleTask / DeletesChunksInBatches 通过；KeepsMergingTask 断言 7 不被扫描）
+- [ ] 单轮 200 个任务耗时 <2s（测试库本机）；7 不被过期扫描直接清掉。
+  - 前半未验：测试库未造 200 个过期任务，只在 6 例规模（446ms）下确认预算逻辑；留 Phase 7 压测。
+  - 后半已验证：KeepsMergingTask 通过。
+- [x] rename 失败后任务回 1，客户端可立即重试 complete。（UploadCompleteRenameFailureReturnsTo1 通过；TransferDaoElectMergeOnce 新增 status=2 可被选主，7→2→选主 链路闭合）
+- [x] 回归与清理：cm_logic_tests 68/68 连跑两遍（2742ms / 2654ms）、ctest 29/29；t_file/t_user_file/t_transfer_task/t_chunk 零残留；server/logic 无 mysql.h/hiredis。
 
 **风险:**
 - 扫描与上传请求竞争 → 条件 UPDATE 只对 0/1/2 生效；正在写片的请求要么先提交要么被 3007。
 - 删目录失败 → 留待孤儿 tmp 清理，不阻断任务置 6。
+- 2s 预算对超大任务（数十万分片）不生效于删行阶段；分片删除是批量主键删除，实测需在 Phase 7 压测确认。
 
 ---
 
@@ -1734,7 +1748,7 @@ ctest -R 'download|block_sender|crc32_combine' --output-on-failure
 - **零拷贝回退**：重新配置 -DCM_DOWNLOAD_ZEROCOPY=OFF 并构建；无需改协议/数据，sidecar 保留不影响 OFF 路径。
 - **6 位分享码回退**：需同时回退 DDL、CacheKey 与服务层；已产生的 6 位分享码无法被 9 位逻辑读取，属于不兼容回退，必须在低峰执行并清理/重建分享数据。
 - **CodecBulk 回退**：保留原 decode；ConnectionDecoder 可切回“全走 decode”（小帧模式），但 4MB CRC 会回到 IO 线程，仅作为临时排障，不作为生产默认。
-- **合并失败**：任务保持 7/1，blob 未落库；重启把 7 改 2，客户端可重试；临时目录由 expiry/tmp 清理。
+- **合并失败**：活跃请求失败回 1（可立即重试），只有进程崩溃中断才留 7；重启把 7 改 2；临时目录由 expiry/tmp 清理。
 - **GC 误删**：24h 宽限 + 对账；一旦 unlink 不可恢复，只能从备份恢复，故 GC 必须先 dry-run 一轮并核对计数。
 
 ---

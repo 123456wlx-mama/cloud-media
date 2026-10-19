@@ -454,7 +454,7 @@ TEST_F(UploadCompleteServiceTest, UploadCompleteBlobExistsReusesRef) {
     EXPECT_EQ(std::uint64_t(2), countNodes(first.fileId));
 }
 
-TEST_F(UploadCompleteServiceTest, UploadCompleteRenameFailureKeepsStatus7) {
+TEST_F(UploadCompleteServiceTest, UploadCompleteRenameFailureReturnsTo1) {
     const std::string content(1024, 'r');
     const std::string md5 = cm::md5Hex(content);
     const std::string taskId = createTaskForContent(md5, content.size(), 1024, 1);
@@ -470,7 +470,8 @@ TEST_F(UploadCompleteServiceTest, UploadCompleteRenameFailureKeepsStatus7) {
     EXPECT_EQ(cm::ErrorCode::NoSpace,
               m_service->completeUpload(m_uid, makeRequest(taskId), &rs));
     EXPECT_EQ(1005u, rs.code);
-    EXPECT_EQ(7, static_cast<int>(loadTask(taskId).status));
+    // 失败回 1（可重试）；7 只保留给进程崩溃中断。
+    EXPECT_EQ(1, static_cast<int>(loadTask(taskId).status));
     EXPECT_TRUE(exists(tmpDir(taskId)));
 }
 

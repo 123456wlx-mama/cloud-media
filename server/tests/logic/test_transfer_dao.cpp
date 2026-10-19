@@ -371,6 +371,14 @@ TEST_F(TransferDaoTest, TransferDaoElectMergeOnce) {
     ASSERT_EQ(cm::ErrorCode::Ok, m_dao->electMerge(m_uid, uploading, &elected));
     EXPECT_TRUE(elected);
 
+    // 状态 2（Paused，重启把 7 改回 2 后的状态）同样可被选主。
+    const std::string paused =
+        createTask(2, static_cast<std::uint64_t>(kChunkSize) * 2);
+    ASSERT_TRUE(setTaskStatus(paused, 2));
+    elected = false;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_dao->electMerge(m_uid, paused, &elected));
+    EXPECT_TRUE(elected);
+
     // 已取消（5）不可选主。
     const std::string cancelled =
         createTask(2, static_cast<std::uint64_t>(kChunkSize) * 2);

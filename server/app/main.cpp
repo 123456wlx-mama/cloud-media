@@ -25,6 +25,7 @@
 #include "TcpServer.h"
 #include "TimerQueue.h"
 #include "handler_registry.h"
+#include "server_app.h"
 
 #if defined(CM_WITH_STORAGE)
 #include "cm/base/thread_pool.h"
@@ -315,6 +316,8 @@ int runServer(const cm::ServerConfig& cfg) {
     net::TimerQueue timers(&loop);
     cm::ThreadPool workers(static_cast<std::size_t>(cfg.workerThreads),
                            "cm-logic");
+    // 启动顺序收在 ServerApp：DB 恢复 7→2 → 清理过期 tmp → 注册过期扫描 tick。
+    cm::app::ServerApp app(cfg, *mysql, timers, workers);
     ConnStateTable states;
 
     net::HandlerRegistry registry(
@@ -480,6 +483,16 @@ int runServer(const cm::ServerConfig& cfg) {
         return 1;
     }
 
+    // 先完成恢复/清理/tick 注册，再 listen。
+    if (!app.start(&error)) {
+        std::fprintf(stderr, "server app start failed: %s\n", error.c_str());
+        app.stop();
+        workers.stop();
+        mysql->shutdown();
+        redis->shutdown();
+        return 1;
+    }
+
     const std::uint16_t port = static_cast<std::uint16_t>(cfg.listenPort);
     if (!server.start(port)) {
         std::fprintf(stderr, "listen on port %u failed\n",
@@ -501,6 +514,7 @@ int runServer(const cm::ServerConfig& cfg) {
     // registry 的 handler 任务会引用 registry，必须保证 stop 之后才析构。
     server.stop();
     workers.stop();
+    app.stop();  // 停 IO 池前会 drain 已投递的目录删除
     mysql->shutdown();
     redis->shutdown();
     return 0;

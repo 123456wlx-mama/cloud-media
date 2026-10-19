@@ -37,6 +37,8 @@ if(BUILD_STORAGE)
         logic/connection_decoder.cpp
         logic/upload_service.cpp
         logic/upload_chunk_handler.cpp
+        logic/upload_fs.cpp
+        logic/expiry_job.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic
@@ -48,6 +50,10 @@ add_executable(cloud-media-server
     app/main.cpp
 )
 target_link_libraries(cloud-media-server PRIVATE cm_protocol)
+if(BUILD_STORAGE)
+    # ServerApp 只在有存储层时编译：它依赖 cm_logic/MySQL 启动恢复。
+    target_sources(cloud-media-server PRIVATE app/server_app.cpp)
+endif()
 if(BUILD_STORAGE)
     # main.cpp 用 CM_WITH_STORAGE 区分“有业务层”与“仅骨架”两种构建。
     target_compile_definitions(cloud-media-server PRIVATE CM_WITH_STORAGE=1)
