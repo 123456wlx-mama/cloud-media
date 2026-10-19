@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据 issue/verify/touch + 四段 value + Lua 原子续期，build-on 88/88 连跑两遍、build-off 14/14、ctest 30/30、四表零残留；并发取块留 D-5 收口；下一步 D-3 缓冲块发送器）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建）；D-1 已验收（DownloadOpen 7/7）；D-1b 已验收（块 CRC 6/6）；D-2 已验收：下载票据，build-on 88/88、build-off 14/14；D-3 已验收：缓冲块发送器 5/5、build-on 93/93 连跑两遍、build-off 12/12、ctest 31/31、四表零残留；下一步 D-4 sendfile 块发送器）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -1254,12 +1254,21 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/logic/tests/test_block_sender_buffered.cpp
 
 **Steps:**
-- [ ] 输入：ticket、f_id、block_index；校验 ticket→uid/fid。
-- [ ] stat blob 校验大小；算 offset/len（末块短）。
-- [ ] IO 池读 4MB（read 循环处理 EINTR/短读），流式 CRC，构造完整帧（19B 头 + payload），回 loop send。
-- [ ] 全局并发上限 16；超过排队，不阻塞 loop。
-- [ ] 读失败 3001；越界 1001；内存峰值 16×4MB=64MB。
-- [ ] 单测：4MB/末块/越界/读失败/16 并发上限。
+- [x] 输入：ticket、f_id、block_index；校验 ticket→uid/fid。
+- [x] stat blob 校验大小；算 offset/len（末块短）。
+- [x] IO 池读 4MB（read 循环处理 EINTR/短读），流式 CRC，构造完整帧（19B 头 + payload），回 loop send。
+- [x] 全局并发上限 16；超过排队，不阻塞 loop。
+- [x] 读失败 3001；越界 1001；内存峰值 16×4MB=64MB。
+- [x] 单测：4MB/末块/越界/读失败/16 并发上限。
+
+**实施记录（2026-10-19）：**
+- 实际落点：`server/logic/block_sender.h/.cpp`、`server/tests/logic/test_block_sender_buffered.cpp`（计划里 `server/logic/tests/` 是笔误，测试统一在 `server/tests/logic/`）。
+- 线程边界：sendBlock 在业务线程完成 touch（Redis）+ 查 blob（MySQL）+ 块范围校验；读块与 CRC 通过注入的 `Executor = std::function<bool(Task)>` 在 IO 池执行，IO 线程不碰 DB/Redis；本类不 include net，完整帧经 done 回调交给调用方发送（D-6 再接线到连接所属 loop）。
+- 单缓冲：块直接读进「19B 头 + payload」帧的 payload 区，CRC 只覆盖 header[4..14] 11 字节 + payload（与 Codec::encode 规则一致），峰值 4MB/块而非先读 4MB 再 encode 的 8~12MB。
+- 并发上限：`kMaxInFlight=16`，超过进 `m_queue` 排队不阻塞调用线程；暴露 inFlight()/pending() 供背压观测与测试。
+- 错误映射：ticket uid/fid 不符 1004（DownloadTicket::touch）、块越界 1001、blob 缺失/状态非 1/读失败 3001、Redis/MySQL 故障 4xxx。
+- 单测 5 例：Whole/LastShort 用 Codec::decode 反解断言 type=10011、seq 回显、payload 与块字节一致、CRC 通过；OutOfRange/ReadFailure 断言 1001/3001；ConcurrencyCap 用手动执行器确定性断言「17 个请求 → inFlight=16、pending=1，逐个 drain 后 17 全完成」。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - BufferedBlockWhole
@@ -1269,9 +1278,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - BufferedBlockConcurrencyCap
 
 **验收标准:**
-- [ ] 返回帧的 CRC 与直接计算一致。
-- [ ] 16 个并发时第 17 个排队而不是 OOM。
-- [ ] OFF 构建下 D1~D6 全绿。
+- [x] 返回帧的 CRC 与直接计算一致（2026-10-19：`--gtest_list_tests` 命中 5 个；有 DB+Redis 档 BlockSenderBufferedTest 5/5 passed 417ms；Whole/LastShort 用 `Codec::decode` 反解校验 CRC 通过。源码核对：CRC 覆盖 header[4..14] 11 字节 + payload，与 `Codec::encode` 完全一致，CRC 写到 offset 15）
+- [x] 16 个并发时第 17 个排队而不是 OOM（BufferedBlockConcurrencyCap 手动执行器确定性断言 inFlight=16、pending=1，drain 后 17 全完成）
+- [x] OFF 构建下块发送器正常（build-off 零警告，BlockSenderBufferedTest 5/5 + DownloadTicket 7/7 = 12/12；D1~D6 全量收口仍留 D-6）
+- [x] 回归与清理：build-on 全量 93/93 连跑两遍（3696ms / 3198ms）、ctest 31/31；四表零残留、Redis 票据键零残留、mkdtemp 临时目录 0 个；block_sender 无 net/mysql.h/hiredis include
 
 **风险:**
 - 4MB 内存峰值 → 限制 16；超过排队。

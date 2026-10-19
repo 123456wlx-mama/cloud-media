@@ -42,6 +42,7 @@ if(BUILD_STORAGE)
         logic/download_service.cpp
         logic/block_crc.cpp
         logic/download_ticket.cpp
+        logic/block_sender.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic
