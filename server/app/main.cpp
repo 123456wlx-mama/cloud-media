@@ -133,6 +133,16 @@ void sendUploadChunkRs(const ConnectionPtr& conn, std::uint32_t seq,
                      payload);
 }
 
+void sendContinueUploadRs(const ConnectionPtr& conn, std::uint32_t seq,
+                          const cm::protocol::ContinueUploadRs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, cm::protocol::MessageType::ContinueUploadRs, seq,
+                     payload);
+}
+
 // 10004：业务线程执行；UID 未登录时直接回 1004。
 void handleUploadInit(const ConnectionPtr& conn,
                       const cm::protocol::Frame& frame,
@@ -190,6 +200,35 @@ void handleUploadChunk(const ConnectionPtr& conn,
         rs.code = cm::to_wire_code(rc);
     }
     sendUploadChunkRs(conn, frame.seq, rs);
+}
+
+// 10028：只读查询；UID 未登录时直接回 1004。
+void handleContinueUpload(const ConnectionPtr& conn,
+                          const cm::protocol::Frame& frame,
+                          ConnStateTable& states,
+                          cm::logic::UploadService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::ContinueUploadRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendContinueUploadRs(conn, frame.seq, rs);
+        return;
+    }
+
+    cm::protocol::ContinueUploadRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendContinueUploadRs(conn, frame.seq, rs);
+        return;
+    }
+
+    const cm::ErrorCode rc = service.continueUpload(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendContinueUploadRs(conn, frame.seq, rs);
 }
 
 int runServer(const cm::ServerConfig& cfg) {
@@ -254,6 +293,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleUploadInit(conn, frame, states, uploadService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register UploadInit failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ContinueUploadRq),
+            [&states, &uploadService](const ConnectionPtr& conn,
+                                      const cm::protocol::Frame& frame) {
+                handleContinueUpload(conn, frame, states, uploadService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ContinueUpload failed\n");
         return 1;
     }
 

@@ -34,7 +34,18 @@ public:
                        const cm::protocol::UploadInitRq& rq,
                        cm::protocol::UploadInitRs* out);
 
+    // 10028：从 t_chunk 重建续传位图（LSB-first），顺带修正计数缓存。
+    // 不存在与非本人一律 1004；位图长度固定 ceil(total_chunks/8)。
+    cm::ErrorCode continueUpload(std::uint64_t uid,
+                                 const cm::protocol::ContinueUploadRq& rq,
+                                 cm::protocol::ContinueUploadRs* out);
+
 private:
+    cm::ErrorCode doContinue(cm::db::MysqlConn& conn,
+                             std::uint64_t uid,
+                             const cm::protocol::ContinueUploadRq& rq,
+                             cm::protocol::ContinueUploadRs* out);
+
     cm::ErrorCode doInit(cm::db::MysqlConn& conn,
                          std::uint64_t uid,
                          const cm::protocol::UploadInitRq& rq,

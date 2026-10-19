@@ -6,8 +6,11 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "cm/base/md5.h"
 
@@ -67,6 +70,24 @@ std::uint64_t nowMs() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count());
+}
+
+// DB 里是 UTC DATETIME(6)；连接池已 SET SESSION time_zone='+00:00'（05 §4.3）。
+std::string nowUtcDatetime() {
+    const std::time_t now = std::time(NULL);
+    std::tm tm;
+    std::memset(&tm, 0, sizeof(tm));
+    ::gmtime_r(&now, &tm);
+
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d:%02d.000000",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return std::string(buffer);
+}
+
+bool isExpired(const std::string& expireAt) {
+    return !expireAt.empty() && expireAt < nowUtcDatetime();
 }
 
 }  // namespace
@@ -149,6 +170,137 @@ ErrorCode UploadService::init(std::uint64_t uid,
         m_cache.invalidate(lockKey);
     }
     return rc;
+}
+
+ErrorCode UploadService::continueUpload(
+    std::uint64_t uid,
+    const cm::protocol::ContinueUploadRq& rq,
+    cm::protocol::ContinueUploadRs* out) {
+    if (out == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::ContinueUploadRs();
+
+    if (uid == 0 || !isHex32(rq.taskId)) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode code = (m_mysql.lastError() == ErrorCode::Ok)
+                                   ? ErrorCode::DbPoolTimeout
+                                   : m_mysql.lastError();
+        out->code = static_cast<std::uint32_t>(code);
+        return code;
+    }
+
+    ErrorCode rc = ErrorCode::Ok;
+    {
+        cm::db::Transaction tx(*conn);
+        if (!tx.valid()) {
+            rc = (conn->lastError() == ErrorCode::Ok) ? ErrorCode::DbUnavailable
+                                                      : conn->lastError();
+        } else {
+            rc = doContinue(*conn, uid, rq, out);
+            if (rc == ErrorCode::Ok && !tx.commit()) {
+                rc = (tx.lastError() == ErrorCode::Ok) ? ErrorCode::DbQueryFailed
+                                                       : tx.lastError();
+            }
+        }
+    }
+    conn.reset();
+
+    if (rc != ErrorCode::Ok) {
+        if (out->code == 0) {
+            out->code = cm::to_wire_code(rc);
+        }
+        return rc;
+    }
+    return ErrorCode::Ok;
+}
+
+ErrorCode UploadService::doContinue(cm::db::MysqlConn& conn,
+                                    std::uint64_t uid,
+                                    const cm::protocol::ContinueUploadRq& rq,
+                                    cm::protocol::ContinueUploadRs* out) {
+    cm::db::TransferDao transferDao(conn);
+
+    // 不存在与非本人同样回 1004，不泄露任务存在性（06 §4.4）。
+    cm::db::TransferTaskRow task;
+    ErrorCode rc = transferDao.lockTaskForUpdate(uid, rq.taskId, &task);
+    if (rc == ErrorCode::NotFound) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+        return ErrorCode::PermissionDenied;
+    }
+    if (rc != ErrorCode::Ok) {
+        return rc;
+    }
+
+    // 0/1/2 可续传；6 与已过期回 3007；3/4/5/7 回 3005。
+    if (task.status == 6 || isExpired(task.expireAt)) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::TaskExpired);
+        return ErrorCode::TaskExpired;
+    }
+    if (task.status != 0 && task.status != 1 && task.status != 2) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::TaskStateInvalid);
+        return ErrorCode::TaskStateInvalid;
+    }
+    if (task.totalChunks == 0 ||
+        task.totalChunks > cm::protocol::kMaxChunkCount) {
+        // 位图固定 ceil(total/8)；超过 64KB 直接拒绝，不返回截断位图。
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::vector<std::uint32_t> doneIndexes;
+    rc = transferDao.listDoneIndexes(rq.taskId, &doneIndexes);
+    if (rc != ErrorCode::Ok) {
+        return rc;
+    }
+
+    std::uint64_t doneBytes = 0;
+    rc = transferDao.sumDoneBytes(rq.taskId, &doneBytes);
+    if (rc != ErrorCode::Ok) {
+        return rc;
+    }
+
+    // 位图定长：ceil(total_chunks/8)，LSB-first（第 0 片是 byte0 的 bit0）。
+    const std::size_t bitmapBytes =
+        (static_cast<std::size_t>(task.totalChunks) + 7) / 8;
+    std::string bitmap(bitmapBytes, '\0');
+    std::uint32_t doneChunks = 0;
+    for (std::size_t i = 0; i < doneIndexes.size(); ++i) {
+        const std::uint32_t index = doneIndexes[i];
+        if (index >= task.totalChunks) {
+            continue;  // 脏数据不进位图，也不计数
+        }
+        const std::size_t pos = index / 8;
+        const unsigned char bit = static_cast<unsigned char>(1u << (index % 8));
+        bitmap[pos] = static_cast<char>(
+            static_cast<unsigned char>(bitmap[pos]) | bit);
+        ++doneChunks;
+    }
+
+    // t_chunk 是唯一事实源，计数缓存漂移时以重算值为准，并在同一事务内修正。
+    if (task.doneChunks != doneChunks || task.offset != doneBytes) {
+        // TODO(log): Logger 就绪后在此记 WARN（计数缓存漂移，已按 t_chunk 重算修正）。
+        rc = transferDao.syncDoneCounters(rq.taskId, doneChunks, doneBytes);
+        if (rc != ErrorCode::Ok) {
+            return rc;
+        }
+    }
+
+    out->code = 0;
+    out->taskId = rq.taskId;
+    out->status = task.status;
+    out->chunkSize = task.chunkSize;
+    out->totalChunks = task.totalChunks;
+    out->doneChunks = doneChunks;
+    out->doneBytes = doneBytes;
+    out->bitmap = bitmap;
+    out->expireAtMs = task.expireAtMs;
+    return ErrorCode::Ok;
 }
 
 ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,

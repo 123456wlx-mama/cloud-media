@@ -27,7 +27,8 @@ struct TransferTaskRow {
     std::uint64_t parentUfId;
     std::uint8_t status;
     std::int32_t errorCode;
-    std::string expireAt;  // DATETIME(6) 文本
+    std::string expireAt;  // DATETIME(6) 文本（UTC）
+    std::uint64_t expireAtMs;  // tr_expire_at 的 Unix 毫秒，由 DB 按 UTC 计算
     std::string createdAt;
     std::string updatedAt;
 
@@ -125,6 +126,12 @@ public:
                               std::vector<std::uint32_t>* out);
 
     ErrorCode sumDoneBytes(const std::string& taskId, std::uint64_t* bytes);
+
+    // 用 t_chunk 重算出的值修正计数缓存（tr_done_chunks / tr_offset 都是派生值）。
+    // 不加锁、不开事务：调用方必须已在事务内 lockTaskForUpdate 后再调用。
+    ErrorCode syncDoneCounters(const std::string& taskId,
+                               std::uint32_t doneChunks,
+                               std::uint64_t doneBytes);
 
     // 条件 UPDATE：只有当前状态在 allowedFrom 内才改，changed 反映 affected_rows。
     ErrorCode markStatus(std::uint64_t uid,

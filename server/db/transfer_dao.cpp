@@ -19,7 +19,8 @@ const char kTaskColumns[] =
     "tr_id, tr_task_id, tr_user_id, tr_type, tr_file_md5, tr_file_name, "
     "tr_total_size, tr_chunk_size, tr_total_chunks, tr_done_chunks, tr_offset, "
     "tr_parent_uf_id, tr_status, tr_error_code, tr_expire_at, tr_created_at, "
-    "tr_updated_at";
+    "tr_updated_at, "
+    "CAST(UNIX_TIMESTAMP(tr_expire_at) * 1000 AS UNSIGNED)";
 
 bool isDuplicateEntry(const std::string& message) {
     return message.find("Duplicate entry") != std::string::npos ||
@@ -56,6 +57,7 @@ void fillTaskRow(const PreparedStatement& stmt, TransferTaskRow* row) {
     row->expireAt = stmt.getString(14);
     row->createdAt = stmt.getString(15);
     row->updatedAt = stmt.getString(16);
+    row->expireAtMs = stmt.getUInt64(17);
 }
 
 bool isWritableStatus(std::uint8_t status) {
@@ -76,7 +78,8 @@ TransferTaskRow::TransferTaskRow()
       offset(0),
       parentUfId(0),
       status(0),
-      errorCode(0) {
+      errorCode(0),
+      expireAtMs(0) {
 }
 
 NewTransferTask::NewTransferTask()
@@ -453,6 +456,29 @@ ErrorCode TransferDao::sumDoneBytes(const std::string& taskId,
                    : stmt->lastError();
     }
     *bytes = stmt->getUInt64(0);
+    return ErrorCode::Ok;
+}
+
+ErrorCode TransferDao::syncDoneCounters(const std::string& taskId,
+                                        std::uint32_t doneChunks,
+                                        std::uint64_t doneBytes) {
+    if (!isHex32(taskId)) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "UPDATE t_transfer_task SET tr_done_chunks = ?, tr_offset = ? "
+        "WHERE tr_task_id = ?");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, doneChunks) || !stmt->bindUInt64(1, doneBytes) ||
+        !stmt->bindString(2, taskId)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
     return ErrorCode::Ok;
 }
 

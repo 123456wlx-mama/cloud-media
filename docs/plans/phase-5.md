@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（U-3 已验收（ab6c0c1）；U-3b 已验收：路由 + NetServer 接线，ctest 26/26、cm_logic_tests 46/46 连跑两遍，实测未登录 10004 回 1004 且连接保持，服务端可启动监听并优雅退出；下一步 U-4 ContinueUpload 位图）
+**Status:** In Progress（U-3b 已验收（285a820）；U-4 已验收：ContinueUpload 8/8、cm_logic_tests 54/54 连跑两遍、ctest 27/27、五表零残留；下一步 U-5 UploadComplete 合并与落库）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -908,15 +908,26 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 **Goal:** 实现 10028：从 t_chunk 重建位图，修正计数缓存，返回过期时间。
 
 **Files:**
-- Modify: server/logic/upload_service.cpp
-- Create: server/logic/tests/test_continue_upload.cpp
+- Modify: server/logic/upload_service.h、server/logic/upload_service.cpp
+- Modify: server/db/transfer_dao.h、server/db/transfer_dao.cpp（expireAtMs、syncDoneCounters）
+- Modify: server/app/main.cpp（10028 路由）
+- Create: server/tests/logic/test_continue_upload.cpp（计划原文写 server/logic/tests，实际落 server/tests/logic）
+- Modify: server/tests/logic/CMakeLists.txt
 
 **Steps:**
-- [ ] 校验 task 归属；status 4/5/6 返回对应错误；7 返回 3005。
-- [ ] 查 c_state=1 的 c_index，构造 ceil(total/8) 字节位图（LSB-first）。
-- [ ] 重算 done_chunks 与 done_bytes；与 tr_done_chunks/tr_offset 不一致时修正并 WARN。
-- [ ] 返回 expire_at_ms；位图超过 64KB 时拒绝（total_chunks >524288）。
-- [ ] 单测：空任务、部分完成、全完成、计数漂移修正、过期。
+- [x] 校验 task 归属；status 4/5/6 返回对应错误；7 返回 3005。
+- [x] 查 c_state=1 的 c_index，构造 ceil(total/8) 字节位图（LSB-first）。
+- [x] 重算 done_chunks 与 done_bytes；与 tr_done_chunks/tr_offset 不一致时修正并 WARN。
+- [x] 返回 expire_at_ms；位图超过 64KB 时拒绝（total_chunks >524288）。
+- [x] 单测：空任务、部分完成、全完成、计数漂移修正、过期。
+
+**实施记录（2026-10-19）：**
+- `UploadService::continueUpload` 在单事务内 `lockTaskForUpdate`（WHERE tr_user_id=uid），NotFound 统一映射 1004；status 0/1/2 可续传，6 与 tr_expire_at 已过期回 3007，3/4/5/7 回 3005。
+- 位图定长 `ceil(total_chunks/8)`，第 i 片写 `bitmap[i/8] |= 1 << (i%8)`；空任务返回全 0 定长串，不是空串；total_chunks 为 0 或 >524288 回 1001。
+- done_chunks 取位图内 index 计数、done_bytes 取 `SUM(c_size)`；与 tr_done_chunks/tr_offset 不一致时用 `TransferDao::syncDoneCounters` 在同事务内修正，WARN 以 TODO(log) 标注（日志模块未就绪）。
+- expire_at_ms 由 DAO 在 SQL 里 `CAST(UNIX_TIMESTAMP(tr_expire_at)*1000 AS UNSIGNED)` 计算，避免应用侧解析 UTC 文本。
+- 10028 已注册进 HandlerRegistry，uid 仍取 ConnState（当前占位 0，未登录回 1004）；service 单测直接传 uid。
+- 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
 - ContinueUploadEmptyBitmap
@@ -925,14 +936,17 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - ContinueUploadFixesCounterDrift
 - ContinueUploadExpired
 - ContinueUploadTaskOfOtherUser
+- ContinueUploadRejectsNonWritableStates（补充：3/4/5/7 → 3005）
+- ContinueUploadRejectsOversizedBitmap（补充：>524288 与非法 task_id → 1001）
 
 **验收标准:**
-- [ ] 13 片任务在第 6 片后位图前 6 位为 1，其余 0。
-- [ ] 计数漂移时返回重算值，并把 DB 修正到一致。
-- [ ] 不属于当前用户返回 1004，不泄露任务存在性。
+- [x] 13 片任务在第 6 片后位图前 6 位为 1，其余 0。（2026-10-19：VM 构建零警告；无 DB 档 8 例 SKIP；有 DB 档 ContinueUpload* 8/8 passed 314ms。PartialBitmap 断言 byte0=0x3F、byte1=0x00；再补第 8 片后 byte1=0x01，跨字节 LSB-first 方向正确）
+- [x] 计数漂移时返回重算值，并把 DB 修正到一致。（ContinueUploadFixesCounterDrift 通过；syncDoneCounters 只在调用方事务内使用）
+- [x] 不属于当前用户返回 1004，不泄露任务存在性。（ContinueUploadTaskOfOtherUser 通过；lockTaskForUpdate 的 WHERE 带 tr_user_id）
+- [x] 回归与清理：cm_logic_tests 54/54 连跑两遍（1959ms / 1881ms）、ctest 27/27；t_chunk/t_transfer_task/t_user_file/t_file/t_user 零残留；server/logic 无 mysql.h/hiredis。
 
 **风险:**
-- 位图字节序/bit 序错 → 单测固定第 0/7/8 位；客户端用同一实现对照。
+- 位图字节序/bit 序错 → 单测固定前 6 位（byte0=0x3F）与第 8 位（byte1 bit0）；客户端用同一实现对照。
 - 大任务位图 64KB 上限 → 初始化时校验，不等到续传才报错。
 
 ---
