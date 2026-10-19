@@ -1,160 +1,33 @@
 #include <gtest/gtest.h>
 
-#include <unistd.h>
-
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <ctime>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "db/mysql_conn.h"
-#include "db/mysql_pool.h"
+#include "dao_fixture.h"
 #include "db/prepared_statement.h"
 #include "db/transfer_dao.h"
 
 namespace {
 
-const char* kHashA =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";  // 64
-const char* kSalt32 = "0123456789abcdef0123456789abcdef";               // 32
 const std::uint32_t kChunkSize = 4194304;
 
-bool mysqlEnabled() {
-    const char* value = std::getenv("CM_TEST_MYSQL");
-    return value != NULL && std::string(value) == "1";
-}
-
-std::string envOr(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
-}
-
-cm::db::MysqlOptions mysqlOptions() {
-    cm::db::MysqlOptions options;
-    options.host = envOr("CM_TEST_MYSQL_HOST", "127.0.0.1");
-    options.port = static_cast<unsigned short>(
-        std::atoi(envOr("CM_TEST_MYSQL_PORT", "3306").c_str()));
-    options.user = envOr("CM_TEST_MYSQL_USER", "cm_test");
-    options.password = envOr("CM_TEST_MYSQL_PASSWORD", "");
-    options.database = envOr("CM_TEST_MYSQL_DB", "cloud_media_test");
-    options.minSize = 1;
-    options.maxSize = 2;
-    return options;
-}
-
-std::string makeTel(int seq) {
-    char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "cmt%03ld%05d%03d",
-                  static_cast<long>(::getpid()) % 1000L,
-                  static_cast<int>(std::time(NULL)) % 100000, seq % 1000);
-    return std::string(buffer);
-}
-
-// 32 位 hex：pid / 时间 / 序号 / 盐，保证同机重复跑不撞唯一键。
-std::string makeHex32(int seq) {
-    char buffer[40];
-    std::snprintf(buffer, sizeof(buffer), "%08x%08x%08x%08x",
-                  static_cast<unsigned int>(::getpid()) & 0xffffffffU,
-                  static_cast<unsigned int>(std::time(NULL)) & 0xffffffffU,
-                  static_cast<unsigned int>(seq) & 0xffffffffU,
-                  static_cast<unsigned int>(0xa5a50000U + (seq * 3571U)) & 0xffffffffU);
-    return std::string(buffer);
-}
-
-class TransferDaoTest : public ::testing::Test {
+class TransferDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
-        if (!mysqlEnabled()) {
-            GTEST_SKIP() << "set CM_TEST_MYSQL=1 to run TransferDao tests";
+        cm::test::DaoTestBase::SetUp();
+        if (m_pool == NULL) {
+            return;  // 基类已 GTEST_SKIP
         }
-        m_options = mysqlOptions();
-        std::string error;
-        m_pool = cm::db::MysqlPool::create(m_options, &error);
-        ASSERT_TRUE(m_pool) << error;
-        m_conn = m_pool->acquire();
-        ASSERT_TRUE(m_conn) << "acquire MySQL connection failed";
         m_dao.reset(new cm::db::TransferDao(*m_conn));
         createUser();
     }
 
-    void TearDown() override {
-        if (m_conn) {
-            for (std::size_t i = 0; i < m_taskIds.size(); ++i) {
-                execPrepared("DELETE FROM t_chunk WHERE c_task_id = ?", m_taskIds[i]);
-                execPrepared("DELETE FROM t_transfer_task WHERE tr_task_id = ?",
-                             m_taskIds[i]);
-            }
-            if (m_uid != 0) {
-                execPrepared("DELETE FROM t_transfer_task WHERE tr_user_id = ?", m_uid);
-                execPrepared("DELETE FROM t_user WHERE u_id = ?", m_uid);
-            }
-        }
-        m_dao.reset();
-        m_conn.reset();
-        if (m_pool) {
-            m_pool->shutdown();
-            m_pool.reset();
-        }
-    }
-
-    void createUser() {
-        const std::string tel = makeTel(m_seq++);
-        std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(
-            "INSERT INTO t_user (u_tel, u_password, u_salt, u_pwd_algo, u_name) "
-            "VALUES (?, ?, ?, 2, 'transfer_dao_test')");
-        ASSERT_TRUE(stmt);
-        ASSERT_TRUE(stmt->bindString(0, tel));
-        ASSERT_TRUE(stmt->bindString(1, kHashA));
-        ASSERT_TRUE(stmt->bindString(2, kSalt32));
-        ASSERT_TRUE(stmt->execute());
-        m_uid = stmt->insertId();
-        ASSERT_GT(m_uid, std::uint64_t(0));
-    }
-
-    bool execPrepared(const char* sql, const std::string& value) {
-        std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(sql);
-        if (!stmt || !stmt->bindString(0, value)) {
-            return false;
-        }
-        return stmt->execute();
-    }
-
-    bool execPrepared(const char* sql, std::uint64_t value) {
-        std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(sql);
-        if (!stmt || !stmt->bindUInt64(0, value)) {
-            return false;
-        }
-        return stmt->execute();
-    }
-
-    std::string nextHex32() {
-        return makeHex32(m_seq++);
-    }
-
-    // 建任务：默认 13 片 / 50MB，status=0。
+    // 建任务：默认 13 片 / 50MB，status=0；返回 task_id 并登记清理。
     std::string createTask(std::uint32_t totalChunks, std::uint64_t totalSize) {
-        const std::string taskId = nextHex32();
-        cm::db::NewTransferTask task;
-        task.taskId = taskId;
-        task.userId = m_uid;
-        task.type = 1;
-        task.fileMd5 = nextHex32();
-        task.fileName = "phase5.bin";
-        task.totalSize = totalSize;
-        task.chunkSize = kChunkSize;
-        task.totalChunks = totalChunks;
-        task.parentUfId = 0;
-        task.ttlSeconds = 3600;
-
-        std::uint64_t trId = 0;
-        EXPECT_EQ(cm::ErrorCode::Ok, m_dao->createTask(task, &trId));
-        if (trId != 0) {
-            m_taskIds.push_back(taskId);
-        }
-        return taskId;
+        return DaoTestBase::createTask(m_uid, totalChunks, totalSize);
     }
 
     cm::db::ChunkWrite makeChunk(std::uint32_t index,
@@ -242,13 +115,7 @@ protected:
         return false;
     }
 
-    cm::db::MysqlOptions m_options;
-    std::shared_ptr<cm::db::MysqlPool> m_pool;
-    std::unique_ptr<cm::db::MysqlConn> m_conn;
     std::unique_ptr<cm::db::TransferDao> m_dao;
-    std::uint64_t m_uid = 0;
-    int m_seq = 0;
-    std::vector<std::string> m_taskIds;
 };
 
 TEST_F(TransferDaoTest, TransferDaoCreateAndFind) {
@@ -268,7 +135,7 @@ TEST_F(TransferDaoTest, TransferDaoCreateAndFind) {
     std::uint64_t trId = 0;
     ASSERT_EQ(cm::ErrorCode::Ok, m_dao->createTask(task, &trId));
     ASSERT_GT(trId, std::uint64_t(0));
-    m_taskIds.push_back(taskId);
+    trackTask(taskId);
 
     cm::db::TransferTaskRow row;
     ASSERT_EQ(cm::ErrorCode::Ok, m_dao->findTaskByTaskId(taskId, &row));
@@ -305,7 +172,7 @@ TEST_F(TransferDaoTest, TransferDaoCreateAndFind) {
     noMd5.fileMd5.clear();
     std::uint64_t noMd5Id = 0;
     ASSERT_EQ(cm::ErrorCode::Ok, m_dao->createTask(noMd5, &noMd5Id));
-    m_taskIds.push_back(noMd5.taskId);
+    trackTask(noMd5.taskId);
     cm::db::TransferTaskRow noMd5Row;
     ASSERT_EQ(cm::ErrorCode::Ok, m_dao->findTaskByTaskId(noMd5.taskId, &noMd5Row));
     EXPECT_TRUE(noMd5Row.fileMd5.empty());

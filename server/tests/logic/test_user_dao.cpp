@@ -1,17 +1,10 @@
 #include <gtest/gtest.h>
 
-#include <unistd.h>
-
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
 #include <memory>
 #include <string>
-#include <vector>
 
-#include "db/mysql_pool.h"
-#include "db/prepared_statement.h"
+#include "dao_fixture.h"
 #include "db/user_dao.h"
 
 namespace {
@@ -22,87 +15,17 @@ const char* kHashB =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";  // 64
 const char* kSalt32 = "0123456789abcdef0123456789abcdef";               // 32
 
-bool mysqlEnabled() {
-    const char* value = std::getenv("CM_TEST_MYSQL");
-    return value != NULL && std::string(value) == "1";
-}
-
-std::string envOr(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
-}
-
-cm::db::MysqlOptions mysqlOptions() {
-    cm::db::MysqlOptions options;
-    options.host = envOr("CM_TEST_MYSQL_HOST", "127.0.0.1");
-    options.port = static_cast<unsigned short>(
-        std::atoi(envOr("CM_TEST_MYSQL_PORT", "3306").c_str()));
-    options.user = envOr("CM_TEST_MYSQL_USER", "cm_test");
-    options.password = envOr("CM_TEST_MYSQL_PASSWORD", "");
-    options.database = envOr("CM_TEST_MYSQL_DB", "cloud_media_test");
-    options.minSize = 1;
-    options.maxSize = 2;
-    return options;
-}
-
-// u_tel 为 VARCHAR(20) ascii：pid + 时间低位 + 序号，保证同机重复跑不撞唯一键。
-std::string makeTel(int seq) {
-    char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "cmt%ld%02d%03d",
-                  static_cast<long>(::getpid()) % 100000L,
-                  static_cast<int>(std::time(NULL)) % 100, seq % 1000);
-    return std::string(buffer);
-}
-
-class UserDaoTest : public ::testing::Test {
+class UserDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
-        if (!mysqlEnabled()) {
-            GTEST_SKIP() << "set CM_TEST_MYSQL=1 to run UserDao tests";
+        cm::test::DaoTestBase::SetUp();
+        if (m_pool == NULL) {
+            return;  // 基类已 GTEST_SKIP
         }
-        m_options = mysqlOptions();
-        std::string error;
-        m_pool = cm::db::MysqlPool::create(m_options, &error);
-        ASSERT_TRUE(m_pool) << error;
-        m_conn = m_pool->acquire();
-        ASSERT_TRUE(m_conn) << "acquire MySQL connection failed";
         m_dao.reset(new cm::db::UserDao(*m_conn));
     }
 
-    void TearDown() override {
-        if (m_conn) {
-            for (std::size_t i = 0; i < m_tels.size(); ++i) {
-                std::unique_ptr<cm::db::PreparedStatement> stmt =
-                    m_conn->prepare("DELETE FROM t_user WHERE u_tel = ?");
-                if (!stmt) {
-                    continue;
-                }
-                if (!stmt->bindString(0, m_tels[i])) {
-                    continue;
-                }
-                stmt->execute();
-            }
-        }
-        m_dao.reset();
-        m_conn.reset();
-        if (m_pool) {
-            m_pool->shutdown();
-            m_pool.reset();
-        }
-    }
-
-    std::string nextTel() {
-        static int seq = 0;
-        const std::string tel = makeTel(seq++);
-        m_tels.push_back(tel);
-        return tel;
-    }
-
-    cm::db::MysqlOptions m_options;
-    std::shared_ptr<cm::db::MysqlPool> m_pool;
-    std::unique_ptr<cm::db::MysqlConn> m_conn;
     std::unique_ptr<cm::db::UserDao> m_dao;
-    std::vector<std::string> m_tels;
 };
 
 TEST_F(UserDaoTest, UserDaoFindMissing) {

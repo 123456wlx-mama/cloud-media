@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 已验收（46d6609）；DAO-3 已验收（2331507）；DAO-4 ShareDao+PlayDao 已验收：构建零警告，ctest 21/21，share_dao 5/5 + play_dao 2/2 连跑两遍全绿，三表零残留）
+**Status:** In Progress（P0-1~P0-6 全绿；DAO Stage 收口：DAO-1~DAO-4 已验收；DAO-5 已验收——cm_logic_tests 合并 30 个用例，构建零警告，有 DB 连跑两遍 30/30，七张表零残留，ctest 22/22；下一步进入 Upload Stage（U-1 业务消息）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -653,19 +653,26 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: server/tests/CMakeLists.txt（add_subdirectory(logic)）
 
 **Steps:**
-- [ ] 定义 cm_logic_tests（初始包含 DAO 四个测试源，链接 cm_storage/cm_cache/GTest；后续 Stage 把服务层测试源加入同一 target），并用 add_test(NAME logic_unit ...) 注册。
-- [ ] Fixture 在 SetUp 检查 CM_TEST_MYSQL，未设置则 GTEST_SKIP。
-- [ ] 提供 createUser、createBlob、createNode、createTask、createShare 辅助函数，返回自增 ID。
-- [ ] 每个用例使用唯一前缀（pid + 时间 + 序号），TearDown 按前缀清理；禁止 TRUNCATE。
-- [ ] 测试失败时打印 SQL 占位符与 ID，不打印密码/token。
+- [x] 定义 cm_logic_tests（初始包含 DAO 四个测试源，链接 cm_storage/cm_cache/GTest；后续 Stage 把服务层测试源加入同一 target），并用 add_test(NAME logic_unit ...) 注册。
+- [x] Fixture 在 SetUp 检查 CM_TEST_MYSQL，未设置则 GTEST_SKIP。
+- [x] 提供 createUser、createBlob、createNode、createTask、createShare 辅助函数，返回自增 ID。
+- [x] 每个用例使用唯一前缀（pid + 时间 + 序号），TearDown 按前缀清理；禁止 TRUNCATE。
+- [ ] 测试失败时打印 SQL 占位符与 ID，不打印密码/token。（当前靠 gtest 断言表达式输出；SQL 占位符打印未实现，留到需要定位慢查询时再加）
+
+**实施记录（2026-10-19）：**
+- `server/tests/logic/CMakeLists.txt` 定义 `cm_logic_tests`，编入 dao_fixture + test_dao_fixture + 五个 DAO 测试源；`CM_SOURCE_DIR` 保留给 `FileDaoNoOffsetSql`。
+- `server/tests/CMakeLists.txt` 改为 `add_subdirectory(logic)`，删除五个旧 target。
+- 注册 `logic_unit` 全量 + 五个 `--gtest_filter` 短名（user_dao/file_dao/transfer_dao/share_dao/play_dao），既有 `ctest -R` 命令继续可用。
+- `DaoTestBase` 统一提供 pool/conn、唯一前缀、create* 辅助与 cleanup；清理顺序 t_chunk → t_transfer_task → t_share → t_play_record → t_user_file → t_file → t_user，末尾按 tel 前缀兜底清 UserDao 直接插入的用户。
+- 五个测试文件只删夹具样板，用例名与断言未改。
 
 **gtest 清单:**
 - DaoFixtureSmoke（创建/清理后计数回到基线）
 - DaoFixtureUniquePrefix
 
 **验收标准:**
-- [ ] 连续跑两遍 DAO 测试，第二遍不因残留数据失败。
-- [ ] 清理 SQL 只删本前缀数据。
+- [x] 连续跑两遍 DAO 测试，第二遍不因残留数据失败。（2026-10-19：无 DB 档 6 个 ctest 项全 Passed；有 DB 档 cm_logic_tests 30/30 连跑两遍（613ms / 511ms）；跑完 t_chunk/t_transfer_task/t_share/t_play_record/t_user_file/t_file/t_user 七表计数均为 0）
+- [x] 清理 SQL 只删本前缀数据。（cleanup 只按登记 ID 与 tel 前缀删除，无 TRUNCATE、无全表 DELETE）
 
 **风险:**
 - 清理遗漏导致唯一键冲突 → 用唯一前缀而非固定 tel/md5；TearDown 尽力清理并记录。

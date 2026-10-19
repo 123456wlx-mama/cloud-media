@@ -3,104 +3,25 @@
 #include <unistd.h>
 
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "db/mysql_conn.h"
-#include "db/mysql_pool.h"
+#include "dao_fixture.h"
 #include "db/play_dao.h"
 #include "db/prepared_statement.h"
 
 namespace {
 
-const char* kHashA =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";  // 64
-const char* kSalt32 = "0123456789abcdef0123456789abcdef";               // 32
-
-bool mysqlEnabled() {
-    const char* value = std::getenv("CM_TEST_MYSQL");
-    return value != NULL && std::string(value) == "1";
-}
-
-std::string envOr(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
-}
-
-cm::db::MysqlOptions mysqlOptions() {
-    cm::db::MysqlOptions options;
-    options.host = envOr("CM_TEST_MYSQL_HOST", "127.0.0.1");
-    options.port = static_cast<unsigned short>(
-        std::atoi(envOr("CM_TEST_MYSQL_PORT", "3306").c_str()));
-    options.user = envOr("CM_TEST_MYSQL_USER", "cm_test");
-    options.password = envOr("CM_TEST_MYSQL_PASSWORD", "");
-    options.database = envOr("CM_TEST_MYSQL_DB", "cloud_media_test");
-    options.minSize = 1;
-    options.maxSize = 2;
-    return options;
-}
-
-std::string makeTel(int seq) {
-    char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "cmp%03ld%05d%03d",
-                  static_cast<long>(::getpid()) % 1000L,
-                  static_cast<int>(std::time(NULL)) % 100000, seq % 1000);
-    return std::string(buffer);
-}
-
-class PlayDaoTest : public ::testing::Test {
+class PlayDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
-        if (!mysqlEnabled()) {
-            GTEST_SKIP() << "set CM_TEST_MYSQL=1 to run PlayDao tests";
+        cm::test::DaoTestBase::SetUp();
+        if (m_pool == NULL) {
+            return;  // 基类已 GTEST_SKIP
         }
-        m_options = mysqlOptions();
-        std::string error;
-        m_pool = cm::db::MysqlPool::create(m_options, &error);
-        ASSERT_TRUE(m_pool) << error;
-        m_conn = m_pool->acquire();
-        ASSERT_TRUE(m_conn) << "acquire MySQL connection failed";
         m_dao.reset(new cm::db::PlayDao(*m_conn));
         createUser();
-    }
-
-    void TearDown() override {
-        if (m_conn && m_uid != 0) {
-            execUInt("DELETE FROM t_play_record WHERE p_user_id = ?", m_uid);
-            execUInt("DELETE FROM t_user WHERE u_id = ?", m_uid);
-        }
-        m_dao.reset();
-        m_conn.reset();
-        if (m_pool) {
-            m_pool->shutdown();
-            m_pool.reset();
-        }
-    }
-
-    void createUser() {
-        const std::string tel = makeTel(m_seq++);
-        std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(
-            "INSERT INTO t_user (u_tel, u_password, u_salt, u_pwd_algo, u_name) "
-            "VALUES (?, ?, ?, 2, 'play_dao_test')");
-        ASSERT_TRUE(stmt);
-        ASSERT_TRUE(stmt->bindString(0, tel));
-        ASSERT_TRUE(stmt->bindString(1, kHashA));
-        ASSERT_TRUE(stmt->bindString(2, kSalt32));
-        ASSERT_TRUE(stmt->execute());
-        m_uid = stmt->insertId();
-        ASSERT_GT(m_uid, std::uint64_t(0));
-    }
-
-    bool execUInt(const char* sql, std::uint64_t value) {
-        std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(sql);
-        if (!stmt || !stmt->bindUInt64(0, value)) {
-            return false;
-        }
-        return stmt->execute();
     }
 
     std::uint64_t countRows() {
@@ -120,12 +41,7 @@ protected:
                static_cast<std::uint64_t>(::getpid() % 1000) * 100000ULL;
     }
 
-    cm::db::MysqlOptions m_options;
-    std::shared_ptr<cm::db::MysqlPool> m_pool;
-    std::unique_ptr<cm::db::MysqlConn> m_conn;
     std::unique_ptr<cm::db::PlayDao> m_dao;
-    std::uint64_t m_uid = 0;
-    int m_seq = 0;
 };
 
 TEST_F(PlayDaoTest, PlayDaoUpsertLww) {
