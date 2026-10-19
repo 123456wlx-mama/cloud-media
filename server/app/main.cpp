@@ -13,6 +13,7 @@
 #include <string>
 
 #include "cm/config/server_config.h"
+#include "cm/log/logger.h"
 #include "cm/protocol/codec.h"
 #include "cm/protocol/message_type.h"
 #include "cm/protocol/messages/auth.h"
@@ -499,6 +500,25 @@ int runServer(const cm::ServerConfig& cfg) {
     // 这里再兜住 sendfile/其他路径）。
     ::signal(SIGPIPE, SIG_IGN);
 
+    // 先初始化日志：console=true 让 nohup 重定向的 stdout 也能 grep 到。
+    cm::LogConfig logCfg;
+    logCfg.path = cfg.logPath;
+    cm::LogLevel logLevel = cm::LogLevel::Info;
+    if (cm::parse_log_level(cfg.logLevel, &logLevel)) {
+        logCfg.level = logLevel;
+    }
+    logCfg.max_size_bytes =
+        static_cast<std::size_t>(cfg.logMaxSizeMb) * 1024ULL * 1024ULL;
+    logCfg.roll_days = cfg.logRollDays;
+    logCfg.async = true;
+    logCfg.console = true;
+
+    std::string logError;
+    if (cm::Logger::instance().init(logCfg, &logError) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "logger init failed: %s\n", logError.c_str());
+        return 1;
+    }
+
     std::string error;
 
     cm::db::MysqlOptions mysqlOptions;
@@ -851,6 +871,7 @@ int runServer(const cm::ServerConfig& cfg) {
     app.stop();  // 停 IO 池前会 drain 已投递的目录删除
     mysql->shutdown();
     redis->shutdown();
+    cm::Logger::instance().shutdown();
     return 0;
 }
 

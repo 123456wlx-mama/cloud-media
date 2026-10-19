@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "cm/config/server_config.h"
+#include "cm/log/logger.h"
 #include "logic/expiry_job.h"
 #include "logic/jobs/orphan_gc_job.h"
 #include "logic/jobs/play_cleanup_job.h"
@@ -119,11 +120,22 @@ bool ServerApp::start(std::string* error) {
         return false;
     }
 
+    if (recovered > 0) {
+        cm::Logger::instance().log(
+            cm::LogLevel::Info, __FILE__, __LINE__,
+            "recoverOnStartup reset " + std::to_string(recovered) +
+                " merging tasks (7->2)");
+    }
+
     std::size_t removed = 0;
     // 清理失败不阻断启动：只是多留一点临时文件。
     if (m_expiry->cleanStaleTmp(kStaleTmpAgeSeconds, &removed) !=
         cm::ErrorCode::Ok) {
         // TODO(log): 记 WARN（清理过期 tmp 失败）。
+    } else if (removed > 0) {
+        cm::Logger::instance().log(
+            cm::LogLevel::Info, __FILE__, __LINE__,
+            "cleanStaleTmp removed " + std::to_string(removed) + " dirs");
     }
 
     if (m_expiryTickMs <= 0) {
