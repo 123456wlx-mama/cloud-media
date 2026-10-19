@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 UserDao 已接线 + 测试落盘，待 Linux 构建与 DB 集成测试验收）
+**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 UserDao 已验收：VM 构建零警告，ctest 17/17 通过，user_dao 5 例有 DB 全绿，提交 2c10fce）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -519,9 +519,9 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - UserDaoUpdatePassword
 
 **验收标准:**
-- [ ] 有 DB 集成测试全绿；无 DB SKIP。
-- [ ] 慢查询日志只含占位符 SQL，不含密码。
-- [ ] 无字符串拼接 SQL。
+- [x] 有 DB 集成测试全绿；无 DB SKIP。（2026-10-19：无 DB 档 5 SKIP / ctest Passed；有 DB 档 5 passed，89ms）
+- [x] 慢查询日志只含占位符 SQL，不含密码。（全部走 PreparedStatement，慢查询打印 sql() 原文含 `?`）
+- [x] 无字符串拼接 SQL。（grep `user_dao.cpp` 无字符串拼接，仅字面量 SQL + `?`）
 
 **风险:**
 - 测试数据污染 → 每个用例用唯一 tel 前缀 + 测试后清理；不 TRUNCATE 全表。
