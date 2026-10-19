@@ -40,6 +40,7 @@ if(BUILD_STORAGE)
         logic/upload_fs.cpp
         logic/expiry_job.cpp
         logic/download_service.cpp
+        logic/block_crc.cpp
     )
     target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_logic

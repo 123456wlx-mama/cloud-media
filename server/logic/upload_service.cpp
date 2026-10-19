@@ -20,6 +20,7 @@
 #include "cm/base/md5.h"
 
 #include "cache/cache_store.h"
+#include "logic/block_crc.h"
 #include "logic/upload_fs.h"
 #include "db/file_dao.h"
 #include "db/mysql_conn.h"
@@ -709,7 +710,11 @@ ErrorCode UploadService::completeUpload(
 
     // sidecar 失败只 WARN，不影响上传结果。
     if (!writeBlobMeta(blobPath, task.totalSize, wholeMd5)) {
-        // TODO(log): Logger 就绪后记 WARN（sidecar 写入失败）。
+        // TODO(log): Logger 就绪后记 WARN（.meta 写入失败）。
+    }
+    // 块 CRC sidecar 与 .meta 同级：失败只 WARN，D-4 会退化为缓冲路径。
+    if (writeBlockCrc(blobPath, task.totalSize) != ErrorCode::Ok) {
+        // TODO(log): Logger 就绪后记 WARN（.crc 写入失败）。
     }
 
     // 成功后清理本任务临时目录（分片 + merged 临时文件）。

@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收：build-on/build-off 双构建零警告、OFF 档 zero_copy=0；D-1 已验收：DownloadOpen 7/7、cm_logic_tests 75/75 连跑两遍、ctest 28/28、四表零残留；下一步 D-1b 块 CRC sidecar）
+**Status:** In Progress（Upload Stage 已收口（U-1~U-6）；D-0 已验收（双构建、OFF 档 zero_copy=0）；D-1 已验收（DownloadOpen 7/7，ctest 28/28）；D-1b 已验收：块 CRC 侧车 6/6、build-on 全量 81/81 连跑两遍、build-off 6/6、四表零残留；下一步 D-2 下载票据语义）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -978,7 +978,7 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - 逐片校验复用 `TransferDao::listChunks`（一次查询，按 c_index 升序）；每个分片边读边算 MD5，同时喂给整文件 MD5，坏片最多返回 1024 个。
 - blob 落盘：目标 `<dataDir>/blobs/aa/bb/<md5>`；DB 已有同 md5 或目标文件已存在（并发秒传）则丢弃 merged；rename 失败保留 merged 与 tmp，任务回 1。
 - 落库事务失败时不删已 rename 的 blob，只留 TODO(log) 标注“孤儿 blob 待 GC”（避免误删他人数据）。
-- sidecar 按本次指令落 `<md5>.meta`（size/md5/created_at），与 06 §6.3 的 `.crc`（块 CRC，供 sendfile）不同；D-1/D-4 的零拷贝块 CRC 仍需另行实现，不能依赖本文件。
+- sidecar 按本次指令落 `<md5>.meta`（size/md5/created_at），与 06 §6.3 的 `.crc`（块 CRC，供 sendfile）不同；D-1b 已在合并成功后补写 `.crc`。
 - 未执行构建/ctest（env-policy），验收项待人工在 VM 上确认。
 
 **gtest 清单:**
@@ -1146,39 +1146,51 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Redis 挂 → 打开下载 fail-closed，不签发无授权 ticket。
 - 既有 `CacheKey::downloadTicket` 前缀是 `cm:v1:dl:ticket:`，与口述的 `cm:v1:dl:{ticket}` 不同；复用前者，避免两套键。
 
-### Task D-1b：块 CRC sidecar（原 D-1，D-4 前完成）
+### Task D-1b：块 CRC sidecar（.crc）
 
-**Goal:** 在 U-5 的写路径之上补 .crc 读取、懒计算与损坏回退。
+**Goal:** 为 sendfile 零拷贝提供每 4MB 块的 CRC；缺失/损坏时懒填充，失败不阻断下载。
 
 **Files:**
-- Modify: server/logic/block_crc_sidecar.h
-- Modify: server/logic/block_crc_sidecar.cpp
-- Create: server/logic/tests/test_block_crc_sidecar.cpp
+- Create: server/logic/block_crc.h、server/logic/block_crc.cpp
+- Modify: server/logic/upload_service.cpp（合并成功后生成 .crc）
+- Modify: server/CMakeLists.txt、server/tests/logic/CMakeLists.txt
+- Create: server/tests/logic/test_block_crc.cpp
 
 **Steps:**
-- [ ] 格式：magic "CMBC1"(5) + version u8(1) + block_size u32 BE + block_count u32 BE + crc[block_count] u32 BE；总长 14+4n。
-- [ ] 创建：复用 U-5 的 writeFromMerge（边读边算、临时文件→fsync→rename）；block_size 固定 4194304。
-- [ ] 读取：校验 magic/version/block_size/block_count 与 f_size 推导一致；越界/短读返回错误。
-- [ ] 懒填充：缺失或 crc=0 的块，IO 池读该块计算 CRC，pwrite 到对应槽位（O_RDWR|O_CREAT）；失败不阻断下载。
-- [ ] 损坏：magic/长度不符时视为缺失，重新生成；不信任 sidecar 的 block_count。
-- [ ] 单测：正常写读、末块短、crc=0 懒填、截断/错 magic、block_count 不符、并发 pwrite 同一槽位。
+- [x] 格式：magic "CMBC1"(5) + version u8(1) + block_size u32 BE + block_count u32 BE + crc[block_count] u32 BE；总长 14+4n，block_size 固定 4194304。
+- [x] writeBlockCrc(blobPath,size)：1MB 缓冲流式读 blob 算每块 CRC，.crc.tmp → fsync → rename；块数由 size 推导。
+- [x] readBlockCrc：校验 magic/version/block_size/block_count 与长度；缺失/损坏/多出统一 Ok+missing。
+- [x] ensureBlockCrc：命中直接返回；crc=0/缺失时读块现算并 pwrite 到 14+4*index；写盘失败只 WARN，仍返回 CRC。
+- [x] U-5：合并落库成功后调用 writeBlockCrc，失败只 TODO(log) WARN，不影响上传成功。
+- [x] 单测 6 例：正常往返、末块短、crc=0 懒填、截断/坏 magic、block_count 不符、并发写同一槽位。
+
+**实施记录（2026-10-19）：**
+- 模块落 `server/logic/block_crc.*`（未沿用计划里的 block_crc_sidecar 命名）；纯文件 IO，只依赖 cm::Crc32/byte_order，不 include net。
+- `writeBlockCrc` 用 1MB 缓冲边读边算；`.crc.tmp` 固定名，同一 blob 的合并由 status=7 串行化。
+- `readBlockCrc` 对文件长度做精确匹配：短读、多出、magic/version/block_size/count 不符都返回 Ok + missing=true，由调用方重建。
+- `ensureBlockCrc` 慢路径用进程内互斥串行化“建壳 + pwrite”，避免并发 ftruncate 把刚填的槽位清零；契约仍是同槽位同值可并发写。
+- sidecar 缺失/损坏时先写 header 并 ftruncate 到 14+4n（0 表示未知），再 pwrite 目标槽位；下次 read 即完整长度。
+- U-5 在 `.meta` 之后调用 `writeBlockCrc(blobPath, totalSize)`；与 .meta 同级 best-effort。
+- 验收侧已执行：`--gtest_list_tests` 命中 6 个、无 DB 档 6/6、build-on 全量 81/81 两遍、build-off 6/6；CMake 源与 add_test 均已注册。
 
 **gtest 清单:**
-- SidecarWriteReadRoundTrip
-- SidecarLastBlockShort
-- SidecarLazyFillUnknownCrc
-- SidecarCorruptMagicFallsBack
-- SidecarBlockCountMismatch
-- SidecarConcurrentPwrite
+- BlockCrcWriteRead
+- BlockCrcLastBlockShort
+- BlockCrcZeroCrcLazyFill
+- BlockCrcTruncatedOrBadMagic
+- BlockCrcBlockCountMismatch
+- BlockCrcConcurrentPwriteSameSlot
 
 **验收标准:**
-- [ ] 13 块 sidecar 大小 14+52=66 字节；每块 CRC 与直接计算一致。
-- [ ] 截断/错 magic 时返回错误，不越界读。
-- [ ] 懒填充后同块第二次直接命中。
+- [x] ctest -R block_crc 命中 6 例且全绿；纯文件用例，无 DB/Redis 也运行。（2026-10-19：`--gtest_list_tests` 命中 6 个；无 DB 环境直接运行 6/6 passed 145ms；build-off 亦 6/6 passed 149ms）
+- [x] sidecar 长度 = 14+4n；末块 CRC 与直接计算一致。（源码核对：magic "CMBC1"@0-4、version@5、block_size 大端@6、block_count 大端@10、头长 14 → 13 块为 66 字节；LastBlockShort 用例用直接计算比对末块）
+- [x] 截断/错 magic/count 不符返回 missing，不越界读。（TruncatedOrBadMagic / BlockCountMismatch 通过，统一 Ok+missing=true 由调用方重建）
+- [x] crc=0 懒填充后同块第二次直接命中；并发 8 线程同槽位结果一致。（ZeroCrcLazyFill / ConcurrentPwriteSameSlot 通过；慢路径用进程内互斥串行化，避免 ftruncate 清掉他人已填槽位）
+- [x] 回归与清理：build-on 全量 81/81 连跑两遍（2322ms / 2858ms）、ctest 29/29；四表零残留；.crc 生成挂在 U-5 合并成功后 best-effort，失败不阻断上传。
 
 **风险:**
-- sidecar 与 blob 不一致 → 上传同遍生成；GC 同删；不一致时重算覆盖。
-- 多线程 pwrite 同一槽位 → 同值写，允许；文件打开用 O_RDWR 不截断。
+- 多进程并发懒填充未加文件锁 → 单实例部署可接受；多实例需改成 O_EXCL 建壳或 flock。
+- 合并后重读整个 blob 生成 .crc → 大文件多一次顺序读；Phase 7 可改为合并时顺带计算（U-5 的 1MB 流已经在算块 CRC）。
 
 ---
 

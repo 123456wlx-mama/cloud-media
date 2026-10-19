@@ -15,6 +15,7 @@ add_executable(cm_logic_tests
     test_upload_complete.cpp
     test_expiry_job.cpp
     test_download_open.cpp
+    test_block_crc.cpp
 )
 # test_file_dao 的 FileDaoNoOffsetSql 要扫描源码。
 target_compile_definitions(cm_logic_tests PRIVATE
@@ -47,3 +48,4 @@ add_test(NAME continue_upload COMMAND cm_logic_tests --gtest_filter=ContinueUplo
 add_test(NAME upload_complete COMMAND cm_logic_tests --gtest_filter=UploadComplete*)
 add_test(NAME expiry_job COMMAND cm_logic_tests --gtest_filter=ExpiryJob*)
 add_test(NAME download_open COMMAND cm_logic_tests --gtest_filter=DownloadOpen*)
+add_test(NAME block_crc COMMAND cm_logic_tests --gtest_filter=BlockCrc*)
