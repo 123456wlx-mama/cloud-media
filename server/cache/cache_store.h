@@ -87,6 +87,14 @@ public:
         Error
     };
 
+    // 短锁结果：Busy 表示别的请求持锁（业务层回 1006），
+    // Error 表示 Redis 不可用（调用方按 fail-open 继续，不阻塞主流程）。
+    enum class LockResult {
+        Acquired,
+        Busy,
+        Error
+    };
+
     using Loader = std::function<LoadStatus(std::string*)>;
 
     CacheStore(RedisPool& pool, const CacheStoreOptions& options);
@@ -102,6 +110,10 @@ public:
 
     Result getOrLoad(const std::string& key, const Loader& loader,
                      std::string* out);
+
+    // SET key token NX PX ttl。只用于幂等短锁，不参与 Cache-Aside 数据。
+    LockResult tryLock(const std::string& key, const std::string& token,
+                       std::chrono::milliseconds ttl);
 
     CacheStats stats() const;
 

@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（DAO Stage 已收口：cm_logic_tests 30 例、七表零残留；U-1 已验收：类型表与 06 §3 逐项一致，37 个消息编解码 + 3007/3008，upload_messages 23/23、ctest 23/23；下一步 U-2 UploadInit + 秒传）
+**Status:** In Progress（U-1 已验收（7057766）；U-2 已验收：cm_logic + UploadService，UploadInit 7/7、cm_logic_tests 37/37 连跑两遍、ctest 24/24、六表零残留；下一步 U-3 UploadChunk）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -754,12 +754,20 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: server/CMakeLists.txt（新增 cm_logic STATIC）
 
 **Steps:**
-- [ ] 在 server/CMakeLists.txt 新增 cm_logic STATIC（先只含 upload_service.cpp），PUBLIC 链接 cm_protocol/cm_storage/cm_cache，PRIVATE 链接 net 与 Threads；后续任务把新源文件加入同一 target。
-- [ ] 参数校验；parent 必须属于当前用户且是目录。
-- [ ] req 幂等：读 cm:v1:up:req:{uid}:{reqId}；未命中用 SET NX PX 5000 短锁；完成后写结果 10min。
-- [ ] 秒传：Redis file:md5 → DB uk_f_md5 → 只认 f_state=1 且 size 一致；命中后事务插入 t_user_file + ref_count+1；返回 result=1。
-- [ ] 未命中：计算 total_chunks（固定 4MB），插入 t_transfer_task(status=0, expire=now+24h)。
-- [ ] 失败路径：parent 不存在 1002；改名失败 1003；磁盘/配额 1005；DB 错误 4001~4004。
+- [x] 在 server/CMakeLists.txt 新增 cm_logic STATIC（先只含 upload_service.cpp），PUBLIC 链接 cm_protocol/cm_storage/cm_cache，PRIVATE 链接 net 与 Threads；后续任务把新源文件加入同一 target。
+- [x] 参数校验；parent 必须属于当前用户且是目录。
+- [x] req 幂等：读 cm:v1:up:req:{uid}:{reqId}；未命中用 SET NX PX 5000 短锁；完成后写结果 10min。
+- [x] 秒传：Redis file:md5 → DB uk_f_md5 → 只认 f_state=1 且 size 一致；命中后事务插入 t_user_file + ref_count+1；返回 result=1。
+- [x] 未命中：计算 total_chunks（固定 4MB），插入 t_transfer_task(status=0, expire=now+24h)。
+- [x] 失败路径：parent 不存在 1002；改名失败 1003；磁盘/配额 1005；DB 错误 4001~4004。
+
+**实施记录（2026-10-19）：**
+- `cm_logic` 只在 `BUILD_STORAGE` 内定义；`upload_service.h` 只前置声明 MysqlPool/MysqlConn/CacheStore，不引入 MySQL/Redis 头。
+- `CacheStore::tryLock` 新增（SET NX PX 三元结果 Acquired/Busy/Error）：Busy → 1006 让客户端退避；Error → fail-open 不持锁。
+- `FileDao::materializeInstantUpload` 新增：单事务内「同目录同名同 blob 复用（不增计数）→ 否则 ON DUPLICATE +1 → 插节点（自动改名）」；`createUserFileAutoRename` 的改名循环抽成私有 `insertNodeWithRename`，两个入口复用，行为不变。
+- 秒传查找顺序：Redis cm:v1:file:md5 → 校验 f_state=1 且 size 一致 → 未命中回源 uk_f_md5 并回填；`f_state≠1` 一律按未命中处理（不报错）。
+- `expire_at_ms` 用「本地 now + 24h」返回，DB 的 `tr_expire_at=NOW(6)+24h` 才是权威值，两者允许秒级偏差。
+- 失败映射：parent 不存在/已删 1002、parent 非目录 1001、改名 99 次 1003、连接池满 4002、MySQL 不可用 4001；配额（1005）本期无配额表，未实现。
 
 **gtest 清单:**
 - UploadInitCreatesTask
@@ -771,9 +779,10 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - UploadInitRedisDownFallsBackToMysql
 
 **验收标准:**
-- [ ] 服务层测试全绿；秒传后 f_ref_count 精确 +1。
-- [ ] 同一 req_id 调两次返回同一 task_id/uf_id，不产生第二条节点。
-- [ ] Redis 不可用时仍能通过 MySQL 完成秒传（fail-open）。
+- [x] 服务层测试全绿；秒传后 f_ref_count 精确 +1。（2026-10-19：VM 构建零警告；无 DB/Redis 档 7 例 SKIP；有 DB+Redis 档 UploadInit* 7/7 passed 256ms；cm_logic_tests 全量 37/37 连跑两遍（830ms / 787ms）；ctest 24/24）
+- [x] 同一 req_id 调两次返回同一 task_id/uf_id，不产生第二条节点。（UploadInitReqIdIdempotent 断言同一 task_id 且 tr_user_id 计数为 1）
+- [x] Redis 不可用时仍能通过 MySQL 完成秒传（fail-open）。（UploadInitRedisDownFallsBackToMysql 在 pool->shutdown() 后仍完成秒传与建任务）
+- [x] 数据与依赖检查：六表（t_chunk/t_transfer_task/t_share/t_user_file/t_file/t_user）零残留；db15 仅遗留 30 个带 TTL 的 cm:v1:* 幂等键；server/logic 无 mysql.h/hiredis include。
 
 **风险:**
 - 两个不同 req_id 并发上传同一文件 → 允许产生两个任务，最终两条用户节点（用户意图）；不要用内容去重锁合并。

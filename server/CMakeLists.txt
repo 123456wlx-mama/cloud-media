@@ -31,6 +31,15 @@ if(BUILD_STORAGE)
     target_link_libraries(cm_cache
         PUBLIC cm_common cm::hiredis
         PRIVATE Threads::Threads)
+
+    # 业务层：只经 DAO 与 CacheStore 访问存储，不出现 MySQL/Redis C API。
+    add_library(cm_logic STATIC
+        logic/upload_service.cpp
+    )
+    target_include_directories(cm_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(cm_logic
+        PUBLIC cm_protocol cm_storage cm_cache
+        PRIVATE net Threads::Threads)
 endif()
 
 add_executable(cloud-media-server

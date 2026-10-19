@@ -114,6 +114,19 @@ public:
                                        std::uint64_t* ufId,
                                        std::string* finalName);
 
+    // 秒传命中落库（06 §5.2 步骤 4），单事务：
+    //  1) 同目录同名同 blob 的活跃节点已存在 → 直接复用，ref_count 不变（reused=true）；
+    //  2) 否则 INSERT t_file ... ON DUPLICATE +1，再插入 t_user_file（名称冲突自动改名）。
+    ErrorCode materializeInstantUpload(std::uint64_t uid,
+                                       std::uint64_t parentId,
+                                       const std::string& md5,
+                                       std::uint64_t size,
+                                       const std::string& name,
+                                       std::uint64_t* fileId,
+                                       std::uint64_t* ufId,
+                                       std::string* finalName,
+                                       bool* reused);
+
     // 含已软删节点（由调用方按 deletedAt 判断）。
     ErrorCode findUserFile(std::uint64_t uid, std::uint64_t ufId, UserFileRow* out);
 
@@ -138,6 +151,15 @@ public:
     ErrorCode purgeNode(std::uint64_t uid, std::uint64_t ufId, bool* deleted);
 
 private:
+    // 不含事务：调用方负责 BEGIN/COMMIT（createUserFileAutoRename 与秒传落库复用）。
+    ErrorCode insertNodeWithRename(std::uint64_t uid,
+                                   std::uint64_t parentId,
+                                   std::uint64_t fid,
+                                   bool isDir,
+                                   const std::string& name,
+                                   std::uint64_t* ufId,
+                                   std::string* finalName);
+
     MysqlConn& m_conn;
 };
 

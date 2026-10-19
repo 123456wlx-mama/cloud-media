@@ -294,6 +294,24 @@ ErrorCode FileDao::createUserFileAutoRename(std::uint64_t uid,
         return m_conn.lastError();
     }
 
+    const ErrorCode rc =
+        insertNodeWithRename(uid, parentId, fid, isDir, name, ufId, finalName);
+    if (rc != ErrorCode::Ok) {
+        return rc;
+    }
+    if (!tx.commit()) {
+        return tx.lastError();
+    }
+    return ErrorCode::Ok;
+}
+
+ErrorCode FileDao::insertNodeWithRename(std::uint64_t uid,
+                                       std::uint64_t parentId,
+                                       std::uint64_t fid,
+                                       bool isDir,
+                                       const std::string& name,
+                                       std::uint64_t* ufId,
+                                       std::string* finalName) {
     for (int attempt = 1; attempt <= kMaxRenameAttempt; ++attempt) {
         const std::string candidate = candidateName(name, attempt);
 
@@ -319,11 +337,7 @@ ErrorCode FileDao::createUserFileAutoRename(std::uint64_t uid,
         }
 
         if (stmt->execute()) {
-            const std::uint64_t id = stmt->insertId();
-            if (!tx.commit()) {
-                return tx.lastError();
-            }
-            *ufId = id;
+            *ufId = stmt->insertId();
             *finalName = candidate;
             return ErrorCode::Ok;
         }
@@ -333,6 +347,85 @@ ErrorCode FileDao::createUserFileAutoRename(std::uint64_t uid,
         // 1062 是语句级回滚，事务仍可用；换下一个候选名继续。
     }
     return ErrorCode::AlreadyExists;
+}
+
+ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
+                                             std::uint64_t parentId,
+                                             const std::string& md5,
+                                             std::uint64_t size,
+                                             const std::string& name,
+                                             std::uint64_t* fileId,
+                                             std::uint64_t* ufId,
+                                             std::string* finalName,
+                                             bool* reused) {
+    if (fileId == NULL || ufId == NULL || finalName == NULL || reused == NULL ||
+        uid == 0 || md5.size() != 32 || size == 0 || name.empty() ||
+        name.size() > 255) {
+        return ErrorCode::InvalidArgument;
+    }
+    *fileId = 0;
+    *ufId = 0;
+    finalName->clear();
+    *reused = false;
+
+    Transaction tx(m_conn);
+    if (!tx.valid()) {
+        return m_conn.lastError();
+    }
+
+    // 1) 同目录同名同 blob 的活跃节点已存在：复用，不重复加计数（客户端重试幂等）。
+    BlobRow blob;
+    if (findBlobByMd5(md5, &blob) == ErrorCode::Ok) {
+        std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+            "SELECT uf_id FROM t_user_file WHERE u_id = ? AND uf_parent_id = ? "
+            "AND f_id = ? AND uf_name = ? AND uf_deleted_at = ?");
+        if (!stmt) {
+            return m_conn.lastError();
+        }
+        if (!stmt->bindUInt64(0, uid) || !stmt->bindUInt64(1, parentId) ||
+            !stmt->bindUInt64(2, blob.fid) || !stmt->bindString(3, name) ||
+            !stmt->bindString(4, kActiveDeletedAt)) {
+            return stmt->lastError();
+        }
+        if (!stmt->execute()) {
+            return stmt->lastError();
+        }
+
+        const PreparedStatement::FetchStatus status = stmt->fetchRow();
+        if (status == PreparedStatement::FetchStatus::Error) {
+            return stmt->lastError();
+        }
+        if (status == PreparedStatement::FetchStatus::Row) {
+            *fileId = blob.fid;
+            *ufId = stmt->getUInt64(0);
+            *finalName = name;
+            *reused = true;
+            if (!tx.commit()) {
+                return tx.lastError();
+            }
+            return ErrorCode::Ok;
+        }
+    }
+
+    // 2) 确保 blob 存在并把引用计数 +1。
+    BlobWriteKind kind = BlobWriteKind::Inserted;
+    const ErrorCode wrote = insertBlobOnDuplicateIncrement(
+        md5, size, "aa/bb/" + md5, fileId, &kind);
+    if (wrote != ErrorCode::Ok) {
+        return wrote;
+    }
+
+    // 3) 插入用户节点（同名自动改名）。
+    const ErrorCode inserted =
+        insertNodeWithRename(uid, parentId, *fileId, false, name, ufId, finalName);
+    if (inserted != ErrorCode::Ok) {
+        return inserted;
+    }
+
+    if (!tx.commit()) {
+        return tx.lastError();
+    }
+    return ErrorCode::Ok;
 }
 
 ErrorCode FileDao::findUserFile(std::uint64_t uid,

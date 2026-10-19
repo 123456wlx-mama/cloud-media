@@ -356,6 +356,28 @@ bool CacheStore::put(const std::string& key, const std::string& value,
     return write(*conn, key, value, ttl, true);
 }
 
+CacheStore::LockResult CacheStore::tryLock(const std::string& key,
+                                             const std::string& token,
+                                             std::chrono::milliseconds ttl) {
+    if (!CacheKey::isSafeKey(key) || ttl.count() <= 0) {
+        return LockResult::Error;
+    }
+    std::unique_ptr<RedisConn> conn = m_pool.acquire();
+    if (!conn) {
+        m_errors.fetch_add(1, std::memory_order_relaxed);
+        return LockResult::Error;
+    }
+    if (conn->setNxPx(key, token, ttl)) {
+        return LockResult::Acquired;
+    }
+    // 空回复（键已存在）不设置 lastError；连接/命令错误会置 RedisUnavailable。
+    if (conn->lastError() == ErrorCode::Ok) {
+        return LockResult::Busy;
+    }
+    m_errors.fetch_add(1, std::memory_order_relaxed);
+    return LockResult::Error;
+}
+
 bool CacheStore::invalidate(const std::string& key) {
     if (!CacheKey::isSafeKey(key)) {
         return false;
