@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 代码已落盘；P0-5/P0-6 已由用户确认 ctest --output-on-failure 全绿）
+**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 UserDao 已接线 + 测试落盘，待 Linux 构建与 DB 集成测试验收）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -506,10 +506,11 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: server/tests/CMakeLists.txt
 
 **Steps:**
-- [ ] 定义 UserRow（u_id/u_tel/u_password/u_salt/u_pwd_algo/u_name/u_status）。
-- [ ] findByTel(tel, UserRow*)；insert(...)；updatePassword(uid, hash, algo, salt)。
-- [ ] 全部 PreparedStatement；INSERT 捕获 1062 返回 AlreadyExists。
-- [ ] 单测：找不到返回 NotFound；插入后可查；重复 tel 返回 AlreadyExists；密码字段不打印。
+- [x] 定义 UserRow（u_id/u_tel/u_password/u_salt/u_pwd_algo/u_name/u_status）。
+- [x] findByTel(tel, UserRow*)；insert(...)；updatePassword(uid, hash, algo, salt)。
+- [x] 全部 PreparedStatement；INSERT 捕获 1062 返回 AlreadyExists。
+- [x] 单测：找不到返回 NotFound；插入后可查；重复 tel 返回 AlreadyExists；密码字段不打印。
+- [x] 修复 updatePassword：连接未开 CLIENT_FOUND_ROWS，changed rows=0 时显式查存在性，同值更新返回 Ok。
 
 **gtest 清单:**
 - UserDaoFindMissing

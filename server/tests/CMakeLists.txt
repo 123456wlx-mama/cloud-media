@@ -102,3 +102,18 @@ set_target_properties(test_schema_v2_2 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME schema_v2_2 COMMAND test_schema_v2_2)
+
+# DAO 测试：无 CM_TEST_MYSQL=1 时用例内部 GTEST_SKIP，ctest 仍视为通过。
+# DAO-5 会把这里改为 add_subdirectory(logic) + 统一的 logic_unit target。
+add_executable(test_user_dao
+    logic/test_user_dao.cpp
+)
+target_link_libraries(test_user_dao PRIVATE
+    cm_storage
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_user_dao PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME user_dao COMMAND test_user_dao)

@@ -12,6 +12,7 @@ if(BUILD_STORAGE)
         db/mysql_pool.cpp
         db/mysql_conn.cpp
         db/prepared_statement.cpp
+        db/user_dao.cpp
     )
     target_include_directories(cm_storage PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cm_storage
