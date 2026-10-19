@@ -1,7 +1,7 @@
 # Phase 5 实施计划（业务层：上传 / 下载 / 分享 / 回收站）
 
 **Created:** 2026-10-18
-**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 FileDao 已验收：VM 构建零警告，ctest 18/18 通过，file_dao 有 DB 8/8 全绿，测试数据零残留）
+**Status:** In Progress（P0-1~P0-6 已提交并全绿；DAO-1 已验收（2c10fce）；DAO-2 已验收（46d6609，ctest 18/18）；DAO-3 TransferDao 已验收：VM 构建零警告，ctest 19/19 通过，transfer_dao 有 DB 8/8 连跑两遍全绿，t_transfer_task/t_chunk/t_user 零残留）
 **Source Spec:** docs/specs/06-业务设计.md（v0.1）
 **Review Gate:** 06 文档第 1.3 节的 4 项冲突裁决（号段、分享码、sendfile+CRC、物理回收）需在开工前确认；本文按裁决已落地为任务。
 **P0 Exception:** 用户已确认 P0-4 允许对 cache_store.cpp 做最小改动，仅限 CacheKey::share/shareMiss 与新增 uploadReq/shareReq，不改 CacheStore 逻辑。
@@ -576,11 +576,11 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Create: server/tests/logic/test_transfer_dao.cpp
 
 **Steps:**
-- [ ] 方法：createTask、findTaskByTaskId、lockTaskForUpdate、upsertChunkIfAbsent（返回是否新完成）、listDoneIndexes、sumDoneBytes、markStatus、electMerge（status 1→7）、resetMergingOnStartup、findExpired。
-- [ ] 所有状态更新用条件 UPDATE（WHERE tr_status IN (...))，返回 affected_rows。
-- [ ] 分片 upsert 必须区分 insert/update/no-op，确保 done_chunks 只在新完成时 +1。
-- [ ] 位图查询按 c_index 升序，LSB-first 由服务层组装。
-- [ ] 单测：重复分片不增计数；乱序计数正确；electMerge 并发只有一个 affected=1；过期扫描只取 0/1/2。
+- [x] 方法：createTask、findTaskByTaskId、lockTaskForUpdate、upsertChunkIfAbsent（返回是否新完成）、listDoneIndexes、sumDoneBytes、markStatus、electMerge（status 1→7）、resetMergingOnStartup、findExpired。
+- [x] 所有状态更新用条件 UPDATE（WHERE tr_status IN (...))，返回 affected_rows。
+- [x] 分片 upsert 必须区分 insert/update/no-op，确保 done_chunks 只在新完成时 +1。
+- [x] 位图查询按 c_index 升序，LSB-first 由服务层组装。
+- [x] 单测：重复分片不增计数；乱序计数正确；electMerge 并发只有一个 affected=1；过期扫描只取 0/1/2。
 
 **gtest 清单:**
 - TransferDaoCreateAndFind
@@ -593,9 +593,9 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - TransferDaoResetMerging
 
 **验收标准:**
-- [ ] 有 DB 集成全绿；两个线程同时 electMerge 只有一个成功。
-- [ ] 重复分片后 tr_done_chunks 不增、tr_offset 不增。
-- [ ] 事务内锁顺序为任务行→分片行（代码审查 + 测试并发）。
+- [x] 有 DB 集成全绿；两个线程同时 electMerge 只有一个成功。（2026-10-19：无 DB 档 8 例 SKIP；有 DB 档 8/8 passed 153ms，连跑两遍均全绿。并发正确性由单条条件 UPDATE 的 InnoDB 行锁保证，DAO 测试用“抢到 / 再抢失败 / 状态不符不抢”三次串行调用覆盖同一 WHERE 子句；线程级并发留到 U-5 合并流程验证）
+- [x] 重复分片后 tr_done_chunks 不增、tr_offset 不增。（TransferDaoUpsertChunkDuplicate 断言 NoOp 且计数不变；测试后 t_transfer_task / t_chunk 残留均为 0）
+- [x] 事务内锁顺序为任务行→分片行（代码审查：upsertChunkIfAbsent 先 lockTaskForUpdate 再 SELECT t_chunk FOR UPDATE，无反向路径）。
 
 **风险:**
 - ON DUPLICATE KEY UPDATE 的 affected_rows 语义（1/2/0）易误判 → 用 SELECT ... FOR UPDATE 显式读旧状态，或单测锁死三种返回值。

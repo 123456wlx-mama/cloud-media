@@ -133,3 +133,16 @@ set_target_properties(test_file_dao PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME file_dao COMMAND test_file_dao)
+
+add_executable(test_transfer_dao
+    logic/test_transfer_dao.cpp
+)
+target_link_libraries(test_transfer_dao PRIVATE
+    cm_storage
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(test_transfer_dao PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME transfer_dao COMMAND test_transfer_dao)
