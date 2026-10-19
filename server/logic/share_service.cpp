@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -125,6 +127,22 @@ std::int64_t daysFromCivil(int year, unsigned month, unsigned day) {
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;     // [0, 146096]
     return static_cast<std::int64_t>(era) * 146097 +
            static_cast<std::int64_t>(doe) - 719468;
+}
+
+// epoch 毫秒 → MySQL DATETIME(6) 文本（UTC），用于列表游标回填。
+std::string msToDatetime(std::uint64_t ms) {
+    const std::time_t seconds = static_cast<std::time_t>(ms / 1000ULL);
+    std::tm tm_value;
+    std::memset(&tm_value, 0, sizeof(tm_value));
+    ::gmtime_r(&seconds, &tm_value);
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer),
+                  "%04d-%02d-%02d %02d:%02d:%02d.%06d",
+                  tm_value.tm_year + 1900, tm_value.tm_mon + 1,
+                  tm_value.tm_mday, tm_value.tm_hour, tm_value.tm_min,
+                  tm_value.tm_sec,
+                  static_cast<int>((ms % 1000ULL) * 1000ULL));
+    return std::string(buffer);
 }
 
 // MySQL DATETIME(6) 文本 "YYYY-MM-DD HH:MM:SS.ffffff" → epoch 毫秒（UTC）。
@@ -587,6 +605,82 @@ ErrorCode ShareService::open(const cm::protocol::ShareOpenRq& rq,
     out->expireAtMs = meta.expireAtMs;
     out->shareTicket = issueShareTicket(m_redis, meta.userId, node.fid, code);
     out->accessCodeRequired = meta.accessRequired ? 1 : 0;
+    return ErrorCode::Ok;
+}
+
+ErrorCode ShareService::list(std::uint64_t uid,
+                              const cm::protocol::ShareListRq& rq,
+                              cm::protocol::ShareListRs* out) {
+    if (out == NULL) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::ShareListRs();
+
+    if (uid == 0 || rq.limit == 0 || rq.limit > 200) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+    const bool firstPage = rq.cursorCreatedMs == 0 && rq.cursorId == 0;
+    if (!firstPage && (rq.cursorCreatedMs == 0 || rq.cursorId == 0)) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode code = dbPoolError(m_mysql);
+        out->code = static_cast<std::uint32_t>(code);
+        return code;
+    }
+
+    cm::db::ShareListQuery query;
+    query.userId = uid;
+    query.limit = rq.limit;
+    if (!firstPage) {
+        query.cursorCreatedAt = msToDatetime(rq.cursorCreatedMs);
+        query.cursorId = rq.cursorId;
+    }
+
+    cm::db::ShareDao shareDao(*conn);
+    cm::db::ShareListPage page;
+    ErrorCode rc = shareDao.listByUser(query, &page);
+    if (rc != ErrorCode::Ok) {
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(rc);
+        return rc;
+    }
+
+    cm::db::FileDao fileDao(*conn);
+    out->items.reserve(page.rows.size());
+    for (std::size_t i = 0; i < page.rows.size(); ++i) {
+        const cm::db::ShareRow& row = page.rows[i];
+        cm::protocol::ShareListItem item;
+        item.shareCode = row.code;
+        item.size = 0;
+        item.accessCodeRequired = row.accessCode.empty() ? 0 : 1;
+        item.status = row.status;
+        item.expireAtMs = datetimeToMs(row.expireAt);
+        item.createdAtMs = datetimeToMs(row.createdAt);
+
+        cm::db::UserFileRow node;
+        if (fileDao.findUserFile(row.userId, row.ufId, &node) ==
+            ErrorCode::Ok) {
+            item.fileName = node.name;
+            if (node.fid != 0) {
+                cm::db::BlobRow blob;
+                if (fileDao.getBlobById(node.fid, &blob) == ErrorCode::Ok) {
+                    item.size = blob.size;
+                }
+            }
+        }
+        out->items.push_back(item);
+    }
+    conn.reset();
+
+    out->code = 0;
+    out->hasMore = page.hasMore ? 1 : 0;
+    out->nextCreatedMs = datetimeToMs(page.nextCreatedAt);
+    out->nextId = page.nextId;
     return ErrorCode::Ok;
 }
 

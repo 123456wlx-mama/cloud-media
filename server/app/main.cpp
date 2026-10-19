@@ -19,6 +19,8 @@
 #include "cm/protocol/messages/auth.h"
 #include "cm/protocol/messages/list.h"
 #include "cm/protocol/messages/play.h"
+#include "cm/protocol/messages/recycle.h"
+#include "cm/protocol/messages/share.h"
 #include "cm/protocol/messages/upload.h"
 #include "cm/protocol/serialize.h"
 #include "cm/protocol/version.h"
@@ -43,7 +45,9 @@
 #include "logic/download_service.h"
 #include "logic/file_service.h"
 #include "logic/play_service.h"
+#include "logic/recycle_service.h"
 #include "logic/sendfile_block_sender.h"
+#include "logic/share_service.h"
 #include "logic/upload_chunk_handler.h"
 #include "logic/upload_service.h"
 #endif
@@ -182,6 +186,16 @@ void sendListFileRs(const ConnectionPtr& conn, std::uint32_t seq,
     sendFramePayload(conn, cm::protocol::MessageType::ListFileRs, seq, payload);
 }
 
+template <typename Rs>
+void sendTypedRs(const ConnectionPtr& conn, cm::protocol::MessageType type,
+                 std::uint32_t seq, const Rs& rs) {
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return;
+    }
+    sendFramePayload(conn, type, seq, payload);
+}
+
 void sendPlayReportRs(const ConnectionPtr& conn, std::uint32_t seq,
                       const cm::protocol::PlayReportRs& rs) {
     std::string payload;
@@ -281,6 +295,214 @@ void handleLogin(const ConnectionPtr& conn,
         }
     }
     sendLoginRs(conn, frame.seq, rs);
+}
+
+// 10018 / 10020 / 10042：分享创建、列表、取消（需登录）。
+void handleShareCreate(const ConnectionPtr& conn,
+                       const cm::protocol::Frame& frame,
+                       ConnStateTable& states,
+                       cm::logic::ShareService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::ShareCreateRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareCreateRs, frame.seq,
+                    rs);
+        return;
+    }
+    cm::protocol::ShareCreateRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareCreateRs, frame.seq,
+                    rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.create(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::ShareCreateRs, frame.seq, rs);
+}
+
+void handleShareList(const ConnectionPtr& conn,
+                     const cm::protocol::Frame& frame,
+                     ConnStateTable& states,
+                     cm::logic::ShareService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::ShareListRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareListRs, frame.seq, rs);
+        return;
+    }
+    cm::protocol::ShareListRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareListRs, frame.seq, rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.list(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::ShareListRs, frame.seq, rs);
+}
+
+// 10022：游客分享访问，不要求登录；clientKey 只取 IP，避免换端口绕过提取码锁定。
+void handleShareOpen(const ConnectionPtr& conn,
+                     const cm::protocol::Frame& frame,
+                     cm::logic::ShareService& service) {
+    cm::protocol::ShareOpenRs rs;
+    cm::protocol::ShareOpenRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareOpenRs, frame.seq, rs);
+        return;
+    }
+    std::string clientKey = conn->peerAddress();
+    const std::string::size_type pos = clientKey.rfind(':');
+    if (pos != std::string::npos) {
+        clientKey = clientKey.substr(0, pos);
+    }
+    const cm::ErrorCode rc = service.open(rq, clientKey, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::ShareOpenRs, frame.seq, rs);
+}
+
+void handleShareCancel(const ConnectionPtr& conn,
+                       const cm::protocol::Frame& frame,
+                       ConnStateTable& states,
+                       cm::logic::ShareService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::ShareCancelRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareCancelRs, frame.seq,
+                    rs);
+        return;
+    }
+    cm::protocol::ShareCancelRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareCancelRs, frame.seq,
+                    rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.cancel(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::ShareCancelRs, frame.seq, rs);
+}
+
+// 10025 / 10034 / 10036 / 10038：回收站（需登录）。
+void handleDeleteFile(const ConnectionPtr& conn,
+                      const cm::protocol::Frame& frame,
+                      ConnStateTable& states,
+                      cm::logic::RecycleService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::DeleteFileRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::DeleteFileRs, frame.seq,
+                    rs);
+        return;
+    }
+    cm::protocol::DeleteFileRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::DeleteFileRs, frame.seq,
+                    rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.deleteFile(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::DeleteFileRs, frame.seq, rs);
+}
+
+void handleRecycleList(const ConnectionPtr& conn,
+                       const cm::protocol::Frame& frame,
+                       ConnStateTable& states,
+                       cm::logic::RecycleService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::RecycleListRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::RecycleListRs, frame.seq,
+                    rs);
+        return;
+    }
+    cm::protocol::RecycleListRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::RecycleListRs, frame.seq,
+                    rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.listRecycle(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::RecycleListRs, frame.seq, rs);
+}
+
+void handleRestore(const ConnectionPtr& conn,
+                   const cm::protocol::Frame& frame,
+                   ConnStateTable& states,
+                   cm::logic::RecycleService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::RestoreRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::RestoreRs, frame.seq, rs);
+        return;
+    }
+    cm::protocol::RestoreRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::RestoreRs, frame.seq, rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.restore(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::RestoreRs, frame.seq, rs);
+}
+
+void handlePurge(const ConnectionPtr& conn,
+                 const cm::protocol::Frame& frame,
+                 ConnStateTable& states,
+                 cm::logic::RecycleService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::PurgeRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::PurgeRs, frame.seq, rs);
+        return;
+    }
+    cm::protocol::PurgeRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::PurgeRs, frame.seq, rs);
+        return;
+    }
+    const cm::ErrorCode rc = service.purge(uid, rq, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::PurgeRs, frame.seq, rs);
 }
 
 // 10004：业务线程执行；UID 未登录时直接回 1004。
@@ -554,6 +776,8 @@ int runServer(const cm::ServerConfig& cfg) {
 
     cm::logic::UploadService uploadService(*mysql, cache, cfg.dataDir);
     cm::logic::AuthService authService(*mysql);
+    cm::logic::ShareService shareService(*mysql, cache, *redis);
+    cm::logic::RecycleService recycleService(*mysql, cache);
     cm::logic::FileService fileService(*mysql);
     cm::logic::PlayService playService(*mysql);
     cm::logic::UploadChunkHandler chunkHandler(*mysql, cfg.dataDir);
@@ -656,6 +880,94 @@ int runServer(const cm::ServerConfig& cfg) {
                 handlePlayReport(conn, frame, states, playService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register PlayReport failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ShareCreateRq),
+            [&states, &shareService](const ConnectionPtr& conn,
+                                     const cm::protocol::Frame& frame) {
+                handleShareCreate(conn, frame, states, shareService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ShareCreate failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ShareListRq),
+            [&states, &shareService](const ConnectionPtr& conn,
+                                     const cm::protocol::Frame& frame) {
+                handleShareList(conn, frame, states, shareService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ShareList failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ShareOpenRq),
+            [&shareService](const ConnectionPtr& conn,
+                            const cm::protocol::Frame& frame) {
+                handleShareOpen(conn, frame, shareService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ShareOpen failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ShareCancelRq),
+            [&states, &shareService](const ConnectionPtr& conn,
+                                     const cm::protocol::Frame& frame) {
+                handleShareCancel(conn, frame, states, shareService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ShareCancel failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::DeleteFileRq),
+            [&states, &recycleService](const ConnectionPtr& conn,
+                                       const cm::protocol::Frame& frame) {
+                handleDeleteFile(conn, frame, states, recycleService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register DeleteFile failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::RecycleListRq),
+            [&states, &recycleService](const ConnectionPtr& conn,
+                                       const cm::protocol::Frame& frame) {
+                handleRecycleList(conn, frame, states, recycleService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register RecycleList failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::RestoreRq),
+            [&states, &recycleService](const ConnectionPtr& conn,
+                                       const cm::protocol::Frame& frame) {
+                handleRestore(conn, frame, states, recycleService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register Restore failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::PurgeRq),
+            [&states, &recycleService](const ConnectionPtr& conn,
+                                       const cm::protocol::Frame& frame) {
+                handlePurge(conn, frame, states, recycleService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register Purge failed\n");
         return 1;
     }
 

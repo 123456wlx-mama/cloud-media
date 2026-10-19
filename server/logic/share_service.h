@@ -52,6 +52,11 @@ public:
                        const std::string& clientKey,
                        cm::protocol::ShareOpenRs* out);
 
+    // 10020：我的分享列表（keyset 游标 (created_at, s_id)）。
+    cm::ErrorCode list(std::uint64_t uid,
+                       const cm::protocol::ShareListRq& rq,
+                       cm::protocol::ShareListRs* out);
+
     // 10042：取消分享（幂等），成功后失效 share/{code} 缓存。
     cm::ErrorCode cancel(std::uint64_t uid,
                          const cm::protocol::ShareCancelRq& rq,

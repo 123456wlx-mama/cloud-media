@@ -127,6 +127,15 @@ if(BUILD_SERVER)
     set_target_properties(list_cli PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    add_executable(recycle_cli
+        examples/recycle_cli.cpp
+        examples/cli_common.cpp
+    )
+    target_link_libraries(recycle_cli PRIVATE
+        cm_protocol cm_common Threads::Threads)
+    set_target_properties(recycle_cli PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
 endif()
 
 if(BUILD_STORAGE AND BUILD_TESTS)

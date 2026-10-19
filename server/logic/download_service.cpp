@@ -18,6 +18,37 @@ namespace {
 
 const std::uint32_t kChunkSize = 4194304;  // 与上传分片/下载块一致
 
+bool parseU64Field(const std::string& text, std::uint64_t* value) {
+    if (text.empty() || value == NULL) {
+        return false;
+    }
+    std::uint64_t v = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        v = v * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    *value = v;
+    return true;
+}
+
+// share_ticket value = "ownerUid|fid|code"（ShareService::open 写入）。
+bool parseShareTicketValue(const std::string& value, std::uint64_t* ownerUid,
+                           std::uint64_t* fid) {
+    const std::string::size_type p1 = value.find('|');
+    if (p1 == std::string::npos) {
+        return false;
+    }
+    const std::string::size_type p2 = value.find('|', p1 + 1);
+    if (p2 == std::string::npos) {
+        return false;
+    }
+    return parseU64Field(value.substr(0, p1), ownerUid) &&
+           parseU64Field(value.substr(p1 + 1, p2 - p1 - 1), fid);
+}
+
 std::uint8_t zeroCopyFlag() {
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
     return 1;
@@ -47,9 +78,10 @@ ErrorCode DownloadService::openDownload(
         out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
         return ErrorCode::PermissionDenied;
     }
-    if (rq.ufId == 0) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-        return ErrorCode::NotFound;
+    // 本人节点或分享票据二选一；两者都空是参数错误。
+    if (rq.ufId == 0 && rq.shareTicket.empty()) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
     }
 
     std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
@@ -62,41 +94,81 @@ ErrorCode DownloadService::openDownload(
     }
 
     cm::db::FileDao fileDao(*conn);
-
-    // 不存在 / 非本人 / 已删除都回 1002，不泄露节点是否存在。
-    cm::db::UserFileRow node;
-    ErrorCode rc = fileDao.findUserFile(uid, rq.ufId, &node);
-    if (rc == ErrorCode::NotFound) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-        return ErrorCode::NotFound;
-    }
-    if (rc != ErrorCode::Ok) {
-        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
-        return rc;
-    }
-    if (node.deletedAt != cm::db::FileDao::activeDeletedAt()) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-        return ErrorCode::NotFound;
-    }
-    // 目录节点的 fid 恒为 0，必须先判 isDir，否则永远落到 1002。
-    if (node.isDir) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
-        return ErrorCode::InvalidArgument;
-    }
-    if (node.fid == 0) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-        return ErrorCode::NotFound;
-    }
-
     cm::db::BlobRow blob;
-    rc = fileDao.getBlobById(node.fid, &blob);
-    if (rc == ErrorCode::NotFound) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
-        return ErrorCode::FileGone;
-    }
-    if (rc != ErrorCode::Ok) {
-        out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
-        return rc;
+    ErrorCode rc = ErrorCode::Ok;
+
+    if (rq.ufId != 0) {
+        // 不存在 / 非本人 / 已删除都回 1002，不泄露节点是否存在。
+        cm::db::UserFileRow node;
+        rc = fileDao.findUserFile(uid, rq.ufId, &node);
+        if (rc == ErrorCode::NotFound) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+        if (rc != ErrorCode::Ok) {
+            out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+            return rc;
+        }
+        if (node.deletedAt != cm::db::FileDao::activeDeletedAt()) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+        // 目录节点的 fid 恒为 0，必须先判 isDir，否则永远落到 1002。
+        if (node.isDir) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+            return ErrorCode::InvalidArgument;
+        }
+        if (node.fid == 0) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+
+        rc = fileDao.getBlobById(node.fid, &blob);
+        if (rc == ErrorCode::NotFound) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+            return ErrorCode::FileGone;
+        }
+        if (rc != ErrorCode::Ok) {
+            out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+            return rc;
+        }
+    } else {
+        // 分享票据：Redis 是唯一授权源，缺失/错误/解析失败一律 fail-closed。
+        std::unique_ptr<cm::cache::RedisConn> redis = m_redis.acquire();
+        if (!redis) {
+            out->code =
+                static_cast<std::uint32_t>(ErrorCode::RedisUnavailable);
+            return ErrorCode::RedisUnavailable;
+        }
+        std::string value;
+        const cm::cache::RedisLookup lookup =
+            redis->get(cm::cache::CacheKey::shareTicket(rq.shareTicket),
+                       &value);
+        if (lookup == cm::cache::RedisLookup::Error) {
+            out->code =
+                static_cast<std::uint32_t>(ErrorCode::RedisUnavailable);
+            return ErrorCode::RedisUnavailable;
+        }
+        if (lookup == cm::cache::RedisLookup::Miss) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+            return ErrorCode::PermissionDenied;
+        }
+        std::uint64_t ownerUid = 0;
+        std::uint64_t fid = 0;
+        if (!parseShareTicketValue(value, &ownerUid, &fid) || fid == 0) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+            return ErrorCode::PermissionDenied;
+        }
+
+        rc = fileDao.getBlobById(fid, &blob);
+        if (rc == ErrorCode::NotFound) {
+            out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+            return ErrorCode::FileGone;
+        }
+        if (rc != ErrorCode::Ok) {
+            out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
+            return rc;
+        }
     }
     if (blob.state != 1 || blob.size == 0) {
         out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);

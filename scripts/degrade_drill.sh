@@ -175,23 +175,17 @@ run_capture "$OUTDIR/13_share_access.out" "$BIN/download_cli" \
 [ "$RC" -eq 4 ] || fail "share with access code must fail closed (exit 4), got $RC"
 # 实际：10022 ShareOpen 未在 main 注册，handler_registry 回 9003 UnknownType。
 # 安全属性（拒绝）成立，但与 06 §10 的 4008 不一致，记为 GAP。
-assert_code_in "$OUTDIR/13_share_access.out" "share-access" 4008 9003
-SHARE_ACCESS_CODE=$(code_of "$OUTDIR/13_share_access.out")
-if [ "$SHARE_ACCESS_CODE" = "9003" ]; then
-    echo "GAP: 10022 ShareOpen handler not registered -> CODE=9003 (expected 4008)"
-fi
+assert_code_in "$OUTDIR/13_share_access.out" "share-access" 4008
 ok "share access-code fail-closed"
 
 run_capture "$OUTDIR/14_share_nocode.out" "$BIN/download_cli" \
     --host "$HOST" --port "$PORT" --tel "$TEL" --password "$CM_CLI_PASSWORD" \
     --share-code "$SHARE_NOCODE" --out "$OUTDIR/dl_share_nocode.bin"
 [ "$RC" -eq 4 ] || fail "share without access code must not download (exit 4), got $RC"
-# 06 §10 期望这里因空 share_ticket 回 4005/4007；实际 DownloadService 只认 ufId，
-# 10010 直接 1002。脚本接受这组实际行为，并在文档里记为差异。
-assert_code_in "$OUTDIR/14_share_nocode.out" "share-nocode" 1002 4005 4007 9003
-SHARE_NOCODE_CODE=$(code_of "$OUTDIR/14_share_nocode.out")
-echo "SHARE_NOCODE_CODE=$SHARE_NOCODE_CODE"
-ok "share without access code cannot download"
+# 10022 元信息回源成功（MySQL），但 Redis 挂时 share_ticket 为空；
+# 10010 收到 ufId=0 + 空 ticket 必须 1001 拒绝，绝不按 ufId 回退。
+assert_code_in "$OUTDIR/14_share_nocode.out" "share-nocode" 1001
+ok "share without access code fails closed (empty ticket)"
 
 run_capture "$OUTDIR/15_list.out" "$BIN/list_cli" \
     --host "$HOST" --port "$PORT" --tel "$TEL" --password "$CM_CLI_PASSWORD" --limit 5
@@ -264,6 +258,18 @@ cat "$OUTDIR/30_recover.out"
 echo "RECOVERY_MS=$HEAL_MS"
 ok "MySQL pool self-heals"
 
+# Redis/MySQL 都恢复后，分享链路应能真正下载（验证 shareTicket 支持）
+say "SHARE DOWNLOAD (Redis+MySQL up)"
+SHARE_FILE="$OUTDIR/dl_share_ok.bin"
+run_capture "$OUTDIR/31_share_ok.out" "$BIN/download_cli" \
+    --host "$HOST" --port "$PORT" --tel "$TEL" --password "$CM_CLI_PASSWORD" \
+    --share-code "$SHARE_NOCODE" --out "$SHARE_FILE"
+[ "$RC" -eq 0 ] || fail "share download should succeed after recovery"
+MD5_SHARE=$(md5sum "$SHARE_FILE" | cut -d' ' -f1)
+[ "$MD5_SHARE" = "$MD5_REF" ] || fail "share download MD5 mismatch"
+echo "SHARE_MD5=$MD5_SHARE"
+ok "share ticket download works"
+
 # 恢复 Redis（保持环境可用）
 wait_redis_up || sudo_run "redis-server /etc/redis/redis.conf --daemonize yes"
 wait_redis_up || fail "redis did not restart"
@@ -272,6 +278,6 @@ wait_redis_up || fail "redis did not restart"
 sql "DELETE FROM t_share WHERE s_code IN ('$SHARE_NOCODE','$SHARE_CODE')" >/dev/null || true
 stop_server
 
-say "ALL PASSED (safety assertions; see GAP lines)"
+say "ALL PASSED"
 echo "OUTDIR=$OUTDIR"
 echo "RECOVERY_MS=$HEAL_MS"
