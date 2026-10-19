@@ -133,4 +133,3 @@ set_target_properties(test_file_dao PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME file_dao COMMAND test_file_dao)
-
