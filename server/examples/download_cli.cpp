@@ -19,6 +19,7 @@
 #include "cm/protocol/frame.h"
 #include "cm/protocol/message_type.h"
 #include "cm/protocol/messages/download.h"
+#include "cm/protocol/messages/share.h"
 
 namespace {
 
@@ -28,6 +29,8 @@ struct Options {
     std::string tel;
     std::string password;
     std::uint64_t ufId;
+    std::string shareCode;
+    std::string accessCode;
     std::string out;
     int jobs;
     std::uint32_t chunkSize;
@@ -50,12 +53,14 @@ struct Options {
 
 void printUsage(const char* program) {
     std::fprintf(stderr,
-                 "usage: %s --host H --port P --tel T --password P --uf-id N "
-                 "--out FILE\n"
+                 "usage: %s --host H --port P --tel T --password P "
+                 "(--uf-id N | --share-code CODE [--access-code X]) --out FILE\n"
                  "          [-j CONN] [-c BYTES] [-r] [--md5] "
                  "[--stop-after-blocks N] [--rate KBPS]\n"
                  "\n"
                  "  -j N                    concurrent connections (default 4)\n"
+                 "  --share-code CODE       download via 10022 share ticket\n"
+                 "  --access-code X         4-digit access code for the share\n"
                  "  -r                      resume from <out>.part.state\n"
                  "  --stop-after-blocks N   _exit(9) after N blocks in this run\n"
                  "  --rate KBPS             overall throttle (split across -j)\n"
@@ -82,6 +87,10 @@ bool parseArgs(int argc, char** argv, Options* opt) {
             if (!cm::cli::parseU64(argv[++i], &opt->ufId) || opt->ufId == 0) {
                 return false;
             }
+        } else if (arg == "--share-code" && hasValue) {
+            opt->shareCode = argv[++i];
+        } else if (arg == "--access-code" && hasValue) {
+            opt->accessCode = argv[++i];
         } else if (arg == "--out" && hasValue) {
             opt->out = argv[++i];
         } else if (arg == "-j" && hasValue) {
@@ -240,8 +249,14 @@ int main(int argc, char** argv) {
     if (opt.password.empty()) {
         opt.password = cm::cli::passwordFromEnv();
     }
+    const bool byUfId = (opt.ufId != 0);
+    const bool byShare = !opt.shareCode.empty();
     if (opt.host.empty() || opt.tel.empty() || opt.password.empty() ||
-        opt.ufId == 0 || opt.out.empty()) {
+        opt.out.empty() || (byUfId == byShare)) {
+        printUsage(argv[0]);
+        return cm::cli::kExitUsage;
+    }
+    if (!opt.accessCode.empty() && !byShare) {
         printUsage(argv[0]);
         return cm::cli::kExitUsage;
     }
@@ -261,8 +276,53 @@ int main(int argc, char** argv) {
     cm::Buffer mainBuffer;
     cm::protocol::Frame mainFrame;
 
+    // 分享下载：先 10022 换 ticket；-r 每轮重新换，ticket 不落 state。
+    std::string shareTicket;
+    if (byShare) {
+        cm::protocol::ShareOpenRq shareRq;
+        shareRq.shareCode = opt.shareCode;
+        shareRq.accessCode = opt.accessCode;
+        std::string sharePayload;
+        if (!shareRq.encode(&sharePayload) ||
+            !cm::cli::sendFrame(
+                mainFd,
+                static_cast<std::uint16_t>(
+                    cm::protocol::MessageType::ShareOpenRq),
+                1, sharePayload, &error) ||
+            !cm::cli::recvFrame(mainFd, &mainBuffer, &mainFrame, &error)) {
+            std::fprintf(stderr, "share open failed: %s\n", error.c_str());
+            ::close(mainFd);
+            return cm::cli::kExitNetwork;
+        }
+        if (mainFrame.type == static_cast<std::uint16_t>(
+                                  cm::protocol::MessageType::ErrorRs)) {
+            std::uint32_t code = 0;
+            std::string message;
+            cm::cli::decodeErrorRs(mainFrame, &code, &message);
+            std::printf("CODE=%u\n", code);
+            std::fprintf(stderr, "share open rejected: %s\n", message.c_str());
+            ::close(mainFd);
+            return cm::cli::kExitRejected;
+        }
+        cm::protocol::ShareOpenRs shareRs;
+        if (mainFrame.type != static_cast<std::uint16_t>(
+                                  cm::protocol::MessageType::ShareOpenRs) ||
+            !shareRs.decode(mainFrame.payload)) {
+            std::fprintf(stderr, "bad share open response\n");
+            ::close(mainFd);
+            return cm::cli::kExitNetwork;
+        }
+        if (shareRs.code != 0) {
+            std::printf("CODE=%u\n", shareRs.code);
+            ::close(mainFd);
+            return cm::cli::kExitRejected;
+        }
+        shareTicket = shareRs.shareTicket;
+    }
+
     cm::protocol::DownloadOpenRq openRq;
-    openRq.ufId = opt.ufId;
+    openRq.ufId = byShare ? 0 : opt.ufId;
+    openRq.shareTicket = shareTicket;
     openRq.startBlock = 0;
     std::string payload;
     if (!openRq.encode(&payload) ||
@@ -270,7 +330,7 @@ int main(int argc, char** argv) {
             mainFd,
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadOpenRq),
-            1, payload, &error) ||
+            2, payload, &error) ||
         !cm::cli::recvFrame(mainFd, &mainBuffer, &mainFrame, &error)) {
         std::fprintf(stderr, "open failed: %s\n", error.c_str());
         ::close(mainFd);
@@ -650,7 +710,7 @@ int main(int argc, char** argv) {
             mainFd,
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadDoneRq),
-            2, donePayload, &error) ||
+            3, donePayload, &error) ||
         !cm::cli::recvFrame(mainFd, &mainBuffer, &mainFrame, &error)) {
         std::fprintf(stderr, "done report failed: %s\n", error.c_str());
         ::close(mainFd);
