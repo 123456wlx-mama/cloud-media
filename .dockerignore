@@ -1,0 +1,12 @@
+# 构建上下文瘦身：镜像只需要服务端源码
+.git
+.github
+legacy
+client
+deploy
+build
+build-*
+cmake-build-*
+docs/screenshots
+*.db
+*.log

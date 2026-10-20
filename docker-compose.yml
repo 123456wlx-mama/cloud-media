@@ -1,0 +1,94 @@
+# cloud-media 一键起服务端：mysql + redis + server。
+#   docker compose up -d --build        # 起服务（首次会初始化 schema + 演示账号）
+#   docker compose --profile test run --rm build-test   # 构建 + ctest（含 DB/Redis 集成）
+#
+# 演示口令一律只用于本机演示，README 已声明。
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pw_demo
+      MYSQL_DATABASE: cloud_media
+      MYSQL_USER: cm_app
+      MYSQL_PASSWORD: cm_app_pw
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 主库：按文件名顺序执行（00 → 10 → 11 → 12 → 30 → 40）
+      - ./docker/mysql/00-test-db.sql:/docker-entrypoint-initdb.d/00-test-db.sql:ro
+      - ./sql/schema_v2.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./sql/patch_v2_1_index.sql:/docker-entrypoint-initdb.d/11-patch-index.sql:ro
+      - ./sql/patch_v2_2_phase5.sql:/docker-entrypoint-initdb.d/12-patch-phase5.sql:ro
+      - ./docker/mysql/30-demo-user.sql:/docker-entrypoint-initdb.d/30-demo-user.sql:ro
+      - ./docker/mysql/40-test-schema.sh:/docker-entrypoint-initdb.d/40-test-schema.sh:ro
+      # 测试库复用同一批 schema（脚本从 /sql 读）
+      - ./sql:/sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_pw_demo", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8004:8004"
+    volumes:
+      - cm-data:/data
+      - ./docker/server.conf:/app/server.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8004'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # 构建 + ctest（含 MySQL/Redis 集成）。用 profile 隔离，up 时不会启动。
+  build-test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: build
+    working_dir: /src
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      CM_TEST_MYSQL: "1"
+      CM_TEST_MYSQL_HOST: mysql
+      CM_TEST_MYSQL_PORT: "3306"
+      CM_TEST_MYSQL_USER: cm_test
+      CM_TEST_MYSQL_PASSWORD: cm_test_pw
+      CM_TEST_MYSQL_DB: cloud_media_test
+      CM_TEST_REDIS: "1"
+      CM_TEST_REDIS_HOST: redis
+      CM_TEST_REDIS_PORT: "6379"
+    # 单行：compose 的折叠标量会把换行变成空格，多行字符串容易在 shell 里被拆开
+    command:
+      - bash
+      - -lc
+      - "cmake -S . -B build-test -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON -DENABLE_DB_INTEGRATION_TESTS=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-test -j4 && cd build-test && ctest --output-on-failure"
+
+volumes:
+  mysql-data:
+  cm-data:

@@ -4,15 +4,17 @@
 `build-client/bin/cloud-media-client.exe --host <IP> --port 8004 --tel <手机号> --password-env CM_CLI_PASSWORD`；
 要独立分发就 `scripts/package_client.sh` 出 `deploy/`。**
 
+> 机器特定路径（本机 Qt 安装位置、联调 VM 地址）见 `docs/plans/phase-8.md` 环境段；本文只写通用占位符。
+
 ## 构建
 
 ~~~bash
-export PATH="/d/QT/Tools/mingw730_32/bin:/d/QT/5.12.11/mingw73_32/bin:$PATH"
+export PATH="<QT_ROOT>/Tools/mingw730_32/bin:<QT_ROOT>/5.12.11/mingw73_32/bin:$PATH"
 cmake -S . -B build-client -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SERVER=OFF -DBUILD_CLIENT=ON \
-  -DCMAKE_PREFIX_PATH=D:/QT/5.12.11/mingw73_32 \
-  -DCMAKE_CXX_COMPILER=D:/QT/Tools/mingw730_32/bin/g++.exe \
-  -DCMAKE_C_COMPILER=D:/QT/Tools/mingw730_32/bin/gcc.exe
+  -DCMAKE_PREFIX_PATH=<QT_ROOT>/5.12.11/mingw73_32 \
+  -DCMAKE_CXX_COMPILER=<QT_ROOT>/Tools/mingw730_32/bin/g++.exe \
+  -DCMAKE_C_COMPILER=<QT_ROOT>/Tools/mingw730_32/bin/gcc.exe
 cmake --build build-client -j8
 ctest --test-dir build-client --output-on-failure
 ~~~
@@ -33,7 +35,7 @@ cmake -S . -B build-on -DBUILD_SERVER=ON -DBUILD_CLIENT=OFF && cmake --build bui
 ## 跑客户端
 
 ~~~bash
-build-client/bin/cloud-media-client.exe --host 192.168.142.131 --port 8004 \
+build-client/bin/cloud-media-client.exe --host <server-host> --port 8004 \
   --tel 13900000011 --password-env CM_CLI_PASSWORD
 ~~~
 
