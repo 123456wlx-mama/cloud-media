@@ -645,11 +645,17 @@ void PlayerCore::Impl::videoLoop() {
             if ((audioDev == 0 || !audioClockValid.load()) && !wallStarted.load()) {
                 resetWallClock(ptsMs);  // 无音频：用首个有效帧锚定系统时钟
             }
+            // 采样交付瞬间的时钟：deliverFrame 要做 sws+拷贝（毫秒级），期间可能又 seek，
+            // 渲染后再读时钟会把"旧帧+新时钟"记成 50s 漂移（测量假象）。
+            const qint64 clockAtRender = static_cast<qint64>(referenceClockMs());
+            if (seekGen.load() != packetGen) {
+                av_frame_unref(frame);  // 最后一道：渲染前再确认没有新 seek
+                continue;
+            }
             if (deliverFrame(frame)) {
                 lastPts = ptsMs;
                 positionMs = static_cast<qint64>(ptsMs);
-                q->frameSync(static_cast<qint64>(ptsMs),
-                             static_cast<qint64>(referenceClockMs()));
+                q->frameSync(static_cast<qint64>(ptsMs), clockAtRender);
                 if (!firstFrame.exchange(true)) {
                     q->bufferingChanged(false);
                 }

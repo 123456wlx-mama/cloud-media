@@ -55,3 +55,14 @@ target_link_libraries(cm_fuzz_driver PRIVATE cm_protocol)
 set_target_properties(cm_fuzz_driver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# 32 位测试 exe 需要 32 位 MinGW 运行时；ctest 继承的 PATH 里若有 /mingw64/bin（64 位），
+# 会加载到 64 位 libstdc++ → 0xc000007b。给这四个 target 显式指定 PATH（与 client/tests 同源问题）。
+# 仅 Windows：Linux CI 上无条件替换 PATH 会污染测试环境（common/tests 双平台构建）。
+if(WIN32)
+    get_filename_component(_cm_common_mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set_tests_properties(cm_common_tests md5 crc32_combine upload_messages
+        PROPERTIES ENVIRONMENT "PATH=${_cm_common_mingw_bin}"
+    )
+endif()
+
