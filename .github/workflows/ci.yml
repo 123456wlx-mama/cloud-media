@@ -45,7 +45,11 @@ jobs:
 
       - name: init test database
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          echo "== mysql client version =="
+          mysql --version
+
+          echo "== create db + user (root socket) =="
           sudo mysql <<'SQL'
           CREATE DATABASE IF NOT EXISTS cloud_media_test
             DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -55,9 +59,23 @@ jobs:
           GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'localhost';
           FLUSH PRIVILEGES;
           SQL
-          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/schema_v2.sql
-          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_1_index.sql
-          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_2_phase5.sql
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::error::root heredoc failed with exit $rc"
+            exit 1
+          fi
+
+          echo "== import schema/patches =="
+          for f in sql/schema_v2.sql sql/patch_v2_1_index.sql sql/patch_v2_2_phase5.sql; do
+            out=$(mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < "$f" 2>&1)
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "::error::import $f failed (exit $rc): $out"
+              sudo tail -30 /var/log/mysql/error.log 2>/dev/null || true
+              exit 1
+            fi
+            echo "imported $f"
+          done
 
       # 与 VM 对齐：显式 C++11；项目的 cmake/compiler_flags.cmake 也是 11。
       # g++11 可能比 g++5.4 多出警告；项目未开 -Werror，warnings 不阻断，
