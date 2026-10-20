@@ -94,6 +94,42 @@ SMOKE_OK
 3. **未连接时写 socket 会丢帧**：登录往往在 Connecting 阶段就发出，QTcpSocket::write 此时无效。
    修法：worker 里加 outbox，connected() 后一次性 flush。
 
+## 联调记录（P8-2 断线→暂停 + 只补缺块）
+
+**根因**：`NetClient::onRequestFailed` 对每条 worker 失败同时发 `requestTimeout(seq)` 与
+`requestFailed(type)`；断线时 `failAll` 先到、`linkState(2)` 后到，TransferQueue 处理超时时
+`m_linkUp` 仍是 true，于是把"连接断开"钉成 Failed。
+
+**修法**（同一 seq 只允许一条终态路径，断线优先）：
+
+1. NetWorker 的 `Pending` 加 `terminated`，`takePending()` 统一做"取出+标记+删除"；超时/收响应/
+   断线三条终态路径都先判它，重复到达直接丢弃。
+2. 断线与超时拆成两个信号：`requestAborted(seq,type,reason)`（连接断开）与
+   `requestTimeout(seq,type)`（链路正常但 5s 无响应）。`onTick` 发现 socket 非 Connected 时走
+   aborted，不再判超时。
+3. TransferQueue：`onAborted` → 运行中任务转 Paused 并保留 `.part/.part.state`；`onTimeout`
+   在 `!m_linkUp` 时同样转 Paused，只有链路正常才 Failed（可重试）。
+4. 服务端 ErrorRs 改为原样抛给传输层（之前被吞成"请求超时"，真实错误码丢失）。
+
+**证据**（真实 20MB，VM 192.168.142.131:8004，下到 1/2 处 `fuser -k 8004/tcp` 再拉起）：
+
+~~~text
+TASK 1 download state=传输中 bytes=4194304/20971520 blocks=1/5 fetched=1
+TASK 1 download state=已暂停 bytes=12582912/20971520 blocks=3/5 fetched=3
+NOTICE ERR smoke_download.bin 已暂停：连接已断开
+LINK state=2 detail=重连中(1/5) The remote host closed the connection
+LINK state=2 detail=重连中(2/5) Connection refused
+LINK state=1 detail=已连接
+LOGIN_OK uid=6679 name=p81
+RESUME task=1 bytesDone=12582912 blocks=3/5
+NOTICE OK smoke_download.bin 续传：已下 3/5 块（12582912 字节），本次只取 2 块
+TASK 1 download state=传输中 bytes=16777216/20971520 blocks=4/5 fetched=1
+NOTICE OK smoke_download.bin 已完成
+TASK 1 download state=已完成 bytes=20971520/20971520 blocks=5/5 fetched=2
+~~~
+
+落盘 20971520 字节，`.part` / `.part.state` 已清理；`cm-tasks.db` 已加入 .gitignore。
+
 ## Tasks
 
 | # | 任务 | 验收 | 状态 |

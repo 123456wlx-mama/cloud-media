@@ -26,19 +26,32 @@ public:
     void login(const QString& tel, const QString& password);
     void listFiles(quint64 parentId, quint32 limit);
 
+    // 通用请求：返回本次分配的 seq，响应通过 frame(type, seq, payload) 回来。
+    quint32 sendRequest(quint16 type, const QByteArray& payload);
+
     quint64 uid() const { return m_uid; }
     QString userName() const { return m_userName; }
+    // 最近一次分配的 seq（诊断/测试用）。
+    quint32 lastSeq() const { return m_seq; }
 
 signals:
     void linkState(int state, const QString& detail);
     void loginFinished(quint32 code, quint64 uid, const QString& name);
     void listFinished(quint32 code, const QVariantList& rows);
     void requestFailed(quint16 type, const QString& reason);
+    void frame(quint16 type, quint32 seq, const QByteArray& payload);
+    // 链路正常但 5s 无响应：由上层决定是否重试。
+    void requestTimeout(quint32 seq, quint16 type);
+    // 连接断开中止在途请求：上层应把任务转"暂停"，不是"失败"。
+    void requestAborted(quint32 seq, quint16 type, const QString& reason);
 
 private slots:
     void onLinkState(int state, const QString& detail);
+    void onFrame(quint16 type, quint32 seq, QByteArray payload);
     void onLoginFinished(quint32 seq, quint32 code, quint64 uid, const QString& name);
     void onListFinished(quint32 seq, quint32 code, const QVariantList& rows);
+    void onRequestTimeout(quint32 seq, quint16 type);
+    void onRequestAborted(quint32 seq, quint16 type, const QString& reason);
     void onRequestFailed(quint32 seq, quint16 type, const QString& reason);
 
 private:

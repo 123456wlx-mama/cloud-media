@@ -22,8 +22,14 @@ NetClient::NetClient(QObject* parent)
             this, SLOT(onLoginFinished(quint32, quint32, quint64, QString)));
     connect(m_worker, SIGNAL(listFinished(quint32, quint32, QVariantList)), this,
             SLOT(onListFinished(quint32, quint32, QVariantList)));
+    connect(m_worker, SIGNAL(requestTimeout(quint32, quint16)), this,
+            SLOT(onRequestTimeout(quint32, quint16)));
+    connect(m_worker, SIGNAL(requestAborted(quint32, quint16, QString)), this,
+            SLOT(onRequestAborted(quint32, quint16, QString)));
     connect(m_worker, SIGNAL(requestFailed(quint32, quint16, QString)), this,
             SLOT(onRequestFailed(quint32, quint16, QString)));
+    connect(m_worker, SIGNAL(frameReceived(quint16, quint32, QByteArray)), this,
+            SLOT(onFrame(quint16, quint32, QByteArray)));
 
     m_thread->start();
 }
@@ -70,6 +76,14 @@ void NetClient::listFiles(quint64 parentId, quint32 limit) {
                               Q_ARG(quint32, limit));
 }
 
+quint32 NetClient::sendRequest(quint16 type, const QByteArray& payload) {
+    const quint32 seq = nextSeq();
+    QMetaObject::invokeMethod(m_worker, "sendRequest", Qt::QueuedConnection,
+                              Q_ARG(quint16, type), Q_ARG(quint32, seq),
+                              Q_ARG(QByteArray, payload));
+    return seq;
+}
+
 void NetClient::onLinkState(int state, const QString& detail) {
     emit linkState(state, detail);
     // 重连成功且之前登录过：自动重登，UI 无感（契约 §3 断线重连）。
@@ -96,10 +110,24 @@ void NetClient::onListFinished(quint32 seq, quint32 code,
     emit listFinished(code, rows);
 }
 
+void NetClient::onRequestTimeout(quint32 seq, quint16 type) {
+    emit requestTimeout(seq, type);
+}
+
+void NetClient::onRequestAborted(quint32 seq, quint16 type,
+                                 const QString& reason) {
+    emit requestAborted(seq, type, reason);
+}
+
 void NetClient::onRequestFailed(quint32 seq, quint16 type,
                                 const QString& reason) {
     Q_UNUSED(seq);
+    // 同一 seq 已由 timeout/aborted 终结过的不再补发失败（每个 seq 只有一条终态路径）。
     emit requestFailed(type, reason);
+}
+
+void NetClient::onFrame(quint16 type, quint32 seq, QByteArray payload) {
+    emit frame(type, seq, payload);
 }
 
 }  // namespace netapi

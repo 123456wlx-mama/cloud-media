@@ -33,13 +33,22 @@ public slots:
     void stop();
     void loginRequest(quint32 seq, const QString& tel, const QString& password);
     void listRequest(quint32 seq, quint64 parentId, quint32 limit);
+    // 通用请求：transfer 层自己组 payload（复用 common/protocol 的结构体），netapi 只负责收发。
+    void sendRequest(quint16 type, quint32 seq, QByteArray payload);
 
 signals:
     // state: 0=连接中 1=已连接 2=重连中 3=失败
     void linkState(int state, const QString& detail);
     void loginFinished(quint32 seq, quint32 code, quint64 uid, const QString& name);
     void listFinished(quint32 seq, quint32 code, const QVariantList& rows);
+    // 链路正常但服务端未在 5s 内响应（可重试）。
+    void requestTimeout(quint32 seq, quint16 type);
+    // 连接断开导致在途请求中止（不是失败：契约 §3 断网→任务暂停）。
+    void requestAborted(quint32 seq, quint16 type, const QString& reason);
+    // 本地组包/写 socket 失败等，与被断开的请求无关。
     void requestFailed(quint32 seq, quint16 type, const QString& reason);
+    // 未被 Login/List 消费的帧（10004/10005/10006/10007/10012/10013/10014/10040/10041…）。
+    void frameReceived(quint16 type, quint32 seq, QByteArray payload);
 
 private slots:
     void onConnected();
@@ -53,8 +62,11 @@ private:
     struct Pending {
         std::uint16_t type;
         qint64 deadlineMs;
+        bool terminated;  // 同一 seq 只允许走一条终态路径
     };
 
+    // 取出并标记终态；已终结/不存在返回 false，调用方直接 return。
+    bool takePending(quint32 seq, Pending* out);
     void sendFrame(std::uint16_t type, std::uint32_t seq,
                    const std::string& payload);
     void failAll(const QString& reason);

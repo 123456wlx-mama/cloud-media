@@ -12,6 +12,9 @@ compile_commands.json
 /data/
 /logs/
 *.log
+# 客户端 SQLite 任务库（运行时生成，不入库）
+/cm-tasks.db
+/cm-tasks.db-*
 
 # IDE / OS
 .idea/

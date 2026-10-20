@@ -1,8 +1,14 @@
 #include "ui/MainWindow.h"
 
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
+#include <QMimeData>
+#include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTableView>
@@ -10,7 +16,9 @@
 #include <QWidget>
 
 #include "netapi/NetClient.h"
+#include "transfer/TransferQueue.h"
 #include "ui/FileTableModel.h"
+#include "ui/TransferPane.h"
 
 namespace cm {
 namespace ui {
@@ -21,13 +29,16 @@ const char* kPlayerHint = "未选择文件\n在左侧点一个视频即可起播
 
 }  // namespace
 
-MainWindow::MainWindow(netapi::NetClient* net, QWidget* parent)
-    : QMainWindow(parent), m_net(net), m_splitter(nullptr), m_model(nullptr),
+MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
+                       QWidget* parent)
+    : QMainWindow(parent), m_net(net), m_queue(queue), m_transferPane(nullptr),
+      m_splitter(nullptr), m_model(nullptr),
       m_table(nullptr), m_fileEmpty(nullptr), m_linkBadge(nullptr),
       m_listHint(nullptr) {
     setWindowTitle(QString::fromUtf8("cloud-media"));
     resize(1280, 800);
 
+    setAcceptDrops(true);  // 拖文件入队上传
     m_splitter = new QSplitter(Qt::Horizontal, this);
     m_splitter->setObjectName(QString::fromUtf8("mainSplitter"));
     m_splitter->setHandleWidth(1);
@@ -133,12 +144,42 @@ QWidget* MainWindow::buildFilePane() {
     m_fileEmpty->setObjectName(QString::fromUtf8("emptyHint"));
     m_fileEmpty->setAlignment(Qt::AlignCenter);
     layout->addWidget(m_fileEmpty, 1);
+
+    QPushButton* upload = new QPushButton(QString::fromUtf8("上传文件"), pane);
+    upload->setObjectName(QString::fromUtf8("primaryButton"));
+    upload->setMaximumWidth(120);
+    QHBoxLayout* emptyRow = new QHBoxLayout();
+    emptyRow->addStretch(1);
+    emptyRow->addWidget(upload);
+    emptyRow->addStretch(1);
+    layout->addLayout(emptyRow);
+    connect(upload, SIGNAL(clicked()), this, SLOT(onUploadClicked()));
+
+    // 右键下载（契约 §1.2 文件区职责）
+    m_table->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table, &QTableView::customContextMenuRequested, this,
+            [this](const QPoint& pos) {
+        const QModelIndex index = m_table->indexAt(pos);
+        if (!index.isValid()) {
+            return;
+        }
+        QMenu menu(this);
+        QAction* download = menu.addAction(QString::fromUtf8("下载"));
+        if (menu.exec(m_table->viewport()->mapToGlobal(pos)) == download) {
+            onDownloadSelected();
+        }
+    });
     return pane;
 }
 
 QWidget* MainWindow::buildTransferPane() {
-    return buildPane(QString::fromUtf8("传输"), QString::fromUtf8(kTransferHint),
-                     QString::fromUtf8("transferPane"));
+    if (m_queue == nullptr) {
+        return buildPane(QString::fromUtf8("传输"), QString::fromUtf8(kTransferHint),
+                         QString::fromUtf8("transferPane"));
+    }
+    m_transferPane = new TransferPane(m_queue, this);
+    m_transferPane->setObjectName(QString::fromUtf8("transferPane"));
+    return m_transferPane;
 }
 
 QWidget* MainWindow::buildPlayerPane() {
@@ -154,6 +195,49 @@ void MainWindow::refreshList() {
     m_net->listFiles(0, 50);
 }
 
+void MainWindow::onDownloadSelected() {
+    if (m_queue == nullptr || m_table == nullptr) {
+        return;
+    }
+    const QModelIndexList rows = m_table->selectionModel()->selectedRows();
+    if (rows.isEmpty()) {
+        return;
+    }
+    const int row = rows.first().row();
+    const quint64 ufId = m_model->ufIdAt(row);
+    if (ufId == 0) {
+        return;
+    }
+    const QString name = m_model->index(row, FileTableModel::ColName).data().toString();
+    const quint64 size = m_model->sizeAt(row);
+    m_queue->enqueueDownload(ufId, name, size);
+}
+
+void MainWindow::onUploadClicked() {
+    // P8-2 的骨架入口：拖拽是主路径，按钮先给提示（P8-3 接 QFileDialog）。
+    statusBar()->showMessage(QString::fromUtf8("把文件拖进窗口即可上传"));
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+    if (m_queue == nullptr) {
+        return;
+    }
+    const QList<QUrl> urls = event->mimeData()->urls();
+    for (int i = 0; i < urls.size(); ++i) {
+        const QString path = urls.at(i).toLocalFile();
+        if (!path.isEmpty() && QFileInfo(path).isFile()) {
+            m_queue->enqueueUpload(path, QFileInfo(path).fileName());
+        }
+    }
+    event->acceptProposedAction();
+}
+
 void MainWindow::onLoginSucceeded(quint32 code, quint64 uid,
                                  const QString& name) {
     Q_UNUSED(uid);
@@ -166,6 +250,12 @@ void MainWindow::onLoginSucceeded(quint32 code, quint64 uid,
 
 void MainWindow::onLinkState(int state, const QString& detail) {
     setLinkBadge(state, detail);
+    if (m_transferPane != nullptr) {
+        m_transferPane->setLinkText(state == 1 ? QString() : detail);
+    }
+    if (state != 1 && m_queue != nullptr) {
+        m_queue->onLinkLost();
+    }
     if (state == 1 && m_net != nullptr && m_net->uid() != 0) {
         refreshList();  // 重连后自动补一次列表
     }

@@ -26,6 +26,7 @@ public:
 
     void setRows(const QVariantList& rows);
     quint64 ufIdAt(int row) const;
+    quint64 sizeAt(int row) const;
 
 private:
     struct Row {

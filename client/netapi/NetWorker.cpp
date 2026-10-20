@@ -147,9 +147,16 @@ void NetWorker::onTick() {
     }
     for (std::size_t i = 0; i < expired.size(); ++i) {
         const quint32 seq = expired[i];
-        const Pending pending = m_pending[seq];
-        m_pending.erase(seq);
-        emit requestFailed(seq, pending.type, QString::fromUtf8("请求超时(5s)"));
+        Pending pending;
+        if (!takePending(seq, &pending)) {
+            continue;  // 已由响应/断线终结
+        }
+        // 断线或重连期间的超时不是"服务端不响应"：归为链路中止，交上层暂停（契约 §3）。
+        if (m_socket->state() != QAbstractSocket::ConnectedState) {
+            emit requestAborted(seq, pending.type, QString::fromUtf8("连接已断开"));
+            continue;
+        }
+        emit requestTimeout(seq, pending.type);
         ++m_timeouts;
     }
     // 连续超时说明链路已僵死（TCP 还没报 RST）：主动断开触发重连。
@@ -177,7 +184,24 @@ void NetWorker::sendFrame(std::uint16_t type, std::uint32_t seq,
     Pending pending;
     pending.type = type;
     pending.deadlineMs = nowMs() + kRequestTimeoutMs;
+    pending.terminated = false;
     m_pending[seq] = pending;
+}
+
+bool NetWorker::takePending(quint32 seq, Pending* out) {
+    if (seq == 0) {
+        return false;
+    }
+    const std::map<quint32, Pending>::iterator it = m_pending.find(seq);
+    if (it == m_pending.end() || it->second.terminated) {
+        return false;
+    }
+    it->second.terminated = true;
+    if (out != nullptr) {
+        *out = it->second;
+    }
+    m_pending.erase(it);
+    return true;
 }
 
 void NetWorker::loginRequest(quint32 seq, const QString& tel,
@@ -208,6 +232,11 @@ void NetWorker::listRequest(quint32 seq, quint64 parentId, quint32 limit) {
     sendFrame(toType(protocol::MessageType::ListFileRq), seq, payload);
 }
 
+void NetWorker::sendRequest(quint16 type, quint32 seq, QByteArray payload) {
+    sendFrame(type, seq, std::string(payload.constData(),
+                                     static_cast<std::size_t>(payload.size())));
+}
+
 void NetWorker::onReadyRead() {
     const QByteArray chunk = m_socket->readAll();
     std::vector<protocol::Frame> frames;
@@ -231,45 +260,50 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
             emit requestFailed(frame.seq, 0, QString::fromUtf8("错误帧解析失败"));
             return;
         }
-        const std::map<quint32, Pending>::iterator it = m_pending.find(frame.seq);
-        const std::uint16_t origType = (it == m_pending.end()) ? 0 : it->second.type;
-        if (it != m_pending.end()) {
-            m_pending.erase(it);
+        Pending pending;
+        if (!takePending(frame.seq, &pending)) {
+            return;  // 该 seq 已终结（超时/断线/重复帧）
         }
-        if (origType == toType(protocol::MessageType::LoginRq)) {
+        if (pending.type == toType(protocol::MessageType::LoginRq)) {
             emit loginFinished(frame.seq, code, 0, QString());
             return;
         }
-        if (origType == toType(protocol::MessageType::ListFileRq)) {
+        if (pending.type == toType(protocol::MessageType::ListFileRq)) {
             emit listFinished(frame.seq, code, QVariantList());
             return;
         }
-        emit requestFailed(frame.seq, origType,
-                           QString::fromStdString(message).isEmpty()
-                               ? QString::fromUtf8("服务端拒绝")
-                               : QString::fromStdString(message));
+        // 传输层需要原始 code+文案（不能吞成"超时"），把 ErrorRs 帧原样抛给上层。
+        emit frameReceived(frame.type, frame.seq,
+                           QByteArray(frame.payload.data(),
+                                      static_cast<int>(frame.payload.size())));
         return;
     }
 
     if (frame.type == toType(protocol::MessageType::LoginRs)) {
+        Pending pending;
+        if (!takePending(frame.seq, &pending)) {
+            return;
+        }
         protocol::LoginRs rs;
         if (!rs.decode(frame.payload)) {
             emit requestFailed(frame.seq, frame.type, QString::fromUtf8("登录响应解析失败"));
             return;
         }
-        m_pending.erase(frame.seq);
         emit loginFinished(frame.seq, rs.code, rs.uid,
                            QString::fromStdString(rs.name));
         return;
     }
 
     if (frame.type == toType(protocol::MessageType::ListFileRs)) {
+        Pending pending;
+        if (!takePending(frame.seq, &pending)) {
+            return;
+        }
         protocol::ListFileRs rs;
         if (!rs.decode(frame.payload)) {
             emit requestFailed(frame.seq, frame.type, QString::fromUtf8("列表响应解析失败"));
             return;
         }
-        m_pending.erase(frame.seq);
         QVariantList rows;
         for (std::size_t i = 0; i < rs.items.size(); ++i) {
             const protocol::FileItem& item = rs.items[i];
@@ -289,14 +323,25 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
         return;
     }
 
-    // 本阶段没订阅的帧（心跳等）：直接丢弃，不当作错误。
-    m_pending.erase(frame.seq);
+    // 其余帧交给上层（transfer 层按 type+seq 自己解）。
+    Pending pending;
+    if (!takePending(frame.seq, &pending)) {
+        return;
+    }
+    emit frameReceived(frame.type, frame.seq,
+                       QByteArray(frame.payload.data(),
+                                  static_cast<int>(frame.payload.size())));
 }
 
 void NetWorker::failAll(const QString& reason) {
-    for (std::map<quint32, Pending>::const_iterator it = m_pending.begin();
+    // 断线中止：逐条标记终态后发出。已终结的（刚收到响应/已超时）不再发第二条。
+    for (std::map<quint32, Pending>::iterator it = m_pending.begin();
          it != m_pending.end(); ++it) {
-        emit requestFailed(it->first, it->second.type, reason);
+        if (it->second.terminated) {
+            continue;
+        }
+        it->second.terminated = true;
+        emit requestAborted(it->first, it->second.type, reason);
     }
     m_pending.clear();
 }

@@ -113,6 +113,13 @@ void FileTableModel::setRows(const QVariantList& rows) {
     endResetModel();
 }
 
+quint64 FileTableModel::sizeAt(int row) const {
+    if (row < 0 || row >= m_rows.size()) {
+        return 0;
+    }
+    return m_rows[row].size;
+}
+
 quint64 FileTableModel::ufIdAt(int row) const {
     if (row < 0 || row >= m_rows.size()) {
         return 0;
