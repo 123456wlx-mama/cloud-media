@@ -1,0 +1,193 @@
+/* cloud-media 深色主题基线（P8-0）
+   色板/字号/间距与 docs/specs/08-界面设计契约.md §4 一一对应，改色请先改契约。 */
+
+QWidget {
+    background-color: #12161B;
+    color: #E6EDF5;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QDialog {
+    background-color: #12161B;
+}
+
+/* ---------- 三段式 ---------- */
+QSplitter#mainSplitter::handle {
+    background-color: #2C3542;
+}
+
+#filePane, #transferPane, #playerPane {
+    background-color: #1A2028;
+}
+
+#paneHeader {
+    background-color: #1A2028;
+    border-bottom: 1px solid #2C3542;
+}
+
+#paneTitle {
+    color: #E6EDF5;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#emptyHint {
+    color: #5C6879;
+    font-size: 13px;
+    line-height: 20px;
+}
+
+#mainStatusBar {
+    background-color: #1A2028;
+    border-top: 1px solid #2C3542;
+    color: #9AA7B8;
+    font-size: 12px;
+}
+
+/* ---------- 登录 ---------- */
+#loginDialog {
+    background-color: #1A2028;
+}
+
+#brandTitle {
+    color: #E6EDF5;
+    font-size: 24px;
+    font-weight: 600;
+}
+
+#brandSubtitle {
+    color: #9AA7B8;
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+#telEdit, #passwordEdit {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: #E6EDF5;
+    font-size: 14px;
+        selection-background-color: #3D8BFF;
+}
+
+#telEdit:focus, #passwordEdit:focus {
+    border: 1px solid #3D8BFF;
+}
+
+#formError {
+    color: #E5544B;
+    font-size: 12px;
+}
+
+#primaryButton {
+    background-color: #3D8BFF;
+    border: none;
+    border-radius: 6px;
+    color: #FFFFFF;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px 16px;
+}
+
+#primaryButton:hover {
+    background-color: #5AA0FF;
+}
+
+#primaryButton:pressed {
+    background-color: #2F73D9;
+}
+
+#primaryButton:disabled {
+    background-color: #2C3542;
+    color: #5C6879;
+}
+
+#linkButton {
+    background: transparent;
+    border: none;
+    color: #3D8BFF;
+    font-size: 13px;
+    padding: 0 2px;
+}
+
+#linkButton:hover {
+    color: #5AA0FF;
+}
+
+#hintText {
+    color: #9AA7B8;
+    font-size: 13px;
+}
+
+/* ---------- 通用控件占位（P8-1 起真正使用） ---------- */
+QPushButton {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    border-radius: 6px;
+    color: #E6EDF5;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    border-color: #3D8BFF;
+}
+
+QTableView, QListView, QTreeView {
+    background-color: #1A2028;
+    alternate-background-color: #1E252E;
+    border: none;
+    color: #E6EDF5;
+    selection-background-color: #22344F;
+    selection-color: #E6EDF5;
+}
+
+QHeaderView::section {
+    background-color: #222A34;
+    border: none;
+    border-bottom: 1px solid #2C3542;
+    color: #9AA7B8;
+    padding: 6px 8px;
+}
+
+QProgressBar {
+    background-color: #222A34;
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+    text-align: center;
+    color: transparent;
+}
+
+QProgressBar::chunk {
+    background-color: #3D8BFF;
+    border-radius: 3px;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #2C3542;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #3A4553;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QToolTip {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    color: #E6EDF5;
+    padding: 4px 8px;
+}
