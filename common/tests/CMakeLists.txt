@@ -44,3 +44,14 @@ set_target_properties(test_business_messages PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 add_test(NAME upload_messages COMMAND test_business_messages)
+
+# Phase 6 T6-6：Codec/Buffer Fuzz 驱动（独立可执行，非 gtest）。
+# 配合 -DENABLE_ASAN=ON 手动运行（ASan 旗标经 cm_compile_options 传递）。
+# 不注册进 ctest：长跑（默认 1M 迭代）+ ASan 专用，避免拖慢常规 CI。
+add_executable(cm_fuzz_driver
+    ../protocol/tests/fuzz_codec_driver.cpp
+)
+target_link_libraries(cm_fuzz_driver PRIVATE cm_protocol)
+set_target_properties(cm_fuzz_driver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
