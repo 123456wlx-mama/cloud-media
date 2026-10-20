@@ -63,12 +63,43 @@ build-client/bin/cloud-media-client.exe --version   # → cloud-media-client 0.1
 | `client/player/` | PlayerCore、解封装、解码、渲染接口（P8-5） |
 | `docs/specs/08-界面设计契约.md` | 信息架构/状态/色板/组件/legacy 对照（P8-0 产出） |
 
+## 联调记录（P8-1）
+
+| 项 | 值 |
+|---|---|
+| **VM IP（DHCP，会变）** | **192.168.142.131**（2026-10-20 实测，用 _vm.py run "hostname -I" 复查） |
+| 服务端 | 8004（e2e 那套：build-on/bin/cloud-media-server -c build/e2e.conf，库 cloud_media_test） |
+| 测试账号 | 13900000011 / p81（一次性临时账号，u_name=p81；脚本 build-client/add_p81_user.sh） |
+| 启动命令 | cloud-media-client.exe --host 192.168.142.131 --port 8004 --tel 13900000011 --password-env CM_CLI_PASSWORD |
+| 无界面取证 | 同上再加 --smoke（登录+列表打印后退出，退出码 0 成功） |
+| 界面取证 | 同上再加 --screenshot docs/screenshots/p8-1-login-list.png（2.5s 后自动截图退出） |
+
+证据（smoke 输出）：
+
+~~~text
+LINK state=1 已连接
+LOGIN_OK uid=6679 name=p81
+LIST code=0 rows=2
+ROW p81_demo.mp4 size=2097152 dir=0
+ROW p81_report.pdf size=1048576 dir=0
+SMOKE_OK
+~~~
+
+### 联调踩到的三个坑
+
+1. **Windows 系统代理会打断 QTcpSocket**：不改的话 connectToHost 直接失败，errorString 是
+   "The proxy type is invalid for this operation"，重连 5 次全失败。修法：socket->setProxy(QNetworkProxy::NoProxy)。
+2. **ctest 继承的 PATH 里可能有 64 位 MinGW**（cmake 自带那套），32 位测试 exe 会加载到 64 位
+   libstdc++-6.dll → 0xc000007b。修法：测试属性里按 CMAKE_CXX_COMPILER 目录显式设 PATH。
+3. **未连接时写 socket 会丢帧**：登录往往在 Connecting 阶段就发出，QTcpSocket::write 此时无效。
+   修法：worker 里加 outbox，connected() 后一次性 flush。
+
 ## Tasks
 
 | # | 任务 | 验收 | 状态 |
 |---|---|---|---|
 | **T8-0** | 环境锁定 + 设计契约 + 三段式骨架 | 零告警构建、`--version` 输出 v2、骨架截图、红线 grep | **本批完成** |
-| T8-1 | netapi：QTcpSocket + 网络线程 + LoginRq/ListFileRq | 登录/列表在真服务端跑通，错误码有文案 | 待做 |
+| T8-1 | netapi：QTcpSocket + 网络线程 + LoginRq/ListFileRq | 登录/列表在真服务端跑通，错误码有文案 | **本批完成** |
 | T8-2 | 文件区：QAbstractTableModel + 面包屑 + 右键菜单 + 拖拽上传 | 1000 行列表滚动不卡，排序/分页走协议 | 待做 |
 | T8-3 | 传输区：上传/下载队列、进度、暂停/取消、断点续传 | 中断后重启可续；限速 2MB/s 时速度显示正确 | 待做 |
 | T8-4 | 分享：生成/提取/过期提示 | 分享码 + 提取码全流程 | 待做 |

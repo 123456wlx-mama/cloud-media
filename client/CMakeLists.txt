@@ -1,4 +1,4 @@
-# 客户端（Qt 5.12 Widgets）：Phase 8 起从占位 exe 升级为三段式骨架。
+# 客户端（Qt 5.12 Widgets）：P8-1 起接到 netapi 网络层。
 # 工具链必须显式锁 Qt 自带的 MinGW 7.3 32 位（见 docs/plans/phase-8.md）。
 find_package(Qt5 COMPONENTS Widgets Network Sql REQUIRED)
 
@@ -8,10 +8,18 @@ set(CMAKE_AUTOUIC ON)
 
 add_executable(cloud-media-client
     app/main.cpp
+    netapi/FrameAssembler.cpp
+    netapi/FrameAssembler.h
+    netapi/NetWorker.cpp
+    netapi/NetWorker.h
+    netapi/NetClient.cpp
+    netapi/NetClient.h
     ui/MainWindow.cpp
     ui/MainWindow.h
     ui/LoginDialog.cpp
     ui/LoginDialog.h
+    ui/FileTableModel.cpp
+    ui/FileTableModel.h
     ui/resources.qrc
 )
 
@@ -26,3 +34,7 @@ target_link_libraries(cloud-media-client PRIVATE
 set_target_properties(cloud-media-client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+if(BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

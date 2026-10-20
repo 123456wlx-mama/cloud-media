@@ -1,29 +1,40 @@
 #pragma once
 
 #include <QDialog>
+#include <QString>
 
 class QLineEdit;
 class QLabel;
 class QPushButton;
 
 namespace cm {
+
+namespace netapi {
+class NetClient;
+}
+
 namespace ui {
 
-// 登录对话框骨架：只做输入校验与「通过」，不发网络请求（P8-1 接 LoginRq）。
-// 视觉规范见 docs/specs/08-界面设计契约.md §4、状态见 §3（未登录/失败重试）。
+// 登录对话框：真实发 LoginRq，按契约 §2.1 的错误码给文案。
 class LoginDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit LoginDialog(QWidget* parent = nullptr);
+    explicit LoginDialog(netapi::NetClient* net, QWidget* parent = nullptr);
 
     QString tel() const;
     QString password() const;
 
 private slots:
     void onLoginClicked();
+    void onLoginFinished(quint32 code, quint64 uid, const QString& name);
+    void onRequestFailed(quint16 type, const QString& reason);
 
 private:
+    void setBusy(bool busy);
+    void showError(const QString& text);
+
+    netapi::NetClient* m_net;
     QLineEdit* m_tel;
     QLineEdit* m_password;
     QLabel* m_error;
