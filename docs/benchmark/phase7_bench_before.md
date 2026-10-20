@@ -204,6 +204,8 @@ SELECT COUNT(*), COUNT(DISTINCT f_md5) FROM t_file;        -- 1094, 1094
 5. **登录 10k QPS（c=10）**：algo=1 是 md5(salt+pwd)，单次几十微秒，未成为瓶颈。
 6. **失败面极干净**：全矩阵 8 档 × 3 轮只有 1 次失败（upload 1MB c=100 run0，`chunk=4003 DbQueryFailed`，1/2150），属于 MySQL 瞬时抖动，不是逻辑错误。
 
+> **P7-3 补充（细化，不推翻）**：火焰图把「磁盘和 CPU 双限」拆开了——upload 场景 CPU 里 **MD5 41.1% + CRC 28.6% = 69.6%** 是热点，磁盘路径只占 13.9%；写侧 2.0× 精确由「分片写一次 + 合并结果写一次」各半构成，读侧实为 3 趟（收包 + merge 重读 + block CRC 回读），后两趟全命中 page cache。详见 [phase7_flamegraph.md](phase7_flamegraph.md)。
+
 ## 4. 复现
 
 ~~~bash
