@@ -28,7 +28,7 @@ if not exist "%CLIENT_EXE%" (
 )
 if not exist "%ROOT%\build-client\bin\Qt5Core.dll" (
     echo Qt DLLs missing next to the client exe.
-    echo Run: cmake --build build-client    (POST_BUILD deploys Qt DLLs)
+    echo Run: cmake --build build-client   -- POST_BUILD deploys Qt DLLs
     goto :fail
 )
 
