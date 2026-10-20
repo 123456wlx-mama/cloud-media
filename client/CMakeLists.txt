@@ -2,6 +2,9 @@
 # 工具链必须显式锁 Qt 自带的 MinGW 7.3 32 位（见 docs/plans/phase-8.md）。
 find_package(Qt5 COMPONENTS Widgets Network Sql REQUIRED)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+add_subdirectory(player)
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
@@ -46,6 +49,10 @@ add_executable(cloud-media-client
     ui/FileTableModel.h
     ui/TransferPane.cpp
     ui/TransferPane.h
+    ui/PlayerPane.cpp
+    ui/PlayerPane.h
+    ui/VideoCanvas.cpp
+    ui/VideoCanvas.h
     ui/Toast.cpp
     ui/Toast.h
     ui/ShareDialog.cpp
@@ -59,6 +66,7 @@ target_include_directories(cloud-media-client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(cloud-media-client PRIVATE
     cm_protocol
     cm_common
+    cm_player_core
     cm_compile_options
     Qt5::Widgets
     Qt5::Network
@@ -67,6 +75,16 @@ target_link_libraries(cloud-media-client PRIVATE
 set_target_properties(cloud-media-client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# 播放器运行期 DLL：源文件放在 client/player/deps/dll（.gitignore 忽略），
+# 由 scripts/sync_player_dlls.sh 从 legacy 复制；这里只做"有就拷到 exe 旁"。
+file(GLOB CM_PLAYER_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/player/deps/dll/*.dll")
+if(CM_PLAYER_DLLS)
+    add_custom_command(TARGET cloud-media-client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CM_PLAYER_DLLS}
+                "$<TARGET_FILE_DIR:cloud-media-client>"
+    )
+endif()
 
 if(BUILD_TESTS)
     add_subdirectory(tests)

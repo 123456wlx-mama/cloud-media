@@ -33,7 +33,8 @@ struct TransferTask {
     double speedBps;
     quint32 errCode;
     QString errMsg;
-    bool instant;  // 秒传命中
+    bool instant;   // 秒传命中
+    bool playback;  // 边下边播任务：完成后保留 .part（播放器还在读）
 
     // upload 运行态
     QString taskId;
@@ -61,7 +62,8 @@ struct TransferTask {
 
     TransferTask()
         : id(0), type(TaskType::Upload), size(0), state(TaskState::Queued),
-          bytesDone(0), speedBps(0.0), errCode(0), instant(false), chunkSize(0),
+          bytesDone(0), speedBps(0.0), errCode(0), instant(false),
+          playback(false), chunkSize(0),
           totalChunks(0), nextChunk(0), ufId(0), fId(0), blockSize(0),
           blockCount(0), nextBlock(0), blocksFetched(0), lastBytes(0),
           lastTickMs(0) {}

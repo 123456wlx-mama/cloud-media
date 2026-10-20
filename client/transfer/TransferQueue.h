@@ -40,6 +40,9 @@ public:
     // 分享下载：先 ShareOpenRq 拿 shareTicket，再走同一套下载链路（ufId=0）。
     int enqueueSharedDownload(const QString& shareTicket, const QString& fileName,
                               quint64 size);
+    // 边下边播：下到 <localPath>.part，完成后不重命名（播放器还开着这个文件）。
+    int enqueuePlaybackDownload(quint64 ufId, const QString& remoteName,
+                                quint64 size);
 
     void pause(int id);
     void resume(int id);

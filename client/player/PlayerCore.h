@@ -1,0 +1,67 @@
+#pragma once
+
+#include <QImage>
+#include <QObject>
+#include <QString>
+
+namespace cm {
+namespace player {
+
+// 播放器内核：唯一允许 include libav*/SDL 的层（ui/ 只能看到这个头文件）。
+// 解封装/解码/音视频同步在内部线程，帧用 QImage 抛给界面。
+class PlayerCore : public QObject {
+    Q_OBJECT
+
+public:
+    enum State {
+        Idle = 0,
+        Opening,
+        Buffering,
+        Playing,
+        Paused,
+        Ended,
+        Error
+    };
+
+    explicit PlayerCore(QObject* parent = nullptr);
+    ~PlayerCore() override;
+
+    // progressive=true：边下边播，读到文件末尾会等新块（直到 setSourceComplete(true)）。
+    void open(const QString& path, bool progressive);
+    void close();
+
+    void play();
+    void pause();
+    void togglePlay();
+    void seek(qint64 ms);
+    void setVolume(int percent);
+    // 下载完成（或已确定不会再有新数据）：让 demuxer 在文件末尾正常结束
+    void setSourceComplete(bool complete);
+
+    State state() const;
+    qint64 position() const;
+    qint64 duration() const;
+    int videoWidth() const;
+    int videoHeight() const;
+    bool isOpen() const;
+    bool isPaused() const;
+    QString path() const;
+    QString errorText() const;
+    qint64 availableBytes() const;
+
+signals:
+    void opened(qint64 durationMs, int width, int height);
+    void positionChanged(qint64 ms);
+    void stateChanged(int state);
+    void bufferingChanged(bool buffering);
+    void frameReady(const QImage& image);
+    void ended();
+    void errorChanged(const QString& text);
+
+private:
+    struct Impl;
+    Impl* m_impl;
+};
+
+}  // namespace player
+}  // namespace cm

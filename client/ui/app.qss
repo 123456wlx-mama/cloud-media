@@ -312,3 +312,65 @@ QMenu::item:disabled {
     color: #5C6879;
 }
 
+
+/* ---------- P8-4：播放区 ---------- */
+#playerPane {
+    background-color: #12161B;
+}
+
+#playerControls {
+    background-color: #1A2028;
+    border-top: 1px solid #2C3542;
+}
+
+QPushButton#playButton {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    border-radius: 14px;
+    color: #E6EDF5;
+    font-size: 14px;
+}
+
+QPushButton#playButton:hover {
+    border-color: #3D8BFF;
+}
+
+QSlider::groove:horizontal {
+    background: #222A34;
+    border-radius: 3px;
+    height: 6px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #3D8BFF;
+    border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+    background: #E6EDF5;
+    border-radius: 6px;
+    width: 12px;
+    margin: -4px 0;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #5AA0FF;
+}
+
+#playerOverlay {
+    background-color: #1A2028;
+    border: 1px solid #2C3542;
+    border-radius: 8px;
+}
+
+#bufferLabel {
+    color: #E6EDF5;
+    font-size: 13px;
+}
+
+#playerErrorPanel {
+    background-color: #1A2028;
+    border: 1px solid #2C3542;
+    border-radius: 8px;
+}
+

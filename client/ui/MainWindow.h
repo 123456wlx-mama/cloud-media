@@ -33,6 +33,7 @@ namespace ui {
 
 class FileTableModel;
 class TransferPane;
+class PlayerPane;
 class Toast;
 
 // 三段式主窗口：文件区 / 传输区 / 播放区。
@@ -43,9 +44,12 @@ class MainWindow : public QMainWindow {
 public:
     MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                QWidget* parent = nullptr);
+    ~MainWindow() override;
 
 public slots:
     void refreshList();
+    void playLocalFile(const QString& path);
+    void playRemoteByUfId(quint64 ufId);  // 联调/命令行入口：按 ufId 起播
 
 private slots:
     void onLoginSucceeded(quint32 code, quint64 uid, const QString& name);
@@ -66,6 +70,7 @@ private slots:
     void onShareCreated();
     void onShareOpened();
     void onDeleted(quint64 ufId, const QString& name);
+    void startPlayback(int row);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -90,6 +95,7 @@ private:
     shareapi::ShareFlow* m_share;
     recycleapi::RecycleFlow* m_recycle;
     TransferPane* m_transferPane;
+    PlayerPane* m_playerPane;
     QSplitter* m_splitter;
     FileTableModel* m_model;
     QTableView* m_table;

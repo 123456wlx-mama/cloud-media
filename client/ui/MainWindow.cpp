@@ -22,6 +22,7 @@
 #include "shareapi/ShareFlow.h"
 #include "transfer/TransferQueue.h"
 #include "ui/FileTableModel.h"
+#include "ui/PlayerPane.h"
 #include "ui/RecycleDialog.h"
 #include "ui/ShareDialog.h"
 #include "ui/Toast.h"
@@ -35,12 +36,22 @@ const char* kTransferHint = "没有传输任务\n上传 / 下载进度会实时�
 const char* kPlayerHint = "未选择文件\n在左侧点一个视频即可起播";
 const quint32 kPageSize = 50;
 
+// 双击这些后缀走播放器（其余给提示，不做"用系统播放器打开"的自动降级）
+bool isVideoFile(const QString& name) {
+    const QString suffix = QFileInfo(name).suffix().toLower();
+    return suffix == QString::fromUtf8("mp4") || suffix == QString::fromUtf8("mkv") ||
+           suffix == QString::fromUtf8("avi") || suffix == QString::fromUtf8("mov") ||
+           suffix == QString::fromUtf8("flv") || suffix == QString::fromUtf8("ts") ||
+           suffix == QString::fromUtf8("m4v") || suffix == QString::fromUtf8("webm");
+}
+
 }  // namespace
 
 MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                        QWidget* parent)
     : QMainWindow(parent), m_net(net), m_queue(queue), m_share(nullptr),
-      m_recycle(nullptr), m_transferPane(nullptr), m_splitter(nullptr),
+      m_recycle(nullptr), m_transferPane(nullptr), m_playerPane(nullptr),
+      m_splitter(nullptr),
       m_model(nullptr), m_table(nullptr), m_fileEmpty(nullptr),
       m_linkBadge(nullptr), m_listHint(nullptr), m_pathLabel(nullptr),
       m_upButton(nullptr), m_moreButton(nullptr), m_toast(nullptr),
@@ -129,6 +140,15 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
             refreshList();
         }
     }
+}
+
+MainWindow::~MainWindow() {
+    // 先停播放（此时所有子控件还活着），再让子控件自己销毁
+    if (m_playerPane != nullptr) {
+        m_playerPane->shutdown();
+    }
+    m_toast = nullptr;
+    m_playerPane = nullptr;
 }
 
 QWidget* MainWindow::buildPane(const QString& title, const QString& hint,
@@ -257,9 +277,14 @@ QWidget* MainWindow::buildFilePane() {
     connect(upload, SIGNAL(clicked()), this, SLOT(onUploadClicked()));
 
     connect(m_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
-        if (index.isValid() && m_model->isDirAt(index.row())) {
-            onEnterFolder();
+        if (!index.isValid()) {
+            return;
         }
+        if (m_model->isDirAt(index.row())) {
+            onEnterFolder();
+            return;
+        }
+        startPlayback(index.row());  // 双击视频 → 边下边播（契约 §1.3）
     });
 
     // 右键菜单：打开（目录）/ 下载 / 分享 / 删除。重命名已从契约移除（协议无 RenameRq）。
@@ -312,8 +337,17 @@ QWidget* MainWindow::buildTransferPane() {
 }
 
 QWidget* MainWindow::buildPlayerPane() {
-    return buildPane(QString::fromUtf8("播放"), QString::fromUtf8(kPlayerHint),
-                     QString::fromUtf8("playerPane"));
+    if (m_queue == nullptr) {
+        return buildPane(QString::fromUtf8("播放"), QString::fromUtf8(kPlayerHint),
+                         QString::fromUtf8("playerPane"));
+    }
+    m_playerPane = new PlayerPane(m_queue, this);
+    connect(m_playerPane, &PlayerPane::notice, this, [this](const QString& text) {
+        if (m_toast != nullptr) {
+            m_toast->showText(text);
+        }
+    });
+    return m_playerPane;
 }
 
 quint64 MainWindow::currentParent() const {
@@ -486,6 +520,41 @@ void MainWindow::onOpenRecycle() {
     }
     RecycleDialog dialog(m_recycle, this);
     dialog.exec();
+}
+
+void MainWindow::startPlayback(int row) {
+    if (m_playerPane == nullptr || row < 0) {
+        return;
+    }
+    const QString name = m_model->nameAt(row);
+    if (!isVideoFile(name)) {
+        if (m_toast != nullptr) {
+            m_toast->showText(QString::fromUtf8("「%1」不是视频文件").arg(name));
+        }
+        return;
+    }
+    m_playerPane->playRemoteFile(m_model->ufIdAt(row), name, m_model->sizeAt(row));
+}
+
+void MainWindow::playLocalFile(const QString& path) {
+    if (m_playerPane != nullptr) {
+        m_playerPane->playLocalFile(path);
+    }
+}
+
+void MainWindow::playRemoteByUfId(quint64 ufId) {
+    if (m_model == nullptr) {
+        return;
+    }
+    for (int i = 0; i < m_model->rowCount(); ++i) {
+        if (m_model->ufIdAt(i) == ufId) {
+            startPlayback(i);
+            return;
+        }
+    }
+    if (m_toast != nullptr) {
+        m_toast->showText(QString::fromUtf8("当前目录里没有该文件"));
+    }
 }
 
 void MainWindow::onUploadClicked() {

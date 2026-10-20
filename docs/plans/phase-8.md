@@ -49,6 +49,12 @@ build-client/bin/cloud-media-client.exe --version   # → cloud-media-client 0.1
 | 已知坑 | 仓库里部分文件带 append-only 属性（`lsattr` 显示 `a`），原地改写会**静默失败**；遇到"写了没生效"先 `mv` 掉再写 |
 | 已知坑 | `cmake -G "MinGW Makefiles"` 探测编译器时需要 PATH 含 MinGW bin，否则报 "compiler test failed" 且不给原因 |
 
+**播放器依赖（P8-4 起）**：头文件 + 导入库在 `client/player/deps/{ffmpeg,sdl2}`（可入库，约 5MB，
+FFmpeg 4.2.2 + SDL 2.0.10，均为 32 位 MinGW 导入库）；运行期 DLL 放在 `client/player/deps/dll`
+（.gitignore 忽略），由 `scripts/sync_player_dlls.sh` 从 `D:/mediaplayer/MediaPlayer` 复制，构建后
+CMake POST_BUILD 自动拷到 exe 旁。CMake 变量 `FFMPEG_ROOT` / `SDL2_ROOT` 缺省指向仓库内 deps，
+手写模块在 `cmake/FindFFmpeg.cmake`、`cmake/FindSDL2.cmake`。**只有 `cm_player_core` 链接它们。**
+
 ## Files and Responsibilities
 
 | 文件 | 职责 |
@@ -189,6 +195,54 @@ ROW uf=30668 p81_report.pdf size=1048576 dir=0
 **联调踩坑**：协议里的 shareCode 是 31 字符表（去掉 0/O/1/I/L）的 6 位大写码，shareTicket 必须是
 十六进制串；单测里随手写的 `ABC123`/`ticket-xyz` 会让 encode 直接返回 false（表现为"响应解析失败"）。
 
+## 联调记录（P8-4 播放器）
+
+**分层**：`player/PlayerCore`（唯一 include `libav*`/SDL 的层，PIMPL 对外只暴露 Qt 接口）→
+`ui/VideoCanvas`（QOpenGLWidget + 纹理上屏）、`ui/PlayerPane`（控制条/缓冲/失败态）。
+音视频同步沿用 legacy 思路：SDL 音频回调更新音频时钟，视频线程按 pts 追音频；无音频时退回系统时钟。
+
+**里程碑 A：本地完整文件**（`--play-file`，test.mp4 60s 640×360 mpeg4+aac）
+
+~~~text
+PLAY_OPEN duration_ms=60024 0x0
+PLAY_FIRST_FRAME at_ms=426
+PLAY_PAUSE pos_ms=1480
+PLAY_RESUME
+PLAY_SEEK 30000
+PLAY_AFTER_SEEK pos_ms=30920 frames=87     # 拖进度生效（目标 30s，落在 30.9s 的关键帧）
+PLAY_SMOKE_OK frames=111
+~~~
+
+截图：`docs/screenshots/p8-4-local-play.png`（右侧播放区已出画面）。
+
+**里程碑 B：边下边播**（23.7MB / 600s，faststart mp4；双击 → playback 下载写 .part → 播放器读增长中的文件）
+
+~~~text
+PLAY_STREAM_OPEN_REQUEST part=...p84_big.mp4.part at_ms=87
+PLAY_STREAM_OPEN duration_ms=600027 at_ms=184
+PLAY_STREAM_FIRST_FRAME at_ms=188            # 首块落盘即起播
+PLAY_STREAM_BUFFERING 1/0 ...（每块 ~2s 一次，UI 侧 <1.5s 不显示转圈）
+PLAY_STREAM_POS ms=5040 frames=127
+PLAY_STREAM_SOURCE_DONE state=已完成 bytes=23728285
+PLAY_STREAM_SEEK_NEAR_END ms=597027
+PLAY_STREAM_ENDED frames=333                 # 下载完成后播到真正末尾自然结束
+~~~
+
+截图：`docs/screenshots/p8-4-stream.png`。
+
+**本批踩到的坑（都会复现，记下来省时间）**
+
+1. **moov 在文件末尾不能边下边播**：legacy 的 test.mp4 moov 在 2.33MB 处（文件尾），必须先用
+   `ffmpeg -c copy -movflags +faststart` 处理；否则 avformat_open_input 要等整文件下完。
+2. **open 不能太早**：`avformat_open_input` 会在当前线程读数据；如果在 GUI 线程里对着还没落盘的
+   .part 调用，下载响应也走 GUI 事件循环 → 互等死锁。修法：等首块写盘（`bytesDone>0`）再 open，
+   并把 `probesize=512KB`、`max_analyze_duration=2s` 限制住探测范围。
+3. **销毁控件时不能动 TransferQueue**：`~PlayerPane` 里 `cancel()` → `changed()` → 已半销毁的
+   TransferPane 重建行 → Qt 崩在 `QWidgetPrivate::reparentFocusWidgets`。修法：`MainWindow::~MainWindow`
+   先调 `PlayerPane::shutdown()`（此时兄弟控件都活着），`~PlayerPane` 只断连接、不再碰队列。
+4. **SDL 抢 main**：只做音频输出也要在 include 前 `#define SDL_MAIN_HANDLED`，否则链接期要 `WinMain`。
+5. **mpeg4 的宽高不在头里**：`opened` 信号的宽高可能是 0×0，渲染以第一帧 QImage 的尺寸为准。
+
 ## Tasks
 
 | # | 任务 | 验收 | 状态 |
@@ -198,7 +252,7 @@ ROW uf=30668 p81_report.pdf size=1048576 dir=0
 | T8-2 | 文件区：QAbstractTableModel + 面包屑 + 右键菜单 + 拖拽上传 | 1000 行列表滚动不卡，排序/分页走协议 | **功能完成（P8-3）**；1000 行滚动压测待补 |
 | T8-3 | 传输区：上传/下载队列、进度、暂停/取消、断点续传 | 中断后重启可续；限速 2MB/s 时速度显示正确 | **本批完成**（续传/秒传/断线暂停已联调） |
 | T8-4 | 分享：生成/提取/过期提示 | 分享码 + 提取码全流程 | 待做 |
-| T8-5 | 播放器：FFmpeg 解码 + 边下边播 + 基础 HLS | 10MB 视频首块起播 < 1.5s | 待做 |
+| T8-5 | 播放器：FFmpeg 解码 + 边下边播 + 基础 HLS | 10MB 视频首块起播 < 1.5s | **部分完成（P8-4）**：解码/同步/seek/边下边播完成（首帧 188ms）；HLS 侧车待做 |
 | T8-6 | 主题打磨 + 打包（windeployqt） | 双击可运行，DLL 齐全 | 待做 |
 
 ## 风险

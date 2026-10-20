@@ -216,6 +216,16 @@ int TransferQueue::enqueueUpload(const QString& localPath, const QString& remote
     return task.id;
 }
 
+int TransferQueue::enqueuePlaybackDownload(quint64 ufId, const QString& remoteName,
+                                           quint64 size) {
+    const int id = enqueueDownload(ufId, remoteName, size);
+    TransferTask* task = find(id);
+    if (task != nullptr) {
+        task->playback = true;
+    }
+    return id;
+}
+
 int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
                                          const QString& fileName, quint64 size) {
     TransferTask task;
@@ -738,6 +748,13 @@ void TransferQueue::handleDownloadDone(TransferTask* task, const QByteArray& pay
     protocol::DownloadDoneRs rs;
     if (!rs.decode(toStd(payload)) || rs.code != 0) {
         fail(task, rs.code, QString::fromUtf8("完成上报失败"));
+        return;
+    }
+    if (task->playback) {
+        // 播放器正开着 .part：不能改名，保留文件让播放自然播到结尾
+        QFile::remove(partStatePath(*task));
+        task->bitmap.clear();
+        finish(task);
         return;
     }
     QFile::remove(task->localPath);
