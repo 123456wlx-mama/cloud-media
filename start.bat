@@ -26,6 +26,11 @@ if not exist "%CLIENT_EXE%" (
     echo Then re-run this script.
     goto :fail
 )
+if not exist "%ROOT%\build-client\bin\Qt5Core.dll" (
+    echo Qt DLLs missing next to the client exe.
+    echo Run: cmake --build build-client    (POST_BUILD deploys Qt DLLs)
+    goto :fail
+)
 
 echo [3/4] Start server stack (mysql + redis + server) ...
 docker compose up -d --build

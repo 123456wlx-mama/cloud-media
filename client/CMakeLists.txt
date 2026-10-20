@@ -81,6 +81,26 @@ set_target_properties(cloud-media-client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+if(WIN32)
+    # 构建即部署：Qt DLL/插件 + 32 位编译器运行时，全部拷到 exe 旁。
+    # windeployqt 必须加 --no-compiler-runtime：它按 PATH 找编译器运行时，
+    # PATH 里有 64 位 MinGW 时会拷 libgcc_s_seh-1（64 位）→ 32 位 exe 0xc000007b。
+    # 三个运行时 DLL 改从本构建的编译器目录拷（与 exe 同位数，必然正确）。
+    get_filename_component(_qt_bin "${Qt5_DIR}/../../../bin" ABSOLUTE)
+    get_filename_component(_mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    add_custom_command(TARGET cloud-media-client POST_BUILD
+        COMMAND "${_qt_bin}/windeployqt.exe" --release --no-translations
+                --no-compiler-runtime $<TARGET_FILE:cloud-media-client>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_mingw_bin}/libgcc_s_dw2-1.dll" $<TARGET_FILE_DIR:cloud-media-client>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_mingw_bin}/libstdc++-6.dll" $<TARGET_FILE_DIR:cloud-media-client>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_mingw_bin}/libwinpthread-1.dll" $<TARGET_FILE_DIR:cloud-media-client>
+        COMMENT "Deploying Qt + compiler runtime DLLs"
+    )
+endif()
+
 # 播放器运行期 DLL：源文件放在 client/player/deps/dll（.gitignore 忽略），
 # 由 scripts/sync_player_dlls.sh 从 legacy 复制；这里只做"有就拷到 exe 旁"。
 file(GLOB CM_PLAYER_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/player/deps/dll/*.dll")
