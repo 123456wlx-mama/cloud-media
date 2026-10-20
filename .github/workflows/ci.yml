@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      # CI 临时测试库口令；不是生产密钥，VM/本地不依赖此值。
+      CM_MYSQL_PASSWORD: cm_test_pw_ci
+      CM_TEST_MYSQL_USER: cm_test
+      CM_TEST_MYSQL_DB: cloud_media_test
+      CM_TEST_REDIS: "1"
+      CI_JOBS: "4"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake g++ make lcov \
+            mysql-server redis-server \
+            default-libmysqlclient-dev libhiredis-dev
+
+      - name: start mysql and redis
+        run: |
+          sudo service mysql start
+          sudo service redis-server start
+          redis-cli ping
+
+      - name: init test database
+        run: |
+          sudo mysql <<'SQL'
+          CREATE DATABASE IF NOT EXISTS cloud_media_test
+            DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+          CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED BY 'cm_test_pw_ci';
+          GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/schema_v2.sql
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_1_index.sql
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_2_phase5.sql
+
+      # 与 VM 对齐：显式 C++11；项目的 cmake/compiler_flags.cmake 也是 11。
+      # g++11 可能比 g++5.4 多出警告；项目未开 -Werror，warnings 不阻断，
+      # 差异会在首次推送时记录到 docs/benchmark/phase6_summary.md。
+      - name: ci (build + ctest + coverage gate)
+        env:
+          CI_BUILD_DIR: ${{ github.workspace }}/build-ci
+        run: |
+          cmake -S . -B build-ci \
+            -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON \
+            -DENABLE_COVERAGE=ON -DENABLE_DB_INTEGRATION_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=11 -DCMAKE_CXX_EXTENSIONS=OFF
+          bash scripts/ci.sh
