@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaType>
+#include <QStandardPaths>
 #include <QTextStream>
 
 #include <string>
@@ -26,6 +27,17 @@ const int kMaxUploads = 2;            // 上传并发文件数
 const int kMaxDownloads = 2;          // 下载并发文件数
 
 quint16 t(protocol::MessageType type) { return static_cast<std::uint16_t>(type); }
+
+// 显式下载的落点：用户「下载」文件夹（Windows 为 %USERPROFILE%\Downloads）。
+// 之前落在 QDir::tempPath()，用户在资源管理器里根本找不到；播放用的临时 .part
+// 也走这里，播完由 PlayerPane 清理，不会残留。
+QString downloadRoot() {
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::tempPath();
+    }
+    return dir;
+}
 
 template <typename Rq>
 QByteArray encodePayload(const Rq& rq) {
@@ -246,7 +258,7 @@ int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
     task.remoteName = fileName.isEmpty() ? QString::fromUtf8("shared_file.bin")
                                          : fileName;
     task.size = size;
-    task.localPath = QDir::tempPath() + QString::fromUtf8("/") + task.remoteName;
+    task.localPath = downloadRoot() + QString::fromUtf8("/") + task.remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);
@@ -262,8 +274,8 @@ int TransferQueue::enqueueDownload(quint64 ufId, const QString& remoteName,
     task.ufId = ufId;
     task.remoteName = remoteName;
     task.size = size;
-    // 默认落到系统临时目录；UI 后续接 QFileDialog 时改成用户选择路径。
-    task.localPath = QDir::tempPath() + QString::fromUtf8("/") + remoteName;
+    // 落到用户「下载」文件夹（用户可在资源管理器直接找到）。
+    task.localPath = downloadRoot() + QString::fromUtf8("/") + remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);
