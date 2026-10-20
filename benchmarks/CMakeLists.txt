@@ -6,6 +6,15 @@ set_target_properties(cm_log_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+add_executable(bencher bencher.cpp)
+target_link_libraries(bencher PRIVATE cm_protocol cm_common)
+if(NOT WIN32)
+    target_link_libraries(bencher PRIVATE Threads::Threads)
+endif()
+set_target_properties(bencher PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 add_executable(bench_conn bench_conn.cpp)
 if(NOT WIN32)
     target_link_libraries(bench_conn PRIVATE Threads::Threads)
