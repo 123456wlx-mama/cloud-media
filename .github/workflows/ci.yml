@@ -45,12 +45,20 @@ jobs:
 
       - name: init test database
         run: |
-          set -uo pipefail
+          # GitHub 默认 bash -e，这里显式关掉 errexit，手动捕获每个命令的错误打进注解
+          set +e
+
           echo "== mysql client version =="
           mysql --version
 
+          echo "== server version (root socket) =="
+          sudo mysql -e "SELECT VERSION();" 2>&1
+
+          echo "== tcp 3306 listening? =="
+          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep 3306 || echo "NO tcp:3306 listener"
+
           echo "== create db + user (root socket) =="
-          sudo mysql <<'SQL'
+          sudo mysql > /tmp/init_root.log 2>&1 <<'SQL'
           CREATE DATABASE IF NOT EXISTS cloud_media_test
             DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
           CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
@@ -61,7 +69,7 @@ jobs:
           SQL
           rc=$?
           if [ $rc -ne 0 ]; then
-            echo "::error::root heredoc failed with exit $rc"
+            echo "::error::root heredoc failed (exit $rc): $(cat /tmp/init_root.log)"
             exit 1
           fi
 
@@ -71,6 +79,7 @@ jobs:
             rc=$?
             if [ $rc -ne 0 ]; then
               echo "::error::import $f failed (exit $rc): $out"
+              echo "::error::tcp-ping: $(sudo mysqladmin -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" ping 2>&1)"
               sudo tail -30 /var/log/mysql/error.log 2>/dev/null || true
               exit 1
             fi
