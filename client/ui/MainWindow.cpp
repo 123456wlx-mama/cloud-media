@@ -2,6 +2,7 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -571,8 +572,22 @@ void MainWindow::playRemoteByUfId(quint64 ufId) {
 }
 
 void MainWindow::onUploadClicked() {
-    // 拖拽是主路径，按钮给提示（QFileDialog 入口留到 P8-6 打包时一起）。
-    statusBar()->showMessage(QString::fromUtf8("把文件拖进窗口即可上传"));
+    // 与拖拽共用 enqueueUpload 路径：按钮走文件选择框（多选），拖拽走 dropEvent。
+    if (m_queue == nullptr) {
+        return;
+    }
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QString::fromUtf8("选择要上传的文件"), QString());
+    for (int i = 0; i < files.size(); ++i) {
+        const QString path = files.at(i);
+        if (!path.isEmpty()) {
+            m_queue->enqueueUpload(path, QFileInfo(path).fileName());
+        }
+    }
+    if (!files.isEmpty()) {
+        statusBar()->showMessage(
+            QString::fromUtf8("已加入 %1 个上传任务").arg(files.size()));
+    }
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
