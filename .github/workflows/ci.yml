@@ -29,49 +29,39 @@ jobs:
 
       - name: start mysql and redis
         run: |
-          sudo service mysql start || sudo systemctl start mysql
-          sudo service redis-server start || sudo systemctl start redis-server
-          redis-cli ping
-          # GitHub ubuntu-22.04 上 service start 返回成功但 mysqld 可能尚未就绪，
-          # 紧接着的 sudo mysql 会撞上 socket 未建立。这里轮询到真正可连为止（最长 60s）。
-          for i in $(seq 1 60); do
-            if sudo mysqladmin ping --silent 2>/dev/null; then
-              echo "mysql ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          sudo mysqladmin ping
-
-      - name: init test database
-        run: |
-          # GitHub 默认 bash -e，这里显式关掉 errexit，手动捕获每个命令的错误打进注解
           set +e
-
-          echo "== mysql client version =="
-          mysql --version
-
-          echo "== server version (root socket) =="
-          sudo mysql -e "SELECT VERSION();" 2>&1
-
-          echo "== tcp 3306 listening? =="
-          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep 3306 || echo "NO tcp:3306 listener"
-
-          echo "== create db + user (root socket) =="
-          sudo mysql > /tmp/init_root.log 2>&1 <<'SQL'
-          CREATE DATABASE IF NOT EXISTS cloud_media_test
-            DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+          # runner 上 MySQL root 口令未知（非 auth_socket），sudo mysql 会被 Access denied。
+          # 改用 --init-file 在 mysqld 启动阶段以 root 特权直接建库建用户，绕开 root 口令。
+          sudo tee /tmp/cm-init.sql >/dev/null <<'EOF'
+          CREATE DATABASE IF NOT EXISTS cloud_media_test DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
           CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
           CREATE USER IF NOT EXISTS 'cm_test'@'localhost' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
           GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'%';
           GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'localhost';
           FLUSH PRIVILEGES;
-          SQL
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "::error::root heredoc failed (exit $rc): $(cat /tmp/init_root.log)"
-            exit 1
-          fi
+          EOF
+
+          sudo service mysql stop >/dev/null 2>&1 || true
+          sudo mkdir -p /var/run/mysqld
+          sudo chown mysql:mysql /var/run/mysqld
+          sudo nohup mysqld --user=mysql --init-file=/tmp/cm-init.sql >/tmp/mysqld.log 2>&1 &
+          disown || true
+
+          for i in $(seq 1 60); do
+            if sudo mysqladmin ping --silent 2>/dev/null; then echo "mysql ready after ${i}s"; break; fi
+            sleep 1
+          done
+          sudo mysqladmin ping
+
+          sudo service redis-server start || sudo systemctl start redis-server
+          redis-cli ping
+
+      - name: init test database
+        run: |
+          set +e
+
+          echo "== mysql client version =="
+          mysql --version
 
           echo "== import schema/patches =="
           for f in sql/schema_v2.sql sql/patch_v2_1_index.sql sql/patch_v2_2_phase5.sql; do
@@ -79,7 +69,6 @@ jobs:
             rc=$?
             if [ $rc -ne 0 ]; then
               echo "::error::import $f failed (exit $rc): $out"
-              echo "::error::tcp-ping: $(sudo mysqladmin -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" ping 2>&1)"
               sudo tail -30 /var/log/mysql/error.log 2>/dev/null || true
               exit 1
             fi
