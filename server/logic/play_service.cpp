@@ -24,7 +24,7 @@ PlayService::PlayService(cm::db::MysqlPool& mysql) : m_mysql(mysql) {
 ErrorCode PlayService::report(std::uint64_t uid,
                               const cm::protocol::PlayReportRq& rq,
                               cm::protocol::PlayReportRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::PlayReportRs();

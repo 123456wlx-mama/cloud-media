@@ -17,7 +17,7 @@ class PlayDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP
         }
         m_dao.reset(new cm::db::PlayDao(*m_conn));

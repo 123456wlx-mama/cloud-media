@@ -31,7 +31,7 @@ MysqlConn::~MysqlConn() {
 }
 
 bool MysqlConn::valid() const {
-    return m_handle.get() != NULL && !m_broken;
+    return m_handle.get() != nullptr && !m_broken;
 }
 
 bool MysqlConn::ping() {
@@ -52,7 +52,7 @@ bool MysqlConn::inTransaction() const {
 }
 
 std::uint64_t MysqlConn::id() const {
-    if (m_handle.get() == NULL) {
+    if (m_handle.get() == nullptr) {
         return 0;
     }
     return static_cast<std::uint64_t>(mysql_thread_id(m_handle.get()));
@@ -67,7 +67,7 @@ std::unique_ptr<PreparedStatement> MysqlConn::prepare(const std::string& sql) {
     }
 
     MYSQL_STMT* stmt = mysql_stmt_init(m_handle.get());
-    if (stmt == NULL) {
+    if (stmt == nullptr) {
         setError(ErrorCode::DbQueryFailed, mysql_error(m_handle.get()));
         return std::unique_ptr<PreparedStatement>();
     }

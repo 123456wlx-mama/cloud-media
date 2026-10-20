@@ -107,7 +107,7 @@ TransferDao::TransferDao(MysqlConn& conn) : m_conn(conn) {
 }
 
 ErrorCode TransferDao::createTask(const NewTransferTask& task, std::uint64_t* trId) {
-    if (trId == NULL || !isHex32(task.taskId) || task.userId == 0 ||
+    if (trId == nullptr || !isHex32(task.taskId) || task.userId == 0 ||
         task.type < 1 || task.type > 3 || task.fileName.empty() ||
         task.fileName.size() > 255 || task.totalSize == 0 || task.chunkSize == 0 ||
         task.totalChunks == 0 || task.ttlSeconds == 0) {
@@ -156,7 +156,7 @@ ErrorCode TransferDao::createTask(const NewTransferTask& task, std::uint64_t* tr
 
 ErrorCode TransferDao::findTaskByTaskId(const std::string& taskId,
                                         TransferTaskRow* out) {
-    if (out == NULL || !isHex32(taskId)) {
+    if (out == nullptr || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -189,7 +189,7 @@ ErrorCode TransferDao::findTaskByTaskId(const std::string& taskId,
 ErrorCode TransferDao::lockTaskForUpdate(std::uint64_t uid,
                                          const std::string& taskId,
                                          TransferTaskRow* out) {
-    if (out == NULL || uid == 0 || !isHex32(taskId)) {
+    if (out == nullptr || uid == 0 || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -224,7 +224,7 @@ ErrorCode TransferDao::upsertChunkIfAbsent(std::uint64_t uid,
                                            const std::string& taskId,
                                            const ChunkWrite& chunk,
                                            ChunkUpsertResult* out) {
-    if (out == NULL || uid == 0 || !isHex32(taskId) || !isHex32(chunk.md5) ||
+    if (out == nullptr || uid == 0 || !isHex32(taskId) || !isHex32(chunk.md5) ||
         chunk.size == 0 || chunk.path.empty()) {
         return ErrorCode::InvalidArgument;
     }
@@ -362,7 +362,7 @@ ErrorCode TransferDao::upsertChunkIfAbsent(std::uint64_t uid,
 ErrorCode TransferDao::findChunk(const std::string& taskId,
                                    std::uint32_t index,
                                    ChunkRow* out) {
-    if (out == NULL || !isHex32(taskId)) {
+    if (out == nullptr || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -398,7 +398,7 @@ ErrorCode TransferDao::findChunk(const std::string& taskId,
 
 ErrorCode TransferDao::listDoneIndexes(const std::string& taskId,
                                        std::vector<std::uint32_t>* out) {
-    if (out == NULL || !isHex32(taskId)) {
+    if (out == nullptr || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();
@@ -431,7 +431,7 @@ ErrorCode TransferDao::listDoneIndexes(const std::string& taskId,
 
 ErrorCode TransferDao::listChunks(const std::string& taskId,
                                  std::vector<ChunkRow>* out) {
-    if (out == NULL || !isHex32(taskId)) {
+    if (out == nullptr || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();
@@ -471,7 +471,7 @@ ErrorCode TransferDao::listChunks(const std::string& taskId,
 
 ErrorCode TransferDao::sumDoneBytes(const std::string& taskId,
                                     std::uint64_t* bytes) {
-    if (bytes == NULL || !isHex32(taskId)) {
+    if (bytes == nullptr || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
     *bytes = 0;
@@ -502,7 +502,7 @@ ErrorCode TransferDao::sumDoneBytes(const std::string& taskId,
 ErrorCode TransferDao::deleteChunks(const std::string& taskId,
                                    std::size_t limit,
                                    std::size_t* deleted) {
-    if (deleted == NULL || !isHex32(taskId) || limit == 0 || limit > 1000) {
+    if (deleted == nullptr || !isHex32(taskId) || limit == 0 || limit > 1000) {
         return ErrorCode::InvalidArgument;
     }
     *deleted = 0;
@@ -551,7 +551,7 @@ ErrorCode TransferDao::markStatus(std::uint64_t uid,
                                   std::uint8_t newStatus,
                                   std::int32_t errorCode,
                                   bool* changed) {
-    if (changed == NULL || uid == 0 || !isHex32(taskId) || allowedFrom.empty() ||
+    if (changed == nullptr || uid == 0 || !isHex32(taskId) || allowedFrom.empty() ||
         newStatus > 7) {
         return ErrorCode::InvalidArgument;
     }
@@ -588,7 +588,7 @@ ErrorCode TransferDao::markStatus(std::uint64_t uid,
 ErrorCode TransferDao::electMerge(std::uint64_t uid,
                                   const std::string& taskId,
                                   bool* elected) {
-    if (elected == NULL || uid == 0 || !isHex32(taskId)) {
+    if (elected == nullptr || uid == 0 || !isHex32(taskId)) {
         return ErrorCode::InvalidArgument;
     }
     *elected = false;
@@ -616,7 +616,7 @@ ErrorCode TransferDao::electMerge(std::uint64_t uid,
 // 7 只表示「合并过程中进程崩溃」，启动时统一回 2(Paused)；
 // 正常失败的请求会自己回 1，不把 7 留成不可重试的终态。
 ErrorCode TransferDao::resetMergingOnStartup(std::uint64_t* affected) {
-    if (affected == NULL) {
+    if (affected == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *affected = 0;
@@ -636,7 +636,7 @@ ErrorCode TransferDao::resetMergingOnStartup(std::uint64_t* affected) {
 
 ErrorCode TransferDao::findExpired(std::vector<TransferTaskRow>* out,
                                    std::size_t limit) {
-    if (out == NULL || limit == 0 || limit > kMaxTaskListLimit) {
+    if (out == nullptr || limit == 0 || limit > kMaxTaskListLimit) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();

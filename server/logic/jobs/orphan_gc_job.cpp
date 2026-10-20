@@ -35,10 +35,10 @@ OrphanGcJob::OrphanGcJob(cm::db::MysqlPool& mysql,
 
 ErrorCode OrphanGcJob::runOnce(std::size_t* deleted,
                                std::uint64_t* freedBytes) {
-    if (deleted != NULL) {
+    if (deleted != nullptr) {
         *deleted = 0;
     }
-    if (freedBytes != NULL) {
+    if (freedBytes != nullptr) {
         *freedBytes = 0;
     }
 
@@ -68,10 +68,10 @@ ErrorCode OrphanGcJob::runOnce(std::size_t* deleted,
         }
     }
 
-    if (deleted != NULL) {
+    if (deleted != nullptr) {
         *deleted = purged;
     }
-    if (freedBytes != NULL) {
+    if (freedBytes != nullptr) {
         *freedBytes = bytes;
     }
     return ErrorCode::Ok;

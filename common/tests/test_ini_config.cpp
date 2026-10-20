@@ -15,7 +15,7 @@ namespace {
 std::string MakeTempFile(const char* tag) {
     static std::atomic<unsigned> counter(0);
     std::ostringstream os;
-    os << "cm_ini_" << tag << "_" << std::time(NULL) << "_" << counter++ << ".ini";
+    os << "cm_ini_" << tag << "_" << std::time(nullptr) << "_" << counter++ << ".ini";
     return os.str();
 }
 
@@ -100,6 +100,51 @@ TEST(IniConfigTest, MalformedLineReportsLineNumber) {
     std::string err;
     EXPECT_TRUE(ini.load(path, &err) == cm::ErrorCode::InvalidArgument);
     EXPECT_NE(std::string::npos, err.find("line 3"));
+
+    RemoveFile(path);
+}
+
+TEST(IniConfigTest, MissingSectionUsesDefaultsAndNotFound) {
+    const std::string path = MakeTempFile("nosection");
+    ASSERT_TRUE(WriteFile(path, "[present]\nk=v\n"));
+
+    cm::IniConfig ini;
+    std::string err;
+    ASSERT_EQ(cm::ErrorCode::Ok, ini.load(path, &err));
+
+    EXPECT_FALSE(ini.has("absent", "k"));
+    EXPECT_EQ(std::string("fallback"),
+              ini.getString("absent", "k", "fallback"));
+    int value = 42;
+    EXPECT_EQ(cm::ErrorCode::NotFound, ini.getInt("absent", "k", &value));
+    EXPECT_EQ(42, value);
+    EXPECT_EQ(std::string("v"), ini.getString("present", "k", ""));
+
+    RemoveFile(path);
+}
+
+TEST(IniConfigTest, CrlfAndTrailingSpacesTrimmed) {
+    const std::string path = MakeTempFile("crlf");
+    ASSERT_TRUE(WriteFile(path, "[s]\r\n  k = value with spaces   \r\n"));
+
+    cm::IniConfig ini;
+    std::string err;
+    ASSERT_EQ(cm::ErrorCode::Ok, ini.load(path, &err));
+    EXPECT_EQ(std::string("value with spaces"),
+              ini.getString("s", "k", ""));
+
+    RemoveFile(path);
+}
+
+TEST(IniConfigTest, SectionsAreIsolated) {
+    const std::string path = MakeTempFile("sections");
+    ASSERT_TRUE(WriteFile(path, "[a]\nk=1\n[b]\nk=2\n"));
+
+    cm::IniConfig ini;
+    std::string err;
+    ASSERT_EQ(cm::ErrorCode::Ok, ini.load(path, &err));
+    EXPECT_EQ(std::string("1"), ini.getString("a", "k", ""));
+    EXPECT_EQ(std::string("2"), ini.getString("b", "k", ""));
 
     RemoveFile(path);
 }

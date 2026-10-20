@@ -81,7 +81,7 @@ std::uint64_t nowMs() {
 
 // DB 里是 UTC DATETIME(6)；连接池已 SET SESSION time_zone='+00:00'（05 §4.3）。
 std::string nowUtcDatetime() {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     std::tm tm;
     std::memset(&tm, 0, sizeof(tm));
     ::gmtime_r(&now, &tm);
@@ -144,7 +144,7 @@ void addBadIndex(std::vector<std::uint32_t>* bad, std::uint32_t index) {
 }
 
 std::string utcNowIso8601() {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     std::tm tm;
     std::memset(&tm, 0, sizeof(tm));
     ::gmtime_r(&now, &tm);
@@ -300,7 +300,7 @@ UploadService::UploadService(cm::db::MysqlPool& mysql,
 ErrorCode UploadService::init(std::uint64_t uid,
                               const cm::protocol::UploadInitRq& rq,
                               cm::protocol::UploadInitRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::UploadInitRs();
@@ -376,7 +376,7 @@ ErrorCode UploadService::continueUpload(
     std::uint64_t uid,
     const cm::protocol::ContinueUploadRq& rq,
     cm::protocol::ContinueUploadRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ContinueUploadRs();
@@ -507,7 +507,7 @@ ErrorCode UploadService::completeUpload(
     std::uint64_t uid,
     const cm::protocol::UploadCompleteRq& rq,
     cm::protocol::UploadCompleteRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::UploadCompleteRs();
@@ -762,10 +762,10 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
 
     std::string cachedFid;
     if (m_cache.get(md5Key, &cachedFid) == cm::cache::CacheStore::Result::Hit) {
-        char* end = NULL;
+        char* end = nullptr;
         const unsigned long long value =
             std::strtoull(cachedFid.c_str(), &end, 10);
-        if (end != NULL && *end == '\0' && value != 0) {
+        if (end != nullptr && *end == '\0' && value != 0) {
             cm::db::BlobRow blob;
             if (fileDao.getBlobById(value, &blob) == ErrorCode::Ok &&
                 blob.state == 1 && blob.size == rq.totalSize) {

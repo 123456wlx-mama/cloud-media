@@ -48,7 +48,7 @@ Frame makeFrame(std::uint16_t type, std::uint32_t seq) {
 TEST(HandlerRegistryTest, RegistersAndDispatches) {
     ErrorRecord error;
     // workers=NULL：同步执行，仅用于单测。
-    net::HandlerRegistry registry(NULL, makeResponder(&error));
+    net::HandlerRegistry registry(nullptr, makeResponder(&error));
 
     int calls = 0;
     std::uint32_t seenSeq = 0;
@@ -74,7 +74,7 @@ TEST(HandlerRegistryTest, RegistersAndDispatches) {
 
 TEST(HandlerRegistryTest, RejectsDuplicateRegistration) {
     ErrorRecord error;
-    net::HandlerRegistry registry(NULL, makeResponder(&error));
+    net::HandlerRegistry registry(nullptr, makeResponder(&error));
 
     const std::uint16_t type = static_cast<std::uint16_t>(MessageType::UploadChunkRq);
     EXPECT_EQ(cm::ErrorCode::Ok,
@@ -95,7 +95,7 @@ TEST(HandlerRegistryTest, RejectsDuplicateRegistration) {
 // 未注册类型回 9003，且不执行任何 handler。
 TEST(HandlerRegistryTest, RejectsUnknownTypeWith9003) {
     ErrorRecord error;
-    net::HandlerRegistry registry(NULL, makeResponder(&error));
+    net::HandlerRegistry registry(nullptr, makeResponder(&error));
 
     const Frame frame = makeFrame(
         static_cast<std::uint16_t>(MessageType::ListFileRq), 9);
@@ -126,7 +126,7 @@ TEST(HandlerRegistryTest, MapsDecodeFailuresTo1001) {
 // tryBegin 收进分发路径：准入失败不调 handler，回 1006；成功才执行并释放。
 TEST(HandlerRegistryTest, AppliesAdmissionBeforeHandler) {
     ErrorRecord error;
-    net::HandlerRegistry registry(NULL, makeResponder(&error));
+    net::HandlerRegistry registry(nullptr, makeResponder(&error));
 
     int handlerCalls = 0;
     int releaseCalls = 0;

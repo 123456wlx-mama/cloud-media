@@ -27,9 +27,9 @@ std::string makeData(std::size_t size, char fill) {
 
 void removeTree(const std::string& path) {
     DIR* dir = ::opendir(path.c_str());
-    if (dir != NULL) {
-        struct dirent* entry = NULL;
-        while ((entry = ::readdir(dir)) != NULL) {
+    if (dir != nullptr) {
+        struct dirent* entry = nullptr;
+        while ((entry = ::readdir(dir)) != nullptr) {
             const std::string name = entry->d_name;
             if (name == "." || name == "..") {
                 continue;
@@ -55,13 +55,13 @@ class UploadChunkServiceTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
 
         char templ[] = "/tmp/cm_chunk_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
         m_handler.reset(new cm::logic::UploadChunkHandler(*m_pool, m_root));
         createUser();
@@ -128,7 +128,7 @@ TEST_F(UploadChunkServiceTest, UploadChunkNewCompletes) {
 
     cm::protocol::UploadChunkRs rs;
     ASSERT_EQ(cm::ErrorCode::Ok,
-              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, data), NULL, &rs));
+              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, data), nullptr, &rs));
 
     EXPECT_EQ(0u, rs.code);
     EXPECT_EQ(0u, rs.chunkIndex);
@@ -155,11 +155,11 @@ TEST_F(UploadChunkServiceTest, UploadChunkDuplicateNoCount) {
     const cm::protocol::UploadChunkRq rq = makeChunk(taskId, 0, 0, data);
 
     cm::protocol::UploadChunkRs first;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_handler->handle(m_uid, 1, rq, NULL, &first));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_handler->handle(m_uid, 1, rq, nullptr, &first));
     ASSERT_EQ(1u, first.doneChunks);
 
     cm::protocol::UploadChunkRs second;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_handler->handle(m_uid, 2, rq, NULL, &second));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_handler->handle(m_uid, 2, rq, nullptr, &second));
     EXPECT_EQ(0u, second.code);
     EXPECT_EQ(1, static_cast<int>(second.duplicate));
     EXPECT_EQ(1u, second.doneChunks);
@@ -173,11 +173,11 @@ TEST_F(UploadChunkServiceTest, UploadChunkDuplicateDifferentMd5Rejected) {
 
     cm::protocol::UploadChunkRs first;
     ASSERT_EQ(cm::ErrorCode::Ok,
-              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, good), NULL, &first));
+              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, good), nullptr, &first));
 
     cm::protocol::UploadChunkRs second;
     EXPECT_EQ(cm::ErrorCode::Md5Mismatch,
-              m_handler->handle(m_uid, 2, makeChunk(taskId, 0, 0, evil), NULL, &second));
+              m_handler->handle(m_uid, 2, makeChunk(taskId, 0, 0, evil), nullptr, &second));
     EXPECT_EQ(3003u, second.code);
 
     // 已确认的分片不能被覆盖：文件内容与 DB 里的 MD5 都还是第一份。
@@ -202,7 +202,7 @@ TEST_F(UploadChunkServiceTest, UploadChunkOutOfOrder) {
                                     makeChunk(taskId, index,
                                               static_cast<std::uint64_t>(index) * kChunkSize,
                                               data),
-                                    NULL, &rs));
+                                    nullptr, &rs));
         ++expectedDone;
         EXPECT_EQ(expectedDone, rs.doneChunks);
         EXPECT_EQ(static_cast<std::uint64_t>(expectedDone) * kChunkSize, rs.doneBytes);
@@ -217,7 +217,7 @@ TEST_F(UploadChunkServiceTest, UploadChunkOffsetMismatch) {
     EXPECT_EQ(cm::ErrorCode::InvalidArgument,
               m_handler->handle(m_uid, 1,
                                 makeChunk(taskId, 1, 0, data),  // offset 应为 4MB
-                                NULL, &rs));
+                                nullptr, &rs));
     EXPECT_EQ(1001u, rs.code);
 
     cm::db::ChunkRow row;
@@ -233,14 +233,14 @@ TEST_F(UploadChunkServiceTest, UploadChunkWrongSizeLast) {
     EXPECT_EQ(cm::ErrorCode::InvalidArgument,
               m_handler->handle(m_uid, 1,
                                 makeChunk(taskId, 1, kChunkSize, makeData(200, 'x')),
-                                NULL, &wrong));
+                                nullptr, &wrong));
     EXPECT_EQ(1001u, wrong.code);
 
     cm::protocol::UploadChunkRs ok;
     ASSERT_EQ(cm::ErrorCode::Ok,
               m_handler->handle(m_uid, 2,
                                 makeChunk(taskId, 1, kChunkSize, makeData(100, 'x')),
-                                NULL, &ok));
+                                nullptr, &ok));
     EXPECT_EQ(1u, ok.doneChunks);
     EXPECT_EQ(std::uint64_t(100), ok.doneBytes);
 
@@ -256,7 +256,7 @@ TEST_F(UploadChunkServiceTest, UploadChunkExpiredTask) {
 
     cm::protocol::UploadChunkRs rs;
     EXPECT_EQ(cm::ErrorCode::TaskExpired,
-              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, data), NULL, &rs));
+              m_handler->handle(m_uid, 1, makeChunk(taskId, 0, 0, data), nullptr, &rs));
     EXPECT_EQ(3007u, rs.code);
 
     cm::db::ChunkRow row;
@@ -273,7 +273,7 @@ TEST_F(UploadChunkServiceTest, UploadChunkBadCrcCloses) {
 
     cm::protocol::UploadChunkRs rs;
     EXPECT_EQ(cm::ErrorCode::Md5Mismatch,
-              m_handler->handle(m_uid, 1, rq, NULL, &rs));
+              m_handler->handle(m_uid, 1, rq, nullptr, &rs));
     EXPECT_EQ(3003u, rs.code);
 
     cm::db::ChunkRow row;

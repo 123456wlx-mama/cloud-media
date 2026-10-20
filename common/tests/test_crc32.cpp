@@ -11,7 +11,7 @@ TEST(Crc32Test, KnownVector) {
 }
 
 TEST(Crc32Test, EmptyInput) {
-    EXPECT_EQ(0u, cm::crc32(NULL, 0));
+    EXPECT_EQ(0u, cm::crc32(nullptr, 0));
     EXPECT_EQ(0u, cm::crc32(std::string()));
 }
 

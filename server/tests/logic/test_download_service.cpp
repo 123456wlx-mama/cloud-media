@@ -31,12 +31,12 @@ const std::uint32_t kChunkSize = 4194304;
 
 bool redisEnabled() {
     const char* value = std::getenv("CM_TEST_REDIS");
-    return value != NULL && std::string(value) == "1";
+    return value != nullptr && std::string(value) == "1";
 }
 
 std::string envOr(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
+    return value != nullptr ? std::string(value) : std::string(fallback);
 }
 
 cm::cache::RedisOptions redisOptions() {
@@ -66,7 +66,7 @@ class DownloadServiceTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         if (!redisEnabled()) {
@@ -76,7 +76,7 @@ protected:
 
         char templ[] = "/tmp/cm_dlservice_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
 
         std::string error;

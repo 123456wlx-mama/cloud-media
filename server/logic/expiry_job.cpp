@@ -29,12 +29,12 @@ bool isDots(const std::string& name) {
 
 bool dirIsEmpty(const std::string& path) {
     DIR* dir = ::opendir(path.c_str());
-    if (dir == NULL) {
+    if (dir == nullptr) {
         return false;
     }
     bool empty = true;
-    struct dirent* entry = NULL;
-    while ((entry = ::readdir(dir)) != NULL) {
+    struct dirent* entry = nullptr;
+    while ((entry = ::readdir(dir)) != nullptr) {
         if (!isDots(entry->d_name)) {
             empty = false;
             break;
@@ -53,7 +53,7 @@ ExpiryJob::ExpiryJob(cm::db::MysqlPool& mysql,
 }
 
 ErrorCode ExpiryJob::runOnce(std::size_t* expiredCount) {
-    if (expiredCount != NULL) {
+    if (expiredCount != nullptr) {
         *expiredCount = 0;
     }
 
@@ -116,14 +116,14 @@ ErrorCode ExpiryJob::runOnce(std::size_t* expiredCount) {
         ++processed;
     }
 
-    if (expiredCount != NULL) {
+    if (expiredCount != nullptr) {
         *expiredCount = processed;
     }
     return ErrorCode::Ok;
 }
 
 ErrorCode ExpiryJob::recoverOnStartup(std::uint64_t* affected) {
-    if (affected != NULL) {
+    if (affected != nullptr) {
         *affected = 0;
     }
 
@@ -138,20 +138,20 @@ ErrorCode ExpiryJob::recoverOnStartup(std::uint64_t* affected) {
 
 ErrorCode ExpiryJob::cleanStaleTmp(std::uint64_t maxAgeSeconds,
                                    std::size_t* removedDirs) {
-    if (removedDirs != NULL) {
+    if (removedDirs != nullptr) {
         *removedDirs = 0;
     }
 
     const std::string tmpRoot = m_dataDir + "/tmp";
     DIR* root = ::opendir(tmpRoot.c_str());
-    if (root == NULL) {
+    if (root == nullptr) {
         return ErrorCode::Ok;  // 目录不存在：无可清理
     }
 
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
 
-    struct dirent* entry = NULL;
-    while ((entry = ::readdir(root)) != NULL) {
+    struct dirent* entry = nullptr;
+    while ((entry = ::readdir(root)) != nullptr) {
         if (isDots(entry->d_name)) {
             continue;
         }
@@ -164,9 +164,9 @@ ErrorCode ExpiryJob::cleanStaleTmp(std::uint64_t maxAgeSeconds,
         // 1) 删除超过 1h 的 merged.bin*（先收集再删，避免边遍历边改目录）。
         std::vector<std::string> stale;
         DIR* sub = ::opendir(taskDir.c_str());
-        if (sub != NULL) {
-            struct dirent* file = NULL;
-            while ((file = ::readdir(sub)) != NULL) {
+        if (sub != nullptr) {
+            struct dirent* file = nullptr;
+            while ((file = ::readdir(sub)) != nullptr) {
                 const std::string name = file->d_name;
                 if (isDots(name) || name.compare(0, 10, "merged.bin") != 0) {
                     continue;
@@ -188,7 +188,7 @@ ErrorCode ExpiryJob::cleanStaleTmp(std::uint64_t maxAgeSeconds,
 
         // 2) 空任务目录直接删。
         if (dirIsEmpty(taskDir)) {
-            if (::rmdir(taskDir.c_str()) == 0 && removedDirs != NULL) {
+            if (::rmdir(taskDir.c_str()) == 0 && removedDirs != nullptr) {
                 ++(*removedDirs);
             }
         }

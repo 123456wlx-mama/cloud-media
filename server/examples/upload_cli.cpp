@@ -341,7 +341,7 @@ int main(int argc, char** argv) {
             (fileSize + kServerChunkSize - 1) / kServerChunkSize);
         rq.flags = 1;
         rq.reqId = static_cast<std::uint32_t>(
-            (static_cast<std::uint64_t>(std::time(NULL)) << 8) ^
+            (static_cast<std::uint64_t>(std::time(nullptr)) << 8) ^
             static_cast<std::uint64_t>(::getpid()) ^
             static_cast<std::uint64_t>(fileSize & 0xffff));
         if (rq.reqId == 0) {

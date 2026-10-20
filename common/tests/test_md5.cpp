@@ -68,6 +68,6 @@ TEST(Md5Test, ResetReuse) {
 
 TEST(Md5Test, UpdateNullZeroIsNoOp) {
     cm::Md5 md5;
-    md5.update(NULL, 0);
+    md5.update(nullptr, 0);
     EXPECT_EQ(cm::md5Hex(""), md5.hex());
 }

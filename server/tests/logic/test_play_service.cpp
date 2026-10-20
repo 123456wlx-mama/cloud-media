@@ -16,7 +16,7 @@ class PlayServiceTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         m_service.reset(new cm::logic::PlayService(*m_pool));
@@ -29,7 +29,7 @@ protected:
     }
 
     std::uint64_t createNode(const std::string& name, std::uint64_t fid) {
-        return DaoTestBase::createNode(m_uid, name, fid, NULL);
+        return DaoTestBase::createNode(m_uid, name, fid, nullptr);
     }
 
     cm::protocol::PlayReportRq makeRq(std::uint64_t fid, std::uint64_t position,

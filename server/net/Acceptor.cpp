@@ -115,7 +115,7 @@ void Acceptor::handleRead() {
       // 这样既清退了 backlog，又不会让监听 fd 一直可读导致 CPU 空转。
       if (idleFd_ >= 0) {
         ::close(idleFd_);
-        const int accepted = ::accept(acceptSocket_->fd(), NULL, NULL);
+        const int accepted = ::accept(acceptSocket_->fd(), nullptr, nullptr);
         if (accepted >= 0) {
           ::close(accepted);
         }

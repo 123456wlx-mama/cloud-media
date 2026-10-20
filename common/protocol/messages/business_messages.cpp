@@ -145,7 +145,7 @@ UploadInitRq::UploadInitRq()
     : parentId(0), totalSize(0), chunkSize(0), totalChunks(0), flags(0), reqId(0) {}
 
 bool UploadInitRq::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(fileName, false) || totalSize == 0 ||
+    if (out == nullptr || !isNameOk(fileName, false) || totalSize == 0 ||
         !isValidMd5(fileMd5) || totalChunks > kMaxChunkCount) {
         return false;
     }
@@ -175,7 +175,7 @@ UploadInitRs::UploadInitRs()
       expireAtMs(0) {}
 
 bool UploadInitRs::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(fileName, true) || totalChunks > kMaxChunkCount) {
+    if (out == nullptr || !isNameOk(fileName, true) || totalChunks > kMaxChunkCount) {
         return false;
     }
     Writer writer;
@@ -203,7 +203,7 @@ bool UploadInitRs::decode(const std::string& payload) {
 UploadChunkRq::UploadChunkRq() : chunkIndex(0), offset(0) {}
 
 bool UploadChunkRq::encode(std::string* out) const {
-    if (out == NULL || !isValidMd5(chunkMd5) || data.empty()) {
+    if (out == nullptr || !isValidMd5(chunkMd5) || data.empty()) {
         return false;
     }
     Writer writer;
@@ -229,7 +229,7 @@ UploadChunkRs::UploadChunkRs()
       nextHint(0) {}
 
 bool UploadChunkRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -252,7 +252,7 @@ bool UploadChunkRs::decode(const std::string& payload) {
 QuickUploadRq::QuickUploadRq() : totalSize(0) {}
 
 bool QuickUploadRq::encode(std::string* out) const {
-    if (out == NULL || !isValidMd5(fileMd5) || totalSize == 0) {
+    if (out == nullptr || !isValidMd5(fileMd5) || totalSize == 0) {
         return false;
     }
     Writer writer;
@@ -272,7 +272,7 @@ bool QuickUploadRq::decode(const std::string& payload) {
 QuickUploadRs::QuickUploadRs() : code(0), hit(0), fileId(0), size(0) {}
 
 bool QuickUploadRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -293,7 +293,7 @@ bool QuickUploadRs::decode(const std::string& payload) {
 ContinueUploadRq::ContinueUploadRq() {}
 
 bool ContinueUploadRq::encode(std::string* out) const {
-    if (out == NULL || taskId.empty()) {
+    if (out == nullptr || taskId.empty()) {
         return false;
     }
     Writer writer;
@@ -314,7 +314,7 @@ ContinueUploadRs::ContinueUploadRs()
       doneBytes(0), expireAtMs(0) {}
 
 bool ContinueUploadRs::encode(std::string* out) const {
-    if (out == NULL || status > 7 || totalChunks == 0 ||
+    if (out == nullptr || status > 7 || totalChunks == 0 ||
         totalChunks > kMaxChunkCount || doneChunks > totalChunks ||
         bitmap.size() != bitmapBytes(totalChunks)) {
         return false;
@@ -350,7 +350,7 @@ bool ContinueUploadRs::decode(const std::string& payload) {
 UploadCompleteRq::UploadCompleteRq() {}
 
 bool UploadCompleteRq::encode(std::string* out) const {
-    if (out == NULL || taskId.empty()) {
+    if (out == nullptr || taskId.empty()) {
         return false;
     }
     Writer writer;
@@ -369,7 +369,7 @@ bool UploadCompleteRq::decode(const std::string& payload) {
 UploadCompleteRs::UploadCompleteRs() : code(0), fileId(0), ufId(0), size(0) {}
 
 bool UploadCompleteRs::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(fileName, true)) {
+    if (out == nullptr || !isNameOk(fileName, true)) {
         return false;
     }
     // 超过 1024 截断；调用方据 badIndexes.size() > kMaxBadIndexes 自行置 code=1001。
@@ -418,7 +418,7 @@ bool UploadCompleteRs::decode(const std::string& payload) {
 DownloadOpenRq::DownloadOpenRq() : ufId(0), startBlock(0) {}
 
 bool DownloadOpenRq::encode(std::string* out) const {
-    if (out == NULL || !isValidTicket(shareTicket)) {
+    if (out == nullptr || !isValidTicket(shareTicket)) {
         return false;
     }
     Writer writer;
@@ -441,7 +441,7 @@ DownloadOpenRs::DownloadOpenRs()
       ticketExpireMs(0), startBlock(0), zeroCopy(0), hls(0) {}
 
 bool DownloadOpenRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     // 错误包的 file_md5/ticket 允许为空，否则业务失败时无法编码 10012。
@@ -493,7 +493,7 @@ bool DownloadOpenRs::decode(const std::string& payload) {
 DownloadStatRq::DownloadStatRq() : ufId(0) {}
 
 bool DownloadStatRq::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -514,7 +514,7 @@ DownloadStatRs::DownloadStatRs()
       updatedAtMs(0) {}
 
 bool DownloadStatRs::encode(std::string* out) const {
-    if (out == NULL || !isValidMd5(fileMd5) || state > 7) {
+    if (out == nullptr || !isValidMd5(fileMd5) || state > 7) {
         return false;
     }
     Writer writer;
@@ -540,7 +540,7 @@ bool DownloadStatRs::decode(const std::string& payload) {
 DownloadRangeRq::DownloadRangeRq() : fId(0), blockIndex(0) {}
 
 bool DownloadRangeRq::encode(std::string* out) const {
-    if (out == NULL || !isValidTicket(ticket)) {
+    if (out == nullptr || !isValidTicket(ticket)) {
         return false;
     }
     Writer writer;
@@ -561,7 +561,7 @@ bool DownloadRangeRq::decode(const std::string& payload) {
 DownloadDoneRq::DownloadDoneRq() : fId(0), size(0), verifyOk(0) {}
 
 bool DownloadDoneRq::encode(std::string* out) const {
-    if (out == NULL || !isValidTicket(ticket) || !isValidMd5(fileMd5)) {
+    if (out == nullptr || !isValidTicket(ticket) || !isValidMd5(fileMd5)) {
         return false;
     }
     Writer writer;
@@ -585,7 +585,7 @@ bool DownloadDoneRq::decode(const std::string& payload) {
 DownloadDoneRs::DownloadDoneRs() : code(0), accepted(0) {}
 
 bool DownloadDoneRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -606,7 +606,7 @@ bool DownloadDoneRs::decode(const std::string& payload) {
 ShareCreateRq::ShareCreateRq() : ufId(0), expirePolicy(0), accessMode(0), reqId(0) {}
 
 bool ShareCreateRq::encode(std::string* out) const {
-    if (out == NULL || expirePolicy > 2 || accessMode > 1) {
+    if (out == nullptr || expirePolicy > 2 || accessMode > 1) {
         return false;
     }
     Writer writer;
@@ -627,7 +627,7 @@ bool ShareCreateRq::decode(const std::string& payload) {
 ShareCreateRs::ShareCreateRs() : code(0), accessCodeRequired(0), expireAtMs(0) {}
 
 bool ShareCreateRs::encode(std::string* out) const {
-    if (out == NULL || (!shareCode.empty() && !isValidShareCode(shareCode))) {
+    if (out == nullptr || (!shareCode.empty() && !isValidShareCode(shareCode))) {
         return false;
     }
     if (!isValidAccessCode(accessCode)) {
@@ -656,7 +656,7 @@ bool ShareCreateRs::decode(const std::string& payload) {
 ShareListRq::ShareListRq() : cursorCreatedMs(0), cursorId(0), limit(0) {}
 
 bool ShareListRq::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -680,7 +680,7 @@ ShareListItem::ShareListItem()
 ShareListRs::ShareListRs() : code(0), hasMore(0), nextCreatedMs(0), nextId(0) {}
 
 bool ShareListRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -738,7 +738,7 @@ bool ShareListRs::decode(const std::string& payload) {
 ShareOpenRq::ShareOpenRq() {}
 
 bool ShareOpenRq::encode(std::string* out) const {
-    if (out == NULL || !isValidShareCode(shareCode) ||
+    if (out == nullptr || !isValidShareCode(shareCode) ||
         !isValidAccessCode(accessCode)) {
         return false;
     }
@@ -760,7 +760,7 @@ ShareOpenRs::ShareOpenRs()
     : code(0), fId(0), size(0), isDir(0), expireAtMs(0), accessCodeRequired(0) {}
 
 bool ShareOpenRs::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(fileName, true) ||
+    if (out == nullptr || !isNameOk(fileName, true) ||
         (!fileMd5.empty() && !isValidMd5(fileMd5)) ||
         !isValidTicket(shareTicket)) {
         return false;
@@ -791,7 +791,7 @@ bool ShareOpenRs::decode(const std::string& payload) {
 ShareCancelRq::ShareCancelRq() {}
 
 bool ShareCancelRq::encode(std::string* out) const {
-    if (out == NULL || !isValidShareCode(shareCode)) {
+    if (out == nullptr || !isValidShareCode(shareCode)) {
         return false;
     }
     Writer writer;
@@ -810,7 +810,7 @@ bool ShareCancelRq::decode(const std::string& payload) {
 ShareCancelRs::ShareCancelRs() : code(0), cancelled(0), already(0) {}
 
 bool ShareCancelRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -833,7 +833,7 @@ bool ShareCancelRs::decode(const std::string& payload) {
 DeleteFileRq::DeleteFileRq() : ufId(0) {}
 
 bool DeleteFileRq::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -852,7 +852,7 @@ bool DeleteFileRq::decode(const std::string& payload) {
 DeleteFileRs::DeleteFileRs() : code(0), deleted(0), already(0) {}
 
 bool DeleteFileRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -873,7 +873,7 @@ bool DeleteFileRs::decode(const std::string& payload) {
 RecycleListRq::RecycleListRq() : limit(0), cursorDeletedMs(0), cursorId(0) {}
 
 bool RecycleListRq::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -898,7 +898,7 @@ RecycleListRs::RecycleListRs()
     : code(0), hasMore(0), nextDeletedMs(0), nextId(0) {}
 
 bool RecycleListRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -951,7 +951,7 @@ bool RecycleListRs::decode(const std::string& payload) {
 RestoreRq::RestoreRq() : ufId(0), autoRename(0) {}
 
 bool RestoreRq::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(newName, true)) {
+    if (out == nullptr || !isNameOk(newName, true)) {
         return false;
     }
     Writer writer;
@@ -972,7 +972,7 @@ bool RestoreRq::decode(const std::string& payload) {
 RestoreRs::RestoreRs() : code(0), ufId(0), parentId(0), renamed(0) {}
 
 bool RestoreRs::encode(std::string* out) const {
-    if (out == NULL || !isNameOk(name, false)) {
+    if (out == nullptr || !isNameOk(name, false)) {
         return false;
     }
     Writer writer;
@@ -995,7 +995,7 @@ bool RestoreRs::decode(const std::string& payload) {
 PurgeRq::PurgeRq() : ufId(0), confirm(0) {}
 
 bool PurgeRq::encode(std::string* out) const {
-    if (out == NULL || confirm != 1) {
+    if (out == nullptr || confirm != 1) {
         return false;
     }
     Writer writer;
@@ -1016,7 +1016,7 @@ PurgeRs::PurgeRs()
     : code(0), filesDeleted(0), dirsDeleted(0), blobsOrphaned(0) {}
 
 bool PurgeRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -1042,7 +1042,7 @@ FileItem::FileItem()
 ListFileRq::ListFileRq() : parentId(0), sort(0), limit(0), cursorId(0) {}
 
 bool ListFileRq::encode(std::string* out) const {
-    if (out == NULL || sort > 2) {
+    if (out == nullptr || sort > 2) {
         return false;
     }
     Writer writer;
@@ -1066,7 +1066,7 @@ ListFileRs::ListFileRs()
     : code(0), hasMore(0), nextId(0), totalCount(0) {}
 
 bool ListFileRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -1125,7 +1125,7 @@ PlayReportRq::PlayReportRq()
     : fId(0), positionMs(0), durationMs(0), finished(0) {}
 
 bool PlayReportRq::encode(std::string* out) const {
-    if (out == NULL || (durationMs > 0 && positionMs > durationMs)) {
+    if (out == nullptr || (durationMs > 0 && positionMs > durationMs)) {
         return false;
     }
     Writer writer;
@@ -1149,7 +1149,7 @@ bool PlayReportRq::decode(const std::string& payload) {
 PlayReportRs::PlayReportRs() : code(0), saved(0) {}
 
 bool PlayReportRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -1171,7 +1171,7 @@ RegisterRq::RegisterRq() {
 }
 
 bool RegisterRq::encode(std::string* out) const {
-    if (out == NULL || !isTelOk(tel) || !isAuthPasswordOk(password) ||
+    if (out == nullptr || !isTelOk(tel) || !isAuthPasswordOk(password) ||
         !isUserNameOk(name, false)) {
         return false;
     }
@@ -1195,7 +1195,7 @@ RegisterRs::RegisterRs() : code(0), uid(0) {
 }
 
 bool RegisterRs::encode(std::string* out) const {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     Writer writer;
@@ -1215,7 +1215,7 @@ LoginRq::LoginRq() {
 }
 
 bool LoginRq::encode(std::string* out) const {
-    if (out == NULL || !isTelOk(tel) || !isAuthPasswordOk(password)) {
+    if (out == nullptr || !isTelOk(tel) || !isAuthPasswordOk(password)) {
         return false;
     }
     Writer writer;
@@ -1236,7 +1236,7 @@ LoginRs::LoginRs() : code(0), uid(0) {
 }
 
 bool LoginRs::encode(std::string* out) const {
-    if (out == NULL || !isUserNameOk(name, true)) {
+    if (out == nullptr || !isUserNameOk(name, true)) {
         return false;
     }
     Writer writer;

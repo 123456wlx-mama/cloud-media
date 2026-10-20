@@ -20,7 +20,7 @@ class FileListTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         m_service.reset(new cm::logic::FileService(*m_pool));
@@ -35,7 +35,7 @@ protected:
     // 与 test_file_dao 一致：fileId==0 表示目录。
     std::uint64_t createNode(const std::string& name, bool isDir,
                              std::uint64_t fid) {
-        return DaoTestBase::createNode(m_uid, name, isDir ? 0 : fid, NULL);
+        return DaoTestBase::createNode(m_uid, name, isDir ? 0 : fid, nullptr);
     }
 
     // 批量直插：1000 行用例避免 1000 次事务。清理由 cleanup 按 u_id 兜底。

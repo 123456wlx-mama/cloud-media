@@ -115,7 +115,7 @@ bool writeChunkFile(const std::string& dir,
 
 // DB 里是 UTC DATETIME(6)；连接池已 SET SESSION time_zone='+00:00'（05 §4.3）。
 std::string nowUtcDatetime() {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     std::tm tm;
     std::memset(&tm, 0, sizeof(tm));
     ::gmtime_r(&now, &tm);
@@ -164,7 +164,7 @@ class GateRelease {
 public:
     explicit GateRelease(UploadInFlightGate* gate) : m_gate(gate) {}
     ~GateRelease() {
-        if (m_gate != NULL) {
+        if (m_gate != nullptr) {
             m_gate->end();
         }
     }
@@ -241,7 +241,7 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
                                      UploadInFlightGate* gate,
                                      cm::protocol::UploadChunkRs* out) {
     GateRelease release(gate);
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::UploadChunkRs();

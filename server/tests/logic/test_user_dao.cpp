@@ -19,7 +19,7 @@ class UserDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP
         }
         m_dao.reset(new cm::db::UserDao(*m_conn));
@@ -89,7 +89,7 @@ TEST_F(UserDaoTest, UserDaoUpdatePassword) {
 TEST_F(UserDaoTest, UserDaoRejectsBadArguments) {
     cm::db::UserRow row;
     EXPECT_EQ(cm::ErrorCode::InvalidArgument, m_dao->findByTel("", &row));
-    EXPECT_EQ(cm::ErrorCode::InvalidArgument, m_dao->findByTel("x", NULL));
+    EXPECT_EQ(cm::ErrorCode::InvalidArgument, m_dao->findByTel("x", nullptr));
 
     std::uint64_t uid = 0;
     EXPECT_EQ(cm::ErrorCode::InvalidArgument,

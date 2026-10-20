@@ -75,7 +75,7 @@ struct ConnState {
     std::shared_ptr<cm::logic::ConnectionDecoder> decoder;
     cm::Buffer* input;
 
-    ConnState() : uid(0), input(NULL) {}
+    ConnState() : uid(0), input(nullptr) {}
 };
 
 class ConnStateTable {
@@ -557,7 +557,7 @@ void handleUploadChunk(const ConnectionPtr& conn,
         return;
     }
 
-    const cm::ErrorCode rc = handler.handle(uid, frame.seq, rq, NULL, &rs);
+    const cm::ErrorCode rc = handler.handle(uid, frame.seq, rq, nullptr, &rs);
     if (rc != cm::ErrorCode::Ok && rs.code == 0) {
         rs.code = cm::to_wire_code(rc);
     }
@@ -1123,7 +1123,7 @@ int runServer(const cm::ServerConfig& cfg) {
                     return;
                 }
                 std::shared_ptr<ConnState> state = weakState.lock();
-                if (state && state->input != NULL && state->decoder) {
+                if (state && state->input != nullptr && state->decoder) {
                     state->decoder->onData(*state->input);
                 }
             },

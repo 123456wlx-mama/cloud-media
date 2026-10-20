@@ -41,7 +41,7 @@ protected:
     std::uint64_t createNode(std::uint64_t uid,
                              const std::string& name,
                              std::uint64_t fileId,
-                             std::string* finalName = NULL);
+                             std::string* finalName = nullptr);
     // 返回 task_id（对外键，32 hex）；tr_id 是内部自增主键，用例不需要。
     std::string createTask(std::uint64_t uid,
                            std::uint32_t totalChunks,

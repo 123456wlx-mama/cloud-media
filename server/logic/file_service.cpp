@@ -111,7 +111,7 @@ FileService::FileService(cm::db::MysqlPool& mysql, std::uint64_t maxTotalCount)
 ErrorCode FileService::list(std::uint64_t uid,
                             const cm::protocol::ListFileRq& rq,
                             cm::protocol::ListFileRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ListFileRs();

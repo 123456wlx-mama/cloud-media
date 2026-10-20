@@ -24,7 +24,7 @@ std::string trim(const std::string& value) {
 }
 
 void setLineError(std::string* err, int lineNo, const std::string& message) {
-    if (err != NULL) {
+    if (err != nullptr) {
         std::ostringstream os;
         os << "line " << lineNo << ": " << message;
         *err = os.str();
@@ -35,7 +35,7 @@ bool parseInt(const std::string& text, int* value) {
     if (text.empty()) {
         return false;
     }
-    char* end = NULL;
+    char* end = nullptr;
     errno = 0;
     long parsed = std::strtol(text.c_str(), &end, 10);
     if (errno != 0 || end == text.c_str() || *end != '\0') {
@@ -52,7 +52,7 @@ ErrorCode IniConfig::load(const std::string& path, std::string* err) {
 
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "cannot open ini file: " + path;
         }
         return ErrorCode::NotFound;
@@ -118,7 +118,7 @@ ErrorCode IniConfig::load(const std::string& path, std::string* err) {
         data_[section][key] = value;
     }
 
-    if (err != NULL) {
+    if (err != nullptr) {
         err->clear();
     }
     return ErrorCode::Ok;
@@ -147,7 +147,7 @@ std::string IniConfig::getString(const std::string& section, const std::string& 
 
 ErrorCode IniConfig::getInt(const std::string& section, const std::string& key,
                             int* value) const {
-    if (value == NULL) {
+    if (value == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     if (!has(section, key)) {
@@ -164,7 +164,7 @@ ErrorCode IniConfig::getInt(const std::string& section, const std::string& key,
 
 ErrorCode IniConfig::getBool(const std::string& section, const std::string& key,
                              bool* value) const {
-    if (value == NULL) {
+    if (value == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     if (!has(section, key)) {

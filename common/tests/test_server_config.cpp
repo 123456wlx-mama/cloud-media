@@ -15,7 +15,7 @@ namespace {
 std::string MakeTempFile(const char* tag) {
     static std::atomic<unsigned> counter(0);
     std::ostringstream os;
-    os << "cm_server_" << tag << "_" << std::time(NULL) << "_" << counter++ << ".ini";
+    os << "cm_server_" << tag << "_" << std::time(nullptr) << "_" << counter++ << ".ini";
     return os.str();
 }
 
@@ -99,5 +99,69 @@ TEST(ServerConfigTest, RangeValidationAndPasswordRedaction) {
                 cm::ErrorCode::Ok);
     EXPECT_NE(std::string::npos, invalidErr.find("listen_port"));
 
+    RemoveFile(path);
+}
+
+namespace {
+
+std::string ReplaceOnce(std::string text, const std::string& from,
+                        const std::string& to) {
+    const std::string::size_type pos = text.find(from);
+    if (pos != std::string::npos) {
+        text.replace(pos, from.size(), to);
+    }
+    return text;
+}
+
+}  // namespace
+
+TEST(ServerConfigTest, EmptyDataDirRejected) {
+    const std::string path = MakeTempFile("emptydir");
+    ASSERT_TRUE(WriteFile(
+        path, ReplaceOnce(BuildConfig(true, 8004), "data_dir=data", "data_dir=")));
+
+    cm::ServerConfig cfg;
+    std::string err;
+    EXPECT_EQ(cm::ErrorCode::InvalidArgument,
+              cm::loadServerConfig(path, &cfg, &err));
+    EXPECT_NE(std::string::npos, err.find("server.data_dir"));
+    RemoveFile(path);
+}
+
+TEST(ServerConfigTest, InvalidLogLevelRejected) {
+    const std::string path = MakeTempFile("badlevel");
+    ASSERT_TRUE(WriteFile(
+        path, ReplaceOnce(BuildConfig(true, 8004), "level=info", "level=verbose")));
+
+    cm::ServerConfig cfg;
+    std::string err;
+    EXPECT_EQ(cm::ErrorCode::InvalidArgument,
+              cm::loadServerConfig(path, &cfg, &err));
+    EXPECT_NE(std::string::npos, err.find("log.level"));
+    RemoveFile(path);
+}
+
+TEST(ServerConfigTest, NonIntegerPortRejected) {
+    const std::string path = MakeTempFile("badint");
+    ASSERT_TRUE(WriteFile(
+        path, ReplaceOnce(BuildConfig(true, 8004), "listen_port=8004",
+                          "listen_port=abc")));
+
+    cm::ServerConfig cfg;
+    std::string err;
+    EXPECT_TRUE(cm::loadServerConfig(path, &cfg, &err) != cm::ErrorCode::Ok);
+    EXPECT_NE(std::string::npos, err.find("server.listen_port"));
+    RemoveFile(path);
+}
+
+TEST(ServerConfigTest, MissingLogPathRejected) {
+    const std::string path = MakeTempFile("nologpath");
+    ASSERT_TRUE(WriteFile(
+        path, ReplaceOnce(BuildConfig(true, 8004), "path=logs/server.log\n", "")));
+
+    cm::ServerConfig cfg;
+    std::string err;
+    EXPECT_EQ(cm::ErrorCode::NotFound, cm::loadServerConfig(path, &cfg, &err));
+    EXPECT_NE(std::string::npos, err.find("log.path"));
     RemoveFile(path);
 }

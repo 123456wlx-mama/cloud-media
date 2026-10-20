@@ -285,17 +285,17 @@ ErrorCode writeBlockCrc(const std::string& blobPath, std::uint64_t size) {
 
 ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
                        std::vector<std::uint32_t>* crcs, bool* missing) {
-    if (blobPath.empty() || size == 0 || crcs == NULL) {
+    if (blobPath.empty() || size == 0 || crcs == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     crcs->clear();
-    if (missing != NULL) {
+    if (missing != nullptr) {
         *missing = false;
     }
 
     const int fd = ::open(sidecarPath(blobPath).c_str(), O_RDONLY);
     if (fd < 0) {
-        if (missing != NULL) {
+        if (missing != nullptr) {
             *missing = true;
         }
         return ErrorCode::Ok;
@@ -304,7 +304,7 @@ ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
     struct stat st;
     if (::fstat(fd, &st) != 0) {
         ::close(fd);
-        if (missing != NULL) {
+        if (missing != nullptr) {
             *missing = true;
         }
         return ErrorCode::Ok;
@@ -317,7 +317,7 @@ ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
         header[5] != kVersion ||
         cm::readU32BE(header + 6) != kBlockCrcBlockSize) {
         ::close(fd);
-        if (missing != NULL) {
+        if (missing != nullptr) {
             *missing = true;
         }
         return ErrorCode::Ok;
@@ -331,7 +331,7 @@ ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
     if (count != expectedCount ||
         static_cast<std::size_t>(st.st_size) != expectedSize) {
         ::close(fd);
-        if (missing != NULL) {
+        if (missing != nullptr) {
             *missing = true;
         }
         return ErrorCode::Ok;
@@ -342,7 +342,7 @@ ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
     for (std::uint32_t i = 0; i < expectedCount; ++i) {
         if (!readAll(fd, encoded, sizeof(encoded))) {
             crcs->clear();
-            if (missing != NULL) {
+            if (missing != nullptr) {
                 *missing = true;
             }
             ::close(fd);
@@ -356,7 +356,7 @@ ErrorCode readBlockCrc(const std::string& blobPath, std::uint64_t size,
 
 ErrorCode ensureBlockCrc(const std::string& blobPath, std::uint64_t size,
                          std::uint32_t blockIndex, std::uint32_t* crc) {
-    if (blobPath.empty() || size == 0 || crc == NULL) {
+    if (blobPath.empty() || size == 0 || crc == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     if (blockIndex >= blockCountFor(size)) {

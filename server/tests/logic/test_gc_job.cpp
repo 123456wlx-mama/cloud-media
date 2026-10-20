@@ -55,13 +55,13 @@ class GcJobTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
 
         char templ[] = "/tmp/cm_gc_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
 
         m_failUnlink = false;
@@ -169,7 +169,7 @@ TEST_F(GcJobTest, GcSkipsWithinGrace) {
     makeOrphan(fid, 3600);  // 1h，不足 24h 宽限
 
     std::size_t deleted = 99;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(blobExists(fid));
 }
@@ -181,25 +181,25 @@ TEST_F(GcJobTest, GcSkipsRecentlyOrphanedOldBlob) {
     makeOrphanWithTimes(fid, 30 * 24 * 3600, 3600);
 
     std::size_t deleted = 99;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(blobExists(fid));
 }
 
 TEST_F(GcJobTest, GcSkipsActiveNode) {
     const std::uint64_t fid = createBlob(1024);
-    ASSERT_GT(createNode(m_uid, "alive.bin", fid, NULL), std::uint64_t(0));
+    ASSERT_GT(createNode(m_uid, "alive.bin", fid, nullptr), std::uint64_t(0));
     makeOrphan(fid, 25 * 3600);
 
     std::size_t deleted = 99;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(blobExists(fid));
 }
 
 TEST_F(GcJobTest, GcSkipsActiveShare) {
     const std::uint64_t fid = createBlob(1024);
-    const std::uint64_t ufId = createNode(m_uid, "shared.bin", fid, NULL);
+    const std::uint64_t ufId = createNode(m_uid, "shared.bin", fid, nullptr);
     ASSERT_GT(ufId, std::uint64_t(0));
     const std::string code = createShare(m_uid, ufId, false, fid, "", 0);
     ASSERT_EQ(std::size_t(6), code.size());
@@ -208,7 +208,7 @@ TEST_F(GcJobTest, GcSkipsActiveShare) {
     makeOrphan(fid, 25 * 3600);
 
     std::size_t deleted = 99;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(blobExists(fid));
     EXPECT_EQ(0, shareStatus(code));
@@ -239,7 +239,7 @@ TEST_F(GcJobTest, GcUnlinkFailureKeepsRow) {
     m_failUnlink = true;
 
     std::size_t deleted = 99;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(exists(path));
     EXPECT_TRUE(blobExists(fid));
@@ -255,7 +255,7 @@ TEST_F(GcJobTest, GcBatchLimit100) {
     }
 
     std::size_t deleted = 0;
-    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(100), deleted);
 
     std::size_t remaining = 0;
@@ -269,7 +269,7 @@ TEST_F(GcJobTest, GcBatchLimit100) {
 
 TEST_F(GcJobTest, ShareExpirySweep) {
     const std::uint64_t fid = createBlob(64);
-    const std::uint64_t ufId = createNode(m_uid, "s.bin", fid, NULL);
+    const std::uint64_t ufId = createNode(m_uid, "s.bin", fid, nullptr);
     ASSERT_GT(ufId, std::uint64_t(0));
     const std::string expired = createShare(m_uid, ufId, false, fid, "", 0);
     const std::string active = createShare(m_uid, ufId, false, fid, "", 2);

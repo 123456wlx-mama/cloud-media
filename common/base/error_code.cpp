@@ -52,6 +52,44 @@ std::uint32_t to_wire_code(ErrorCode code) {
     return static_cast<std::uint32_t>(code);
 }
 
+ErrorCode wire_code_to_error(std::uint32_t wireCode) {
+    switch (wireCode) {
+        case 0: return ErrorCode::Ok;
+        case 1001: return ErrorCode::InvalidArgument;
+        case 1002: return ErrorCode::NotFound;
+        case 1003: return ErrorCode::AlreadyExists;
+        case 1004: return ErrorCode::PermissionDenied;
+        case 1005: return ErrorCode::NoSpace;
+        case 1006: return ErrorCode::Timeout;
+        case 1007: return ErrorCode::NetworkError;
+        case 1008: return ErrorCode::InternalError;
+        case 1009: return ErrorCode::ProtocolError;
+        case 1010: return ErrorCode::NeedMore;
+        case 1099: return ErrorCode::UnknownError;
+        case 2001: return ErrorCode::AuthFailed;
+        case 2002: return ErrorCode::TokenExpired;
+        case 2003: return ErrorCode::ShareExpired;
+        case 2004: return ErrorCode::AccessCodeWrong;
+        case 3001: return ErrorCode::FileGone;
+        case 3002: return ErrorCode::ChunkMissing;
+        case 3003: return ErrorCode::Md5Mismatch;
+        case 3004: return ErrorCode::TaskNotFound;
+        case 3005: return ErrorCode::TaskStateInvalid;
+        case 3006: return ErrorCode::RateLimited;
+        case 3007: return ErrorCode::TaskExpired;
+        case 3008: return ErrorCode::TooManyNodes;
+        case 4001: return ErrorCode::DbUnavailable;
+        case 4002: return ErrorCode::DbPoolTimeout;
+        case 4003: return ErrorCode::DbQueryFailed;
+        case 4004: return ErrorCode::DbTxConflict;
+        case 4005: return ErrorCode::RedisUnavailable;
+        case 4006: return ErrorCode::CacheRebuildFailed;
+        case 4007: return ErrorCode::AuthUnavailable;
+        case 4008: return ErrorCode::RateLimitUnavailable;
+        default: return ErrorCode::UnknownError;
+    }
+}
+
 std::uint32_t decode_failure_wire_code(bool crcMismatch) {
     if (crcMismatch) {
         return static_cast<std::uint32_t>(ProtocolError::Crc);

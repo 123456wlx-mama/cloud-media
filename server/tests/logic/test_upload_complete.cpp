@@ -28,12 +28,12 @@ namespace {
 
 bool redisEnabled() {
     const char* value = std::getenv("CM_TEST_REDIS");
-    return value != NULL && std::string(value) == "1";
+    return value != nullptr && std::string(value) == "1";
 }
 
 std::string envOr(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
+    return value != nullptr ? std::string(value) : std::string(fallback);
 }
 
 cm::cache::RedisOptions redisOptions() {
@@ -75,9 +75,9 @@ bool ensureDir(const std::string& path) {
 
 void removeTree(const std::string& path) {
     DIR* dir = ::opendir(path.c_str());
-    if (dir != NULL) {
-        struct dirent* entry = NULL;
-        while ((entry = ::readdir(dir)) != NULL) {
+    if (dir != nullptr) {
+        struct dirent* entry = nullptr;
+        while ((entry = ::readdir(dir)) != nullptr) {
             const std::string name = entry->d_name;
             if (name == "." || name == "..") {
                 continue;
@@ -115,7 +115,7 @@ class UploadCompleteServiceTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         if (!redisEnabled()) {
@@ -125,7 +125,7 @@ protected:
 
         char templ[] = "/tmp/cm_complete_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
 
         std::string error;

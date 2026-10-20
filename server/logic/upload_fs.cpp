@@ -33,9 +33,9 @@ bool makeDirs(const std::string& path) {
 
 void removeTree(const std::string& path) {
     DIR* dir = ::opendir(path.c_str());
-    if (dir != NULL) {
-        struct dirent* entry = NULL;
-        while ((entry = ::readdir(dir)) != NULL) {
+    if (dir != nullptr) {
+        struct dirent* entry = nullptr;
+        while ((entry = ::readdir(dir)) != nullptr) {
             const std::string name = entry->d_name;
             if (name == "." || name == "..") {
                 continue;

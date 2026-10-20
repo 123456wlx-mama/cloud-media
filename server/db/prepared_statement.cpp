@@ -99,7 +99,7 @@ PreparedStatement::PreparedStatement(detail::PoolCore* core,
       m_conn(conn),
       m_mysql(mysql),
       m_stmt(stmt),
-      m_meta(NULL),
+      m_meta(nullptr),
       m_sql(sql),
       m_paramCount(0),
       m_fieldCount(0),
@@ -110,7 +110,7 @@ PreparedStatement::PreparedStatement(detail::PoolCore* core,
       m_slowThreshold(slowThreshold),
       m_inTransaction(inTransaction),
       m_lastError(ErrorCode::Ok) {
-    if (m_stmt != NULL) {
+    if (m_stmt != nullptr) {
         m_paramCount = static_cast<std::size_t>(mysql_stmt_param_count(m_stmt));
     }
     m_paramBinds.resize(m_paramCount);
@@ -125,13 +125,13 @@ PreparedStatement::PreparedStatement(detail::PoolCore* core,
 
 PreparedStatement::~PreparedStatement() {
     reportSlowIfNeeded();
-    if (m_meta != NULL) {
+    if (m_meta != nullptr) {
         mysql_free_result(m_meta);
-        m_meta = NULL;
+        m_meta = nullptr;
     }
-    if (m_stmt != NULL) {
+    if (m_stmt != nullptr) {
         mysql_stmt_close(m_stmt);
-        m_stmt = NULL;
+        m_stmt = nullptr;
     }
 }
 
@@ -203,7 +203,7 @@ bool PreparedStatement::bindNull(std::size_t index) {
     MYSQL_BIND& bind = m_paramBinds[index];
     std::memset(&bind, 0, sizeof(MYSQL_BIND));
     bind.buffer_type = MYSQL_TYPE_NULL;
-    bind.buffer = NULL;
+    bind.buffer = nullptr;
     bind.buffer_length = 0;
     bind.is_null = &m_paramNulls[index];
     return true;
@@ -214,18 +214,18 @@ bool PreparedStatement::execute() {
     m_lastErrorMsg.clear();
     m_rows = 0;
     m_reported = false;
-    if (m_meta != NULL) {
+    if (m_meta != nullptr) {
         mysql_free_result(m_meta);
-        m_meta = NULL;
+        m_meta = nullptr;
     }
-    if (m_hasResult && m_stmt != NULL) {
+    if (m_hasResult && m_stmt != nullptr) {
         mysql_stmt_free_result(m_stmt);
     }
     m_hasResult = false;
     m_timing = true;
     m_startedAt = std::chrono::steady_clock::now();
 
-    if (m_stmt == NULL) {
+    if (m_stmt == nullptr) {
         m_timing = false;
         setError(ErrorCode::DbQueryFailed, "statement is closed");
         return false;
@@ -265,22 +265,22 @@ bool PreparedStatement::execute() {
 }
 
 void PreparedStatement::setStmtError(const char* fallback) {
-    const unsigned int code = m_stmt != NULL ? mysql_stmt_errno(m_stmt) : 0;
-    const char* text = m_stmt != NULL ? mysql_stmt_error(m_stmt) : nullptr;
+    const unsigned int code = m_stmt != nullptr ? mysql_stmt_errno(m_stmt) : 0;
+    const char* text = m_stmt != nullptr ? mysql_stmt_error(m_stmt) : nullptr;
     if (text != nullptr && text[0] != '\0') {
         setError(ErrorCode::DbQueryFailed, text);
     } else {
         setError(ErrorCode::DbQueryFailed,
                  fallback != nullptr ? fallback : "statement error");
     }
-    if (m_conn != NULL && (code == 2003 || code == 2006 || code == 2013)) {
+    if (m_conn != nullptr && (code == 2003 || code == 2006 || code == 2013)) {
         m_conn->markBroken();
     }
 }
 
 bool PreparedStatement::prepareResult() {
     m_meta = mysql_stmt_result_metadata(m_stmt);
-    if (m_meta == NULL) {
+    if (m_meta == nullptr) {
         setStmtError("result metadata failed");
         return false;
     }
@@ -297,7 +297,7 @@ bool PreparedStatement::prepareResult() {
     }
 
     MYSQL_FIELD* fields = mysql_fetch_fields(m_meta);
-    if (fields == NULL) {
+    if (fields == nullptr) {
         setError(ErrorCode::DbQueryFailed, "result fields are empty");
         return false;
     }
@@ -339,7 +339,7 @@ bool PreparedStatement::prepareResult() {
 }
 
 PreparedStatement::FetchStatus PreparedStatement::fetchRow() {
-    if (!m_hasResult || m_stmt == NULL) {
+    if (!m_hasResult || m_stmt == nullptr) {
         return FetchStatus::End;
     }
     const int rc = mysql_stmt_fetch(m_stmt);
@@ -382,23 +382,23 @@ std::string PreparedStatement::getString(std::size_t index) const {
 
 std::int64_t PreparedStatement::getInt64(std::size_t index) const {
     const std::string text = getString(index);
-    return std::strtoll(text.c_str(), NULL, 10);
+    return std::strtoll(text.c_str(), nullptr, 10);
 }
 
 std::uint64_t PreparedStatement::getUInt64(std::size_t index) const {
     const std::string text = getString(index);
-    return std::strtoull(text.c_str(), NULL, 10);
+    return std::strtoull(text.c_str(), nullptr, 10);
 }
 
 std::uint64_t PreparedStatement::affectedRows() const {
-    if (m_stmt == NULL) {
+    if (m_stmt == nullptr) {
         return 0;
     }
     return static_cast<std::uint64_t>(mysql_stmt_affected_rows(m_stmt));
 }
 
 std::uint64_t PreparedStatement::insertId() const {
-    if (m_stmt == NULL) {
+    if (m_stmt == nullptr) {
         return 0;
     }
     return static_cast<std::uint64_t>(mysql_stmt_insert_id(m_stmt));
@@ -418,7 +418,7 @@ void PreparedStatement::reportSlowIfNeeded() {
         return;
     }
 
-    if (m_core != NULL) {
+    if (m_core != nullptr) {
         m_core->slowQueryTotal.fetch_add(1, std::memory_order_relaxed);
         const std::uint64_t costMs = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());

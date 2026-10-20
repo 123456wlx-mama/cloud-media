@@ -56,7 +56,7 @@ std::vector<std::string> ListFiles(const std::string& dir) {
     FindClose(handle);
 #else
     DIR* handle = opendir(dir.c_str());
-    if (handle == NULL) {
+    if (handle == nullptr) {
         return files;
     }
     while (dirent* entry = readdir(handle)) {
@@ -105,7 +105,7 @@ std::size_t CountLines(const std::string& text) {
 std::string MakeTempDir(const std::string& tag) {
     static std::atomic<unsigned> counter(0);
     std::ostringstream os;
-    os << "cm_logger_" << tag << "_" << std::time(NULL) << "_" << counter++;
+    os << "cm_logger_" << tag << "_" << std::time(nullptr) << "_" << counter++;
     std::string dir = os.str();
     EnsureDir(dir);
     return dir;

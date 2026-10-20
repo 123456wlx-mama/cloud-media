@@ -73,13 +73,13 @@ int createFileWithData(const std::string& data) {
 
 int countOpenFds() {
     DIR* dir = ::opendir("/proc/self/fd");
-    if (dir == NULL) {
+    if (dir == nullptr) {
         return -1;
     }
     const int selfFd = ::dirfd(dir);
     int count = 0;
-    struct dirent* entry = NULL;
-    while ((entry = ::readdir(dir)) != NULL) {
+    struct dirent* entry = nullptr;
+    while ((entry = ::readdir(dir)) != nullptr) {
         if (std::strcmp(entry->d_name, ".") == 0 ||
             std::strcmp(entry->d_name, "..") == 0) {
             continue;

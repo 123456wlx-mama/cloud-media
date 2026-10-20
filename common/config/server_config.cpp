@@ -11,14 +11,14 @@ namespace {
 ErrorCode requireString(const IniConfig& ini, const char* section, const char* key,
                         std::string* value, std::string* err) {
     if (!ini.has(section, key)) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = std::string(section) + "." + key + " is required";
         }
         return ErrorCode::NotFound;
     }
     *value = ini.getString(section, key, "");
     if (value->empty()) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = std::string(section) + "." + key + " must not be empty";
         }
         return ErrorCode::InvalidArgument;
@@ -33,14 +33,14 @@ ErrorCode readInt(const IniConfig& ini, const char* section, const char* key,
     if (ini.has(section, key)) {
         ErrorCode result = ini.getInt(section, key, &parsed);
         if (result != ErrorCode::Ok) {
-            if (err != NULL) {
+            if (err != nullptr) {
                 *err = std::string(section) + "." + key + " is not an integer";
             }
             return result;
         }
     }
     if (parsed < minValue || parsed > maxValue) {
-        if (err != NULL) {
+        if (err != nullptr) {
             std::ostringstream os;
             os << section << "." << key << " must be in ["
                << minValue << ", " << maxValue << "]";
@@ -95,8 +95,8 @@ std::string ServerConfig::describe() const {
 
 ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
                            std::string* err) {
-    if (out == NULL) {
-        if (err != NULL) {
+    if (out == nullptr) {
+        if (err != nullptr) {
             *err = "output config is null";
         }
         return ErrorCode::InvalidArgument;
@@ -112,7 +112,7 @@ ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
 
     cfg.listenIp = ini.getString("server", "listen_ip", "0.0.0.0");
     if (!ini.has("server", "listen_port")) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "server.listen_port is required";
         }
         return ErrorCode::NotFound;
@@ -145,7 +145,7 @@ ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
     cfg.logLevel = ini.getString("log", "level", "info");
     LogLevel parsedLevel;
     if (!parse_log_level(cfg.logLevel, &parsedLevel)) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "log.level is invalid: " + cfg.logLevel;
         }
         return ErrorCode::InvalidArgument;
@@ -201,7 +201,7 @@ ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
     cfg.transferDownloadDir =
         ini.getString("transfer", "download_dir", "downloads");
     if (cfg.transferDownloadDir.empty()) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "transfer.download_dir must not be empty";
         }
         return ErrorCode::InvalidArgument;
@@ -218,7 +218,7 @@ ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
     }
 
     *out = cfg;
-    if (err != NULL) {
+    if (err != nullptr) {
         err->clear();
     }
     return ErrorCode::Ok;

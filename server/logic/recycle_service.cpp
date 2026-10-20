@@ -36,7 +36,7 @@ RecycleService::RecycleService(cm::db::MysqlPool& mysql,
 ErrorCode RecycleService::deleteFile(std::uint64_t uid,
                                      const cm::protocol::DeleteFileRq& rq,
                                      cm::protocol::DeleteFileRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::DeleteFileRs();
@@ -82,7 +82,7 @@ ErrorCode RecycleService::deleteFile(std::uint64_t uid,
 ErrorCode RecycleService::listRecycle(std::uint64_t uid,
                                       const cm::protocol::RecycleListRq& rq,
                                       cm::protocol::RecycleListRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::RecycleListRs();
@@ -139,7 +139,7 @@ ErrorCode RecycleService::listRecycle(std::uint64_t uid,
 ErrorCode RecycleService::restore(std::uint64_t uid,
                                   const cm::protocol::RestoreRq& rq,
                                   cm::protocol::RestoreRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::RestoreRs();
@@ -212,7 +212,7 @@ ErrorCode RecycleService::restore(std::uint64_t uid,
 ErrorCode RecycleService::purge(std::uint64_t uid,
                                 const cm::protocol::PurgeRq& rq,
                                 cm::protocol::PurgeRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::PurgeRs();

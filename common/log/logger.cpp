@@ -61,7 +61,7 @@ Logger& Logger::instance() {
 ErrorCode Logger::init(const LogConfig& cfg, std::string* err) {
     if (cfg.path.empty() || cfg.max_line_bytes == 0 ||
         cfg.flush_interval_ms <= 0 || cfg.max_pending_bytes == 0) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "invalid log config";
         }
         return ErrorCode::InvalidArgument;
@@ -69,7 +69,7 @@ ErrorCode Logger::init(const LogConfig& cfg, std::string* err) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "logger already initialized";
         }
         return ErrorCode::AlreadyExists;
@@ -95,13 +95,13 @@ ErrorCode Logger::init(const LogConfig& cfg, std::string* err) {
     dropped_.store(0, std::memory_order_relaxed);
 
     if (!ensureParentDir(path_)) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "cannot create log directory: " + path_;
         }
         return ErrorCode::PermissionDenied;
     }
     if (!openFile()) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = "cannot open log file: " + path_;
         }
         return ErrorCode::PermissionDenied;
@@ -113,7 +113,7 @@ ErrorCode Logger::init(const LogConfig& cfg, std::string* err) {
         worker_ = std::thread(&Logger::workerLoop, this);
     }
 
-    if (err != NULL) {
+    if (err != nullptr) {
         err->clear();
     }
     return ErrorCode::Ok;
@@ -437,16 +437,16 @@ bool Logger::ensureParentDir(const std::string& path) const {
 }
 
 std::string Logger::baseName(const char* path) {
-    if (path == NULL) {
+    if (path == nullptr) {
         return std::string();
     }
     const char* slash = std::strrchr(path, '/');
     const char* backslash = std::strrchr(path, '\\');
     const char* last = slash;
-    if (backslash != NULL && (last == NULL || backslash > last)) {
+    if (backslash != nullptr && (last == nullptr || backslash > last)) {
         last = backslash;
     }
-    return last == NULL ? std::string(path) : std::string(last + 1);
+    return last == nullptr ? std::string(path) : std::string(last + 1);
 }
 
 std::uint32_t Logger::currentThreadId() {

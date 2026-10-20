@@ -62,6 +62,11 @@ bool is_retryable(ErrorCode code);
 // CacheStore 的 Busy 由服务层转成 Timeout(1006)，不在本函数出现。
 std::uint32_t to_wire_code(ErrorCode code);
 
+// wire code → ErrorCode（与 to_wire_code 互逆；0→Ok，未知→UnknownError）。
+// 注意 3002 歧义：to_wire_code 把 TaskNotFound 折成 ChunkMissing，反向只能得到
+// ChunkMissing。
+ErrorCode wire_code_to_error(std::uint32_t wireCode);
+
 // 解码失败 → wire code：BadCrc 回 9005（02 §2.2 的“回 ERROR_RS 且不带 payload”），
 // 其余（BadMagic/BadVersion/BadLength/UnknownType）统一回 1001。
 // 放在 common 而不是 net，避免 connection_decoder（logic）反向依赖 net。

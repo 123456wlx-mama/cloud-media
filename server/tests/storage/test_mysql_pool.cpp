@@ -15,12 +15,12 @@ namespace {
 
 bool envFlag(const char* name) {
     const char* value = std::getenv(name);
-    return value != NULL && std::string(value) == "1";
+    return value != nullptr && std::string(value) == "1";
 }
 
 std::string envOr(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
+    return value != nullptr ? std::string(value) : std::string(fallback);
 }
 
 cm::db::MysqlOptions integrationOptions() {

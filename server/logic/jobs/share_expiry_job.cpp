@@ -22,7 +22,7 @@ ShareExpiryJob::ShareExpiryJob(cm::db::MysqlPool& mysql, std::size_t batch)
 }
 
 ErrorCode ShareExpiryJob::runOnce(std::uint64_t* affected) {
-    if (affected != NULL) {
+    if (affected != nullptr) {
         *affected = 0;
     }
     if (m_batch == 0) {

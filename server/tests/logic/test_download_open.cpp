@@ -26,12 +26,12 @@ const std::uint32_t kChunkSize = 4194304;
 
 bool redisEnabled() {
     const char* value = std::getenv("CM_TEST_REDIS");
-    return value != NULL && std::string(value) == "1";
+    return value != nullptr && std::string(value) == "1";
 }
 
 std::string envOr(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
+    return value != nullptr ? std::string(value) : std::string(fallback);
 }
 
 cm::cache::RedisOptions redisOptions() {
@@ -91,7 +91,7 @@ class DownloadOpenServiceTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         if (!redisEnabled()) {
@@ -101,7 +101,7 @@ protected:
 
         char templ[] = "/tmp/cm_download_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
 
         std::string error;
@@ -214,7 +214,7 @@ TEST_F(DownloadOpenServiceTest, DownloadOpenReturnsTicket) {
     EXPECT_EQ(std::to_string(uid), cached.substr(0, p1));
     EXPECT_EQ(std::to_string(fid), cached.substr(p1 + 1, p2 - p1 - 1));
     const std::uint64_t hardExp =
-        std::strtoull(cached.substr(p2 + 1, p3 - p2 - 1).c_str(), NULL, 10);
+        std::strtoull(cached.substr(p2 + 1, p3 - p2 - 1).c_str(), nullptr, 10);
     EXPECT_GT(hardExp, nowMs() + 7000000ULL);  // 硬上限约 2h
     EXPECT_EQ(std::string("0"), cached.substr(p3 + 1));
 }

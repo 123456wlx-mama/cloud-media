@@ -18,7 +18,7 @@ class FileDaoTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP
         }
         m_dao.reset(new cm::db::FileDao(*m_conn));
@@ -34,7 +34,7 @@ protected:
     }
 
     std::uint64_t createNode(const std::string& name, bool isDir, std::uint64_t fid) {
-        return createNode(name, isDir, fid, NULL);
+        return createNode(name, isDir, fid, nullptr);
     }
 
     std::string nextMd5() { return nextHex32(); }

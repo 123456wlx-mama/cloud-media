@@ -22,7 +22,7 @@ bool Buffer::append(const char* data, std::size_t len) {
     if (len == 0) {
         return true;
     }
-    if (data == NULL || len > kMaxBytes) {
+    if (data == nullptr || len > kMaxBytes) {
         return false;
     }
     if (!ensureWritable(len)) {
@@ -39,7 +39,7 @@ bool Buffer::append(const std::string& data) {
 
 const char* Buffer::peek() const {
     if (storage_.empty()) {
-        return NULL;
+        return nullptr;
     }
     return &storage_[readerIndex_];
 }

@@ -18,7 +18,7 @@ struct PoolCore;
 
 struct MysqlCloser {
     void operator()(MYSQL* handle) const {
-        if (handle != NULL) {
+        if (handle != nullptr) {
             mysql_close(handle);
         }
     }

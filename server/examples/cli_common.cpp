@@ -37,13 +37,13 @@ bool writeAll(int fd, const char* data, std::size_t len, std::string* error) {
             if (errno == EINTR) {
                 continue;
             }
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = std::string("write failed: ") + std::strerror(errno);
             }
             return false;
         }
         if (n == 0) {
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = "write returned 0";
             }
             return false;
@@ -62,10 +62,10 @@ int tcpConnect(const std::string& host, int port, std::string* error) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    struct addrinfo* result = NULL;
+    struct addrinfo* result = nullptr;
     const int gai = ::getaddrinfo(host.c_str(), service, &hints, &result);
     if (gai != 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = std::string("resolve failed: ") + ::gai_strerror(gai);
         }
         return -1;
@@ -73,7 +73,7 @@ int tcpConnect(const std::string& host, int port, std::string* error) {
 
     int fd = -1;
     std::string lastError = "connect failed";
-    for (struct addrinfo* it = result; it != NULL; it = it->ai_next) {
+    for (struct addrinfo* it = result; it != nullptr; it = it->ai_next) {
         fd = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             continue;
@@ -87,7 +87,7 @@ int tcpConnect(const std::string& host, int port, std::string* error) {
     }
     ::freeaddrinfo(result);
     if (fd < 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = lastError;
         }
         return -1;
@@ -109,7 +109,7 @@ int connectAndLogin(const std::string& host,
                     const std::string& password,
                     std::string* error,
                     int* exitCode) {
-    if (exitCode != NULL) {
+    if (exitCode != nullptr) {
         *exitCode = kExitNetwork;
     }
     const int fd = tcpConnect(host, port, error);
@@ -123,10 +123,10 @@ int connectAndLogin(const std::string& host,
 
     std::string payload;
     if (!rq.encode(&payload)) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "invalid login arguments";
         }
-        if (exitCode != NULL) {
+        if (exitCode != nullptr) {
             *exitCode = kExitUsage;
         }
         ::close(fd);
@@ -150,11 +150,11 @@ int connectAndLogin(const std::string& host,
         std::uint32_t code = 0;
         std::string message;
         decodeErrorRs(frame, &code, &message);
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "login rejected: code=" + std::to_string(code) +
                      (message.empty() ? "" : " " + message);
         }
-        if (exitCode != NULL) {
+        if (exitCode != nullptr) {
             *exitCode = kExitUsage;
         }
         ::close(fd);
@@ -165,17 +165,17 @@ int connectAndLogin(const std::string& host,
     if (frame.type !=
             static_cast<std::uint16_t>(protocol::MessageType::LoginRs) ||
         !rs.decode(frame.payload)) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "unexpected login response";
         }
         ::close(fd);
         return -1;
     }
     if (rs.code != 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "login rejected: code=" + std::to_string(rs.code);
         }
-        if (exitCode != NULL) {
+        if (exitCode != nullptr) {
             *exitCode = kExitUsage;
         }
         ::close(fd);
@@ -191,7 +191,7 @@ bool sendFrame(int fd,
                std::string* error) {
     std::string frame;
     if (protocol::Codec::encode(type, seq, payload, &frame) != ErrorCode::Ok) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "encode frame failed";
         }
         return false;
@@ -203,8 +203,8 @@ bool recvFrame(int fd,
                cm::Buffer* buffer,
                cm::protocol::Frame* frame,
                std::string* error) {
-    if (buffer == NULL || frame == NULL) {
-        if (error != NULL) {
+    if (buffer == nullptr || frame == nullptr) {
+        if (error != nullptr) {
             *error = "null buffer";
         }
         return false;
@@ -217,7 +217,7 @@ bool recvFrame(int fd,
             return true;
         }
         if (rc != ErrorCode::NeedMore) {
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = "bad frame (status=" +
                          std::to_string(static_cast<int>(status)) + ")";
             }
@@ -228,7 +228,7 @@ bool recvFrame(int fd,
         const ssize_t n = ::read(fd, chunk, sizeof(chunk));
         if (n > 0) {
             if (!buffer->append(chunk, static_cast<std::size_t>(n))) {
-                if (error != NULL) {
+                if (error != nullptr) {
                     *error = "receive buffer overflow";
                 }
                 return false;
@@ -236,7 +236,7 @@ bool recvFrame(int fd,
             continue;
         }
         if (n == 0) {
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = "connection closed by peer";
             }
             return false;
@@ -244,7 +244,7 @@ bool recvFrame(int fd,
         if (errno == EINTR) {
             continue;
         }
-        if (error != NULL) {
+        if (error != nullptr) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 *error = "receive timeout";
             } else {
@@ -264,10 +264,10 @@ bool decodeErrorRs(const cm::protocol::Frame& frame,
     if (!reader.readU32(&value) || !reader.readString(&text)) {
         return false;
     }
-    if (code != NULL) {
+    if (code != nullptr) {
         *code = value;
     }
-    if (message != NULL) {
+    if (message != nullptr) {
         *message = text;
     }
     return true;
@@ -275,15 +275,15 @@ bool decodeErrorRs(const cm::protocol::Frame& frame,
 
 std::string passwordFromEnv() {
     const char* value = std::getenv("CM_CLI_PASSWORD");
-    return value != NULL ? std::string(value) : std::string();
+    return value != nullptr ? std::string(value) : std::string();
 }
 
 bool parseU64(const std::string& text, std::uint64_t* value) {
-    if (text.empty() || value == NULL) {
+    if (text.empty() || value == nullptr) {
         return false;
     }
     errno = 0;
-    char* end = NULL;
+    char* end = nullptr;
     const unsigned long long v = std::strtoull(text.c_str(), &end, 10);
     if (errno != 0 || end == text.c_str() || *end != '\0') {
         return false;
@@ -328,7 +328,7 @@ std::string bitmapToHex(const std::string& bitmap) {
 }
 
 bool bitmapFromHex(const std::string& hex, std::string* bitmap) {
-    if (bitmap == NULL || (hex.size() % 2) != 0) {
+    if (bitmap == nullptr || (hex.size() % 2) != 0) {
         return false;
     }
     bitmap->clear();
@@ -358,7 +358,7 @@ bool bitmapFromHex(const std::string& hex, std::string* bitmap) {
 }
 
 void bitmapSet(std::string* bitmap, std::uint32_t index) {
-    if (bitmap == NULL) {
+    if (bitmap == nullptr) {
         return;
     }
     const std::size_t byte = index / 8;
@@ -385,7 +385,7 @@ bool writeFileAtomic(const std::string& path,
     const std::string tmp = path + ".tmp";
     const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "open " + tmp + " failed: " + std::strerror(errno);
         }
         return false;
@@ -393,7 +393,7 @@ bool writeFileAtomic(const std::string& path,
     bool ok = writeAll(fd, data.data(), data.size(), error);
     if (ok && ::fsync(fd) != 0) {
         ok = false;
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = std::string("fsync failed: ") + std::strerror(errno);
         }
     }
@@ -403,7 +403,7 @@ bool writeFileAtomic(const std::string& path,
         return false;
     }
     if (::rename(tmp.c_str(), path.c_str()) != 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "rename failed: " + std::string(std::strerror(errno));
         }
         ::unlink(tmp.c_str());
@@ -413,7 +413,7 @@ bool writeFileAtomic(const std::string& path,
 }
 
 bool readFileToString(const std::string& path, std::string* data) {
-    if (data == NULL) {
+    if (data == nullptr) {
         return false;
     }
     data->clear();
@@ -442,12 +442,12 @@ bool readFileToString(const std::string& path, std::string* data) {
 }
 
 bool md5File(const std::string& path, std::string* hex, std::string* error) {
-    if (hex == NULL) {
+    if (hex == nullptr) {
         return false;
     }
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "open " + path + " failed: " + std::strerror(errno);
         }
         return false;
@@ -466,7 +466,7 @@ bool md5File(const std::string& path, std::string* hex, std::string* error) {
         if (errno == EINTR) {
             continue;
         }
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = std::string("read failed: ") + std::strerror(errno);
         }
         ::close(fd);
@@ -487,13 +487,13 @@ bool pwriteAll(int fd, const char* data, std::size_t len, off_t offset,
             if (errno == EINTR) {
                 continue;
             }
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = std::string("pwrite failed: ") + std::strerror(errno);
             }
             return false;
         }
         if (n == 0) {
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = "pwrite returned 0";
             }
             return false;
@@ -513,13 +513,13 @@ bool preadExact(int fd, char* data, std::size_t len, off_t offset,
             if (errno == EINTR) {
                 continue;
             }
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = std::string("pread failed: ") + std::strerror(errno);
             }
             return false;
         }
         if (n == 0) {
-            if (error != NULL) {
+            if (error != nullptr) {
                 *error = "unexpected end of file";
             }
             return false;

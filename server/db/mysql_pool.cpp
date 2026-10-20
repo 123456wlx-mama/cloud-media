@@ -14,9 +14,9 @@ namespace {
 MysqlHandle createPhysical(const MysqlOptions& options,
                            unsigned int connectTimeoutSec,
                            std::string* err) {
-    MYSQL* raw = mysql_init(NULL);
-    if (raw == NULL) {
-        if (err != NULL) {
+    MYSQL* raw = mysql_init(nullptr);
+    if (raw == nullptr) {
+        if (err != nullptr) {
             *err = "mysql_init failed";
         }
         return MysqlHandle();
@@ -34,8 +34,8 @@ MysqlHandle createPhysical(const MysqlOptions& options,
 
     if (mysql_real_connect(raw, options.host.c_str(), options.user.c_str(),
                            options.password.c_str(), options.database.c_str(),
-                           options.port, NULL, 0) == NULL) {
-        if (err != NULL) {
+                           options.port, nullptr, 0) == nullptr) {
+        if (err != nullptr) {
             *err = mysql_error(raw);
         }
         mysql_close(raw);
@@ -54,7 +54,7 @@ MysqlHandle createPhysical(const MysqlOptions& options,
     const std::size_t sessionCount = sizeof(kSessionSql) / sizeof(kSessionSql[0]);
     for (std::size_t i = 0; i < sessionCount; ++i) {
         if (mysql_query(raw, kSessionSql[i]) != 0) {
-            if (err != NULL) {
+            if (err != nullptr) {
                 *err = std::string("session init failed: ") + mysql_error(raw);
             }
             mysql_close(raw);
@@ -107,12 +107,12 @@ bool MysqlOptions::validate(std::string* err) const {
     }
 
     if (!message.empty()) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = message;
         }
         return false;
     }
-    if (err != NULL) {
+    if (err != nullptr) {
         err->clear();
     }
     return true;
@@ -289,7 +289,7 @@ std::shared_ptr<MysqlPool> MysqlPool::create(const MysqlOptions& options,
                                              std::string* err) {
     std::string localError;
     if (!options.validate(&localError)) {
-        if (err != NULL) {
+        if (err != nullptr) {
             *err = localError;
         }
         return std::shared_ptr<MysqlPool>();
@@ -303,7 +303,7 @@ std::shared_ptr<MysqlPool> MysqlPool::create(const MysqlOptions& options,
     for (std::size_t i = 0; i < options.minSize; ++i) {
         MysqlHandle handle = createPhysical(options, 3, &localError);
         if (!handle) {
-            if (err != NULL) {
+            if (err != nullptr) {
                 *err = localError;
             }
             return std::shared_ptr<MysqlPool>();
@@ -317,7 +317,7 @@ std::shared_ptr<MysqlPool> MysqlPool::create(const MysqlOptions& options,
     }
 
     core->startReaper();
-    if (err != NULL) {
+    if (err != nullptr) {
         err->clear();
     }
     return std::shared_ptr<MysqlPool>(new MysqlPool(options, core));

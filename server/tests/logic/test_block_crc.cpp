@@ -66,7 +66,7 @@ protected:
     void SetUp() override {
         char templ[] = "/tmp/cm_blockcrc_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
         m_blob = m_root + "/blob.bin";
     }
@@ -118,7 +118,7 @@ TEST_F(BlockCrcTest, BlockCrcLastBlockShort) {
 
     std::vector<std::uint32_t> crcs;
     ASSERT_EQ(cm::ErrorCode::Ok,
-              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, NULL));
+              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, nullptr));
     ASSERT_EQ(std::size_t(2), crcs.size());
     EXPECT_EQ(directBlockCrc(data, 1), crcs[1]);
 }
@@ -136,7 +136,7 @@ TEST_F(BlockCrcTest, BlockCrcZeroCrcLazyFill) {
 
     std::vector<std::uint32_t> crcs;
     ASSERT_EQ(cm::ErrorCode::Ok,
-              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, NULL));
+              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, nullptr));
     ASSERT_EQ(std::size_t(2), crcs.size());
     EXPECT_EQ(0u, crcs[1]);
 
@@ -147,7 +147,7 @@ TEST_F(BlockCrcTest, BlockCrcZeroCrcLazyFill) {
 
     crcs.clear();
     ASSERT_EQ(cm::ErrorCode::Ok,
-              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, NULL));
+              cm::logic::readBlockCrc(m_blob, data.size(), &crcs, nullptr));
     ASSERT_EQ(std::size_t(2), crcs.size());
     EXPECT_EQ(directBlockCrc(data, 1), crcs[1]);
 }

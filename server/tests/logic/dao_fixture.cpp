@@ -25,12 +25,12 @@ std::atomic<int> g_instanceSeq(0);
 
 bool mysqlEnabled() {
     const char* value = std::getenv("CM_TEST_MYSQL");
-    return value != NULL && std::string(value) == "1";
+    return value != nullptr && std::string(value) == "1";
 }
 
 std::string envOr(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
-    return value != NULL ? std::string(value) : std::string(fallback);
+    return value != nullptr ? std::string(value) : std::string(fallback);
 }
 
 cm::db::MysqlOptions mysqlOptions() {
@@ -61,7 +61,7 @@ void DaoTestBase::SetUp() {
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "cm%03ld%06d%02d",
                   static_cast<long>(::getpid()) % 1000L,
-                  static_cast<int>(std::time(NULL)) % 1000000,
+                  static_cast<int>(std::time(nullptr)) % 1000000,
                   static_cast<int>(sequence));
     m_prefix = std::string(buffer);
 
@@ -91,7 +91,7 @@ std::string DaoTestBase::nextHex32() {
     char buffer[40];
     std::snprintf(buffer, sizeof(buffer), "%08x%08x%08x%08x",
                   static_cast<unsigned int>(::getpid()) & 0xffffffffU,
-                  static_cast<unsigned int>(std::time(NULL)) & 0xffffffffU,
+                  static_cast<unsigned int>(std::time(nullptr)) & 0xffffffffU,
                   static_cast<unsigned int>(m_seed) & 0xffffffffU,
                   static_cast<unsigned int>(m_seq++ * 7919U + 0x5a5a0000U) &
                       0xffffffffU);
@@ -104,7 +104,7 @@ std::string DaoTestBase::nextCode() {
 
     unsigned long long value =
         static_cast<unsigned long long>(::getpid()) * 2654435761ULL +
-        static_cast<unsigned long long>(std::time(NULL)) * 40503ULL +
+        static_cast<unsigned long long>(std::time(nullptr)) * 40503ULL +
         m_seed * 104729ULL + static_cast<unsigned long long>(m_seq++) * 1000003ULL;
 
     std::string code(6, alphabet[0]);
@@ -169,7 +169,7 @@ std::uint64_t DaoTestBase::createNode(std::uint64_t uid,
         return 0;
     }
     trackNode(ufId);
-    if (finalName != NULL) {
+    if (finalName != nullptr) {
         *finalName = resolved;
     }
     return ufId;

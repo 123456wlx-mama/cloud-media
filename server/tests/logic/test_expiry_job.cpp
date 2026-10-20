@@ -65,7 +65,7 @@ bool exists(const std::string& path) {
 }
 
 void makeStale(const std::string& path) {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     struct utimbuf times;
     times.actime = now - 7200;
     times.modtime = now - 7200;
@@ -76,13 +76,13 @@ class ExpiryJobTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
 
         char templ[] = "/tmp/cm_expiry_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
 
         m_deletedDirs.clear();

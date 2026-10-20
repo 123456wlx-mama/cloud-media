@@ -88,7 +88,7 @@ AuthService::AuthService(cm::db::MysqlPool& mysql) : m_mysql(mysql) {
 
 ErrorCode AuthService::registerUser(const cm::protocol::RegisterRq& rq,
                                     cm::protocol::RegisterRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::RegisterRs();
@@ -130,7 +130,7 @@ ErrorCode AuthService::registerUser(const cm::protocol::RegisterRq& rq,
 
 ErrorCode AuthService::login(const cm::protocol::LoginRq& rq,
                              cm::protocol::LoginRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::LoginRs();

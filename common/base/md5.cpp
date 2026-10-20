@@ -52,7 +52,7 @@ void Md5::reset() {
 }
 
 void Md5::update(const void* data, std::size_t len) {
-    if (data == NULL || len == 0) {
+    if (data == nullptr || len == 0) {
         return;
     }
     const std::uint8_t* bytes = static_cast<const std::uint8_t*>(data);

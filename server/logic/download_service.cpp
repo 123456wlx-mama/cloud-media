@@ -19,7 +19,7 @@ namespace {
 const std::uint32_t kChunkSize = 4194304;  // 与上传分片/下载块一致
 
 bool parseU64Field(const std::string& text, std::uint64_t* value) {
-    if (text.empty() || value == NULL) {
+    if (text.empty() || value == nullptr) {
         return false;
     }
     std::uint64_t v = 0;
@@ -69,7 +69,7 @@ ErrorCode DownloadService::openDownload(
     std::uint64_t uid,
     const cm::protocol::DownloadOpenRq& rq,
     cm::protocol::DownloadOpenRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::DownloadOpenRs();
@@ -214,7 +214,7 @@ ErrorCode DownloadService::stat(
     std::uint64_t uid,
     const cm::protocol::DownloadStatRq& rq,
     cm::protocol::DownloadStatRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::DownloadStatRs();
@@ -300,7 +300,7 @@ ErrorCode DownloadService::done(
     std::uint64_t uid,
     const cm::protocol::DownloadDoneRq& rq,
     cm::protocol::DownloadDoneRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::DownloadDoneRs();

@@ -167,3 +167,111 @@ TEST(CodecTest, EmptyPayloadAccepted) {
     EXPECT_EQ(static_cast<std::uint32_t>(42), frame.seq);
     EXPECT_TRUE(frame.payload.empty());
 }
+
+namespace {
+
+std::string MakeBulkHeader(std::uint16_t type, std::uint32_t len,
+                           std::uint32_t seq) {
+    std::string header(cm::protocol::kHeaderSize, '\0');
+    std::uint8_t* p = reinterpret_cast<std::uint8_t*>(&header[0]);
+    cm::writeU32BE(p, cm::protocol::kMagic);
+    p[4] = static_cast<std::uint8_t>(cm::protocol::kVersion);
+    cm::writeU16BE(p + 5, type);
+    cm::writeU32BE(p + 7, len);
+    cm::writeU32BE(p + 11, seq);
+    cm::writeU32BE(p + 15, 0);
+    return header;
+}
+
+}  // namespace
+
+TEST(CodecBulkTest, NeedsFullHeader) {
+    cm::Buffer buffer;
+    ASSERT_TRUE(buffer.append(MakeBulkHeader(10006, 0, 1).substr(0, 18)));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::NeedMore,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::NeedMore, status);
+    EXPECT_EQ(std::size_t(18), buffer.readableBytes());
+}
+
+TEST(CodecBulkTest, EmptyPayloadAccepted) {
+    cm::Buffer buffer;
+    ASSERT_TRUE(buffer.append(MakeBulkHeader(10006, 0, 7)));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::Ok,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::Ok, status);
+    EXPECT_EQ(static_cast<std::uint16_t>(10006), raw.type);
+    EXPECT_EQ(std::uint32_t(7), raw.seq);
+    EXPECT_EQ(std::uint32_t(0), raw.len);
+    EXPECT_TRUE(raw.payload.empty());
+    EXPECT_EQ(std::size_t(0), buffer.readableBytes());
+}
+
+TEST(CodecBulkTest, PayloadAndSeqExtracted) {
+    cm::Buffer buffer;
+    ASSERT_TRUE(buffer.append(MakeBulkHeader(10006, 6, 9) + "abcdef"));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(std::uint32_t(6), raw.len);
+    EXPECT_EQ(std::string("abcdef"), raw.payload);
+    EXPECT_EQ(std::size_t(11), raw.header11.size());
+}
+
+TEST(CodecBulkTest, WaitsForWholePayload) {
+    cm::Buffer buffer;
+    ASSERT_TRUE(buffer.append(MakeBulkHeader(10006, 6, 9) + "abc"));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::NeedMore,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(std::size_t(22), buffer.readableBytes());
+}
+
+TEST(CodecBulkTest, RejectsNonBulkTypeWithoutConsuming) {
+    cm::Buffer buffer;
+    const std::string frame = Encode(10002, 1, "x");
+    ASSERT_TRUE(buffer.append(frame));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::ProtocolError,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::UnknownType, status);
+    EXPECT_EQ(frame.size(), buffer.readableBytes());
+}
+
+TEST(CodecBulkTest, RejectsBadMagicAndVersion) {
+    cm::Buffer buffer;
+    std::string badMagic = MakeBulkHeader(10006, 0, 1);
+    badMagic[0] = 0;
+    ASSERT_TRUE(buffer.append(badMagic));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::ProtocolError,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::BadMagic, status);
+
+    buffer.reset();
+    std::string badVersion = MakeBulkHeader(10006, 0, 1);
+    badVersion[4] = static_cast<char>(0xEE);
+    ASSERT_TRUE(buffer.append(badVersion));
+    EXPECT_EQ(cm::ErrorCode::ProtocolError,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::BadVersion, status);
+}
+
+TEST(CodecBulkTest, RejectsOversizeLength) {
+    cm::Buffer buffer;
+    ASSERT_TRUE(buffer.append(
+        MakeBulkHeader(10006, cm::protocol::kMaxPayload + 1, 1)));
+    cm::protocol::RawFrame raw;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::Ok;
+    EXPECT_EQ(cm::ErrorCode::ProtocolError,
+              cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
+    EXPECT_EQ(cm::protocol::DecodeStatus::BadLength, status);
+}

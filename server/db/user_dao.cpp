@@ -17,7 +17,7 @@ bool isDuplicateEntry(const std::string& message) {
 // affectedRows() 在未开 CLIENT_FOUND_ROWS 的连接上返回 changed rows，
 // 值未变化时为 0，无法与“行不存在”区分；需要显式再查一次。
 ErrorCode userExists(MysqlConn& conn, std::uint64_t uid, bool* exists) {
-    if (exists == NULL) {
+    if (exists == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *exists = false;
@@ -56,7 +56,7 @@ bool UserDao::isSupportedPwdAlgo(std::uint8_t pwdAlgo) {
 }
 
 ErrorCode UserDao::findByTel(const std::string& tel, UserRow* out) {
-    if (out == NULL || tel.empty()) {
+    if (out == nullptr || tel.empty()) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -97,7 +97,7 @@ ErrorCode UserDao::insert(const std::string& tel,
                           std::uint8_t pwdAlgo,
                           const std::string& name,
                           std::uint64_t* uid) {
-    if (uid == NULL || tel.empty() || passwordHash.empty() || salt.empty() ||
+    if (uid == nullptr || tel.empty() || passwordHash.empty() || salt.empty() ||
         !isSupportedPwdAlgo(pwdAlgo)) {
         return ErrorCode::InvalidArgument;
     }

@@ -63,7 +63,7 @@ cm::ErrorCode HandlerRegistry::dispatch(std::uint16_t type,
         return cm::ErrorCode::Timeout;
     }
 
-    if (workers_ == NULL) {
+    if (workers_ == nullptr) {
         runHandler(entry, conn, frame);
         return cm::ErrorCode::Ok;
     }
@@ -129,7 +129,7 @@ void HandlerRegistry::respond(const ConnectionPtr& conn, std::uint32_t seq,
                               const char* message) const {
     if (errorResponder_) {
         errorResponder_(conn, seq, wireCode,
-                        message == NULL ? std::string() : std::string(message));
+                        message == nullptr ? std::string() : std::string(message));
     }
 }
 

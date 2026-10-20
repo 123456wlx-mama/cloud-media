@@ -93,7 +93,7 @@ bool ShareDao::isValidCode(const std::string& code) {
 }
 
 ErrorCode ShareDao::insert(const NewShare& share, std::uint64_t* shareId) {
-    if (shareId == NULL || !isValidCode(share.code) || share.userId == 0 ||
+    if (shareId == nullptr || !isValidCode(share.code) || share.userId == 0 ||
         share.ufId == 0 || share.expirePolicy > 2) {
         return ErrorCode::InvalidArgument;
     }
@@ -156,7 +156,7 @@ ErrorCode ShareDao::insert(const NewShare& share, std::uint64_t* shareId) {
 }
 
 ErrorCode ShareDao::findByCode(const std::string& code, ShareRow* out) {
-    if (out == NULL || !isValidCode(code)) {
+    if (out == nullptr || !isValidCode(code)) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -187,7 +187,7 @@ ErrorCode ShareDao::findByCode(const std::string& code, ShareRow* out) {
 }
 
 ErrorCode ShareDao::listByUser(const ShareListQuery& query, ShareListPage* page) {
-    if (page == NULL || query.userId == 0 || query.limit == 0 ||
+    if (page == nullptr || query.userId == 0 || query.limit == 0 ||
         query.limit > kMaxShareListLimit) {
         return ErrorCode::InvalidArgument;
     }
@@ -265,7 +265,7 @@ ErrorCode ShareDao::cancel(std::uint64_t userId,
                            const std::string& code,
                            bool* cancelled,
                            bool* already) {
-    if (cancelled == NULL || already == NULL || userId == 0 ||
+    if (cancelled == nullptr || already == nullptr || userId == 0 ||
         !isValidCode(code)) {
         return ErrorCode::InvalidArgument;
     }
@@ -329,7 +329,7 @@ ErrorCode ShareDao::cancel(std::uint64_t userId,
 
 ErrorCode ShareDao::listActiveByUfId(std::uint64_t ufId,
                                     std::vector<std::string>* codes) {
-    if (codes == NULL || ufId == 0) {
+    if (codes == nullptr || ufId == 0) {
         return ErrorCode::InvalidArgument;
     }
     codes->clear();
@@ -362,7 +362,7 @@ ErrorCode ShareDao::listActiveByUfId(std::uint64_t ufId,
 
 ErrorCode ShareDao::cancelActiveByUfIdInTx(std::uint64_t ufId,
                                            std::uint64_t* affected) {
-    if (affected == NULL || ufId == 0) {
+    if (affected == nullptr || ufId == 0) {
         return ErrorCode::InvalidArgument;
     }
     *affected = 0;
@@ -384,7 +384,7 @@ ErrorCode ShareDao::cancelActiveByUfIdInTx(std::uint64_t ufId,
 }
 
 ErrorCode ShareDao::sweepExpired(std::size_t limit, std::uint64_t* affected) {
-    if (affected == NULL || limit == 0 || limit > kMaxSweepLimit) {
+    if (affected == nullptr || limit == 0 || limit > kMaxSweepLimit) {
         return ErrorCode::InvalidArgument;
     }
     *affected = 0;

@@ -70,7 +70,7 @@ ErrorCode PlayDao::upsertLww(std::uint64_t userId,
 ErrorCode PlayDao::findByUserFile(std::uint64_t userId,
                                   std::uint64_t fileId,
                                   PlayRow* out) {
-    if (out == NULL || userId == 0 || fileId == 0) {
+    if (out == nullptr || userId == 0 || fileId == 0) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -103,7 +103,7 @@ ErrorCode PlayDao::findByUserFile(std::uint64_t userId,
 ErrorCode PlayDao::listRecent(std::uint64_t userId,
                               std::size_t limit,
                               std::vector<PlayRow>* out) {
-    if (out == NULL || userId == 0 || limit == 0 || limit > kMaxRecentLimit) {
+    if (out == nullptr || userId == 0 || limit == 0 || limit > kMaxRecentLimit) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();
@@ -144,7 +144,7 @@ ErrorCode PlayDao::listRecent(std::uint64_t userId,
 
 ErrorCode PlayDao::deleteOrphanRecords(std::size_t limit,
                                        std::uint64_t* deleted) {
-    if (deleted == NULL || limit == 0) {
+    if (deleted == nullptr || limit == 0) {
         return ErrorCode::InvalidArgument;
     }
     *deleted = 0;

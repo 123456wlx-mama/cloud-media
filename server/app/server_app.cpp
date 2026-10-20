@@ -28,7 +28,7 @@ const int kGcHour = 4;
 const int kGcMinute = 0;
 
 std::int64_t msUntilDaily(int hour, int minute) {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     std::tm target;
     std::memset(&target, 0, sizeof(target));
     ::localtime_r(&now, &target);
@@ -45,7 +45,7 @@ std::int64_t msUntilDaily(int hour, int minute) {
 }
 
 std::int64_t msUntilMonthly() {
-    const std::time_t now = std::time(NULL);
+    const std::time_t now = std::time(nullptr);
     std::tm target;
     std::memset(&target, 0, sizeof(target));
     ::localtime_r(&now, &target);
@@ -114,7 +114,7 @@ bool ServerApp::start(std::string* error) {
     std::uint64_t recovered = 0;
     const cm::ErrorCode rc = m_expiry->recoverOnStartup(&recovered);
     if (rc != cm::ErrorCode::Ok) {
-        if (error != NULL) {
+        if (error != nullptr) {
             *error = "reset tr_status=7 failed";
         }
         return false;
@@ -173,7 +173,7 @@ void ServerApp::onTick() {
 
     const bool submitted = m_workers.run([this]() {
         if (m_expiry) {
-            m_expiry->runOnce(NULL);
+            m_expiry->runOnce(nullptr);
         }
         m_expiryRunning.store(false);
     });
@@ -189,7 +189,7 @@ void ServerApp::onGcTick() {
     }
     if (!m_workers.run([this]() {
             if (m_gc) {
-                m_gc->runOnce(NULL, NULL);
+                m_gc->runOnce(nullptr, nullptr);
             }
             m_gcRunning.store(false);
         })) {
@@ -204,7 +204,7 @@ void ServerApp::onShareExpiryTick() {
     }
     if (!m_workers.run([this]() {
             if (m_shareExpiry) {
-                m_shareExpiry->runOnce(NULL);
+                m_shareExpiry->runOnce(nullptr);
             }
             m_shareRunning.store(false);
         })) {
@@ -219,7 +219,7 @@ void ServerApp::onPlayCleanupTick() {
     }
     if (!m_workers.run([this]() {
             if (m_playCleanup) {
-                m_playCleanup->runOnce(NULL);
+                m_playCleanup->runOnce(nullptr);
             }
             m_playRunning.store(false);
         })) {

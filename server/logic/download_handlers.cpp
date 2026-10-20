@@ -19,7 +19,7 @@ DownloadHandlers::DownloadHandlers(DownloadService& service,
     : m_service(service), m_buffered(buffered)
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
       ,
-      m_sendfile(NULL)
+      m_sendfile(nullptr)
 #endif
 {
 }
@@ -96,7 +96,7 @@ void DownloadHandlers::handleRange(std::uint64_t uid,
     };
 
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
-    if (m_sendfile != NULL) {
+    if (m_sendfile != nullptr) {
         // sidecar 懒填充失败 → 回退缓冲路径（IO 池线程调用，回调已按值捕获）。
         auto fallback = [this, conn](std::uint64_t u, const std::string& tk,
                                      std::uint64_t f, std::uint32_t bi,

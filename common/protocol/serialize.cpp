@@ -12,7 +12,7 @@ void Writer::clear() {
 }
 
 bool Writer::writeBytes(const void* data, std::size_t len) {
-    if (data == NULL && len != 0) {
+    if (data == nullptr && len != 0) {
         return false;
     }
     if (data_.size() > kMaxSerializeBytes ||
@@ -88,7 +88,7 @@ bool Reader::need(std::size_t len) {
 }
 
 bool Reader::readU8(std::uint8_t* value) {
-    if (value == NULL || !need(1)) {
+    if (value == nullptr || !need(1)) {
         return false;
     }
     *value = static_cast<std::uint8_t>(data_[offset_]);
@@ -97,7 +97,7 @@ bool Reader::readU8(std::uint8_t* value) {
 }
 
 bool Reader::readU16(std::uint16_t* value) {
-    if (value == NULL || !need(2)) {
+    if (value == nullptr || !need(2)) {
         return false;
     }
     *value = readU16BE(reinterpret_cast<const std::uint8_t*>(data_.data() + offset_));
@@ -106,7 +106,7 @@ bool Reader::readU16(std::uint16_t* value) {
 }
 
 bool Reader::readU32(std::uint32_t* value) {
-    if (value == NULL || !need(4)) {
+    if (value == nullptr || !need(4)) {
         return false;
     }
     *value = readU32BE(reinterpret_cast<const std::uint8_t*>(data_.data() + offset_));
@@ -115,7 +115,7 @@ bool Reader::readU32(std::uint32_t* value) {
 }
 
 bool Reader::readU64(std::uint64_t* value) {
-    if (value == NULL || !need(8)) {
+    if (value == nullptr || !need(8)) {
         return false;
     }
     *value = readU64BE(reinterpret_cast<const std::uint8_t*>(data_.data() + offset_));
@@ -124,7 +124,7 @@ bool Reader::readU64(std::uint64_t* value) {
 }
 
 bool Reader::readBytes(std::string* value, std::size_t len) {
-    if (value == NULL || !need(len)) {
+    if (value == nullptr || !need(len)) {
         return false;
     }
     value->assign(data_.data() + offset_, len);
@@ -133,7 +133,7 @@ bool Reader::readBytes(std::string* value, std::size_t len) {
 }
 
 bool Reader::readString(std::string* value) {
-    if (value == NULL) {
+    if (value == nullptr) {
         return false;
     }
     std::uint32_t len = 0;

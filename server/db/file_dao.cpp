@@ -85,7 +85,7 @@ ErrorCode lockUserFile(MysqlConn& conn,
     *fid = stmt->isNull(0) ? 0 : stmt->getUInt64(0);
     *isDir = stmt->getUInt64(1) != 0;
     *deletedAt = stmt->getString(2);
-    if (name != NULL) {
+    if (name != nullptr) {
         *name = stmt->getString(3);
     }
     return ErrorCode::Ok;
@@ -93,7 +93,7 @@ ErrorCode lockUserFile(MysqlConn& conn,
 
 // 减到 0 只置孤儿，不 unlink：GC 任务在 24h 宽限后回收 blob 与 .crc。
 ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid, bool* orphaned) {
-    if (orphaned != NULL) {
+    if (orphaned != nullptr) {
         *orphaned = false;
     }
     std::unique_ptr<PreparedStatement> drop = conn.prepare(
@@ -120,7 +120,7 @@ ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid, bool* orphaned) {
     if (!orphan->execute()) {
         return orphan->lastError();
     }
-    if (orphaned != NULL) {
+    if (orphaned != nullptr) {
         *orphaned = orphan->affectedRows() > 0;
     }
     return ErrorCode::Ok;
@@ -191,7 +191,7 @@ const char* FileDao::activeDeletedAt() {
 }
 
 ErrorCode FileDao::findBlobByMd5(const std::string& md5, BlobRow* out) {
-    if (out == NULL || md5.size() != 32) {
+    if (out == nullptr || md5.size() != 32) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -226,7 +226,7 @@ ErrorCode FileDao::findBlobByMd5(const std::string& md5, BlobRow* out) {
 }
 
 ErrorCode FileDao::getBlobById(std::uint64_t fid, BlobRow* out) {
-    if (out == NULL || fid == 0) {
+    if (out == nullptr || fid == 0) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -265,7 +265,7 @@ ErrorCode FileDao::insertBlobOnDuplicateIncrement(const std::string& md5,
                                                   const std::string& path,
                                                   std::uint64_t* fid,
                                                   BlobWriteKind* kind) {
-    if (fid == NULL || kind == NULL || md5.size() != 32 || size == 0 || path.empty()) {
+    if (fid == nullptr || kind == nullptr || md5.size() != 32 || size == 0 || path.empty()) {
         return ErrorCode::InvalidArgument;
     }
     *fid = 0;
@@ -312,7 +312,7 @@ ErrorCode FileDao::createUserFileAutoRename(std::uint64_t uid,
                                             const std::string& name,
                                             std::uint64_t* ufId,
                                             std::string* finalName) {
-    if (ufId == NULL || finalName == NULL || uid == 0 || name.empty() ||
+    if (ufId == nullptr || finalName == nullptr || uid == 0 || name.empty() ||
         name.size() > 255) {
         return ErrorCode::InvalidArgument;
     }
@@ -344,7 +344,7 @@ ErrorCode FileDao::insertUserFileAutoRenameInTx(std::uint64_t uid,
                                                const std::string& name,
                                                std::uint64_t* ufId,
                                                std::string* finalName) {
-    if (ufId == NULL || finalName == NULL || uid == 0 || fid == 0 ||
+    if (ufId == nullptr || finalName == nullptr || uid == 0 || fid == 0 ||
         name.empty() || name.size() > 255) {
         return ErrorCode::InvalidArgument;
     }
@@ -356,7 +356,7 @@ ErrorCode FileDao::findActiveNodeByFid(std::uint64_t uid,
                                        std::uint64_t parentId,
                                        std::uint64_t fid,
                                        UserFileRow* out) {
-    if (out == NULL || uid == 0 || fid == 0) {
+    if (out == nullptr || uid == 0 || fid == 0) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -390,7 +390,7 @@ ErrorCode FileDao::findActiveNodeByFid(std::uint64_t uid,
 ErrorCode FileDao::hasVisibleFileByFid(std::uint64_t uid,
                                        std::uint64_t fid,
                                        bool* visible) {
-    if (visible == NULL || uid == 0 || fid == 0) {
+    if (visible == nullptr || uid == 0 || fid == 0) {
         return ErrorCode::InvalidArgument;
     }
     *visible = false;
@@ -471,7 +471,7 @@ ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
                                              std::uint64_t* ufId,
                                              std::string* finalName,
                                              bool* reused) {
-    if (fileId == NULL || ufId == NULL || finalName == NULL || reused == NULL ||
+    if (fileId == nullptr || ufId == nullptr || finalName == nullptr || reused == nullptr ||
         uid == 0 || md5.size() != 32 || size == 0 || name.empty() ||
         name.size() > 255) {
         return ErrorCode::InvalidArgument;
@@ -544,7 +544,7 @@ ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
 ErrorCode FileDao::findUserFile(std::uint64_t uid,
                                 std::uint64_t ufId,
                                 UserFileRow* out) {
-    if (out == NULL || uid == 0 || ufId == 0) {
+    if (out == nullptr || uid == 0 || ufId == 0) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -575,7 +575,7 @@ ErrorCode FileDao::findUserFile(std::uint64_t uid,
 }
 
 ErrorCode FileDao::listByParent(const FileListQuery& query, FileListPage* page) {
-    if (page == NULL || query.uid == 0 || query.limit == 0 ||
+    if (page == nullptr || query.uid == 0 || query.limit == 0 ||
         query.limit > kMaxListLimit) {
         return ErrorCode::InvalidArgument;
     }
@@ -686,7 +686,7 @@ ErrorCode FileDao::listByParent(const FileListQuery& query, FileListPage* page) 
 ErrorCode FileDao::listOrphanBlobs(std::uint64_t graceSeconds,
                                     std::size_t limit,
                                     std::vector<OrphanBlobRow>* out) {
-    if (out == NULL || limit == 0) {
+    if (out == nullptr || limit == 0) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();
@@ -739,7 +739,7 @@ ErrorCode FileDao::listOrphanBlobs(std::uint64_t graceSeconds,
 ErrorCode FileDao::countByParent(std::uint64_t uid,
                                  std::uint64_t parentId,
                                  std::uint64_t* count) {
-    if (count == NULL || uid == 0) {
+    if (count == nullptr || uid == 0) {
         return ErrorCode::InvalidArgument;
     }
     *count = 0;
@@ -779,7 +779,7 @@ ErrorCode FileDao::countByParent(std::uint64_t uid,
 ErrorCode FileDao::softDelete(std::uint64_t uid,
                               std::uint64_t ufId,
                               bool* alreadyDeleted) {
-    if (alreadyDeleted == NULL || uid == 0 || ufId == 0) {
+    if (alreadyDeleted == nullptr || uid == 0 || ufId == 0) {
         return ErrorCode::InvalidArgument;
     }
     *alreadyDeleted = false;
@@ -793,7 +793,7 @@ ErrorCode FileDao::softDelete(std::uint64_t uid,
     bool isDir = false;
     std::string deletedAt;
     const ErrorCode locked =
-        lockUserFile(m_conn, uid, ufId, &fid, &isDir, &deletedAt, NULL);
+        lockUserFile(m_conn, uid, ufId, &fid, &isDir, &deletedAt, nullptr);
     if (locked != ErrorCode::Ok) {
         return locked;
     }
@@ -818,7 +818,7 @@ ErrorCode FileDao::softDelete(std::uint64_t uid,
     }
 
     if (!isDir && fid != 0) {
-        const ErrorCode decremented = decrementBlobRef(m_conn, fid, NULL);
+        const ErrorCode decremented = decrementBlobRef(m_conn, fid, nullptr);
         if (decremented != ErrorCode::Ok) {
             return decremented;
         }
@@ -835,7 +835,7 @@ ErrorCode FileDao::restore(std::uint64_t uid,
                            std::uint64_t parentId,
                            const std::string& name,
                            RestoreOutcome* out) {
-    if (out == NULL || uid == 0 || ufId == 0 || name.empty() || name.size() > 255) {
+    if (out == nullptr || uid == 0 || ufId == 0 || name.empty() || name.size() > 255) {
         return ErrorCode::InvalidArgument;
     }
     *out = RestoreOutcome();
@@ -912,7 +912,7 @@ ErrorCode FileDao::restore(std::uint64_t uid,
 ErrorCode FileDao::purgeNode(std::uint64_t uid,
                              std::uint64_t ufId,
                              bool* deleted) {
-    if (deleted == NULL || uid == 0 || ufId == 0) {
+    if (deleted == nullptr || uid == 0 || ufId == 0) {
         return ErrorCode::InvalidArgument;
     }
     *deleted = false;
@@ -926,7 +926,7 @@ ErrorCode FileDao::purgeNode(std::uint64_t uid,
     bool isDir = false;
     std::string deletedAt;
     const ErrorCode locked =
-        lockUserFile(m_conn, uid, ufId, &fid, &isDir, &deletedAt, NULL);
+        lockUserFile(m_conn, uid, ufId, &fid, &isDir, &deletedAt, nullptr);
     if (locked != ErrorCode::Ok) {
         return locked;
     }
@@ -945,7 +945,7 @@ ErrorCode FileDao::purgeNode(std::uint64_t uid,
 
     // 软删时已减过计数；只有从未软删过的活跃文件节点需要在此补减一次。
     if (!isDir && fid != 0 && deletedAt == kActiveDeletedAt) {
-        const ErrorCode decremented = decrementBlobRef(m_conn, fid, NULL);
+        const ErrorCode decremented = decrementBlobRef(m_conn, fid, nullptr);
         if (decremented != ErrorCode::Ok) {
             return decremented;
         }
@@ -960,7 +960,7 @@ ErrorCode FileDao::purgeNode(std::uint64_t uid,
 
 ErrorCode FileDao::listRecycle(const RecycleListQuery& query,
                                RecycleListPage* page) {
-    if (page == NULL || query.uid == 0 || query.limit == 0 ||
+    if (page == nullptr || query.uid == 0 || query.limit == 0 ||
         query.limit > kMaxListLimit) {
         return ErrorCode::InvalidArgument;
     }
@@ -1053,7 +1053,7 @@ ErrorCode FileDao::listSubtree(std::uint64_t uid,
                                std::uint64_t rootUfId,
                                std::size_t maxNodes,
                                std::vector<UserFileRow>* out) {
-    if (out == NULL || uid == 0 || rootUfId == 0 || maxNodes == 0) {
+    if (out == nullptr || uid == 0 || rootUfId == 0 || maxNodes == 0) {
         return ErrorCode::InvalidArgument;
     }
     out->clear();
@@ -1111,7 +1111,7 @@ ErrorCode FileDao::listSubtree(std::uint64_t uid,
 ErrorCode FileDao::purgeNodesInTx(std::uint64_t uid,
                                   const std::vector<std::uint64_t>& ufIds,
                                   PurgeBatchResult* out) {
-    if (out == NULL || uid == 0) {
+    if (out == nullptr || uid == 0) {
         return ErrorCode::InvalidArgument;
     }
     *out = PurgeBatchResult();
@@ -1122,7 +1122,7 @@ ErrorCode FileDao::purgeNodesInTx(std::uint64_t uid,
         bool isDir = false;
         std::string deletedAt;
         const ErrorCode locked =
-            lockUserFile(m_conn, uid, ufIds[i], &fid, &isDir, &deletedAt, NULL);
+            lockUserFile(m_conn, uid, ufIds[i], &fid, &isDir, &deletedAt, nullptr);
         if (locked == ErrorCode::NotFound) {
             continue;  // 已删（重跑幂等），跳过
         }

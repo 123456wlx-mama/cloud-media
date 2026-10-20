@@ -22,7 +22,7 @@ PlayCleanupJob::PlayCleanupJob(cm::db::MysqlPool& mysql, std::size_t batch)
 }
 
 ErrorCode PlayCleanupJob::runOnce(std::uint64_t* deleted) {
-    if (deleted != NULL) {
+    if (deleted != nullptr) {
         *deleted = 0;
     }
     if (m_batch == 0) {

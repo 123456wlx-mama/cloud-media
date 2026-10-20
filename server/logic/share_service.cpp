@@ -81,7 +81,7 @@ bool makeToken(std::string* token) {
 }
 
 bool parseUnsigned(const std::string& text, std::uint64_t* value) {
-    if (value == NULL || text.empty()) {
+    if (value == nullptr || text.empty()) {
         return false;
     }
     std::uint64_t parsed = 0;
@@ -217,7 +217,7 @@ std::string encodeMeta(const ShareMeta& meta) {
 }
 
 bool parseMeta(const std::string& value, ShareMeta* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return false;
     }
     std::size_t pos[6];
@@ -360,7 +360,7 @@ std::string ShareService::nextCode() const {
 ErrorCode ShareService::create(std::uint64_t uid,
                                const cm::protocol::ShareCreateRq& rq,
                                cm::protocol::ShareCreateRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ShareCreateRs();
@@ -466,7 +466,7 @@ ErrorCode ShareService::create(std::uint64_t uid,
 ErrorCode ShareService::open(const cm::protocol::ShareOpenRq& rq,
                              const std::string& clientKey,
                              cm::protocol::ShareOpenRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ShareOpenRs();
@@ -611,7 +611,7 @@ ErrorCode ShareService::open(const cm::protocol::ShareOpenRq& rq,
 ErrorCode ShareService::list(std::uint64_t uid,
                               const cm::protocol::ShareListRq& rq,
                               cm::protocol::ShareListRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ShareListRs();
@@ -687,7 +687,7 @@ ErrorCode ShareService::list(std::uint64_t uid,
 ErrorCode ShareService::cancel(std::uint64_t uid,
                                const cm::protocol::ShareCancelRq& rq,
                                cm::protocol::ShareCancelRs* out) {
-    if (out == NULL) {
+    if (out == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     *out = cm::protocol::ShareCancelRs();

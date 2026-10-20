@@ -25,12 +25,12 @@ class TimersIntegrationTest : public cm::test::DaoTestBase {
 protected:
     void SetUp() override {
         cm::test::DaoTestBase::SetUp();
-        if (m_pool == NULL) {
+        if (m_pool == nullptr) {
             return;  // 基类已 GTEST_SKIP（缺 MySQL）
         }
         char templ[] = "/tmp/cm_timers_XXXXXX";
         char* dir = ::mkdtemp(templ);
-        ASSERT_TRUE(dir != NULL) << "mkdtemp failed";
+        ASSERT_TRUE(dir != nullptr) << "mkdtemp failed";
         m_root = std::string(dir);
         createUser();
     }
@@ -157,7 +157,7 @@ TEST_F(TimersIntegrationTest, TimerGcBatch) {
     cm::logic::OrphanGcJob job(*m_pool, m_root,
                                [](const std::string&) { return true; });
     std::size_t deleted = 0;
-    ASSERT_EQ(cm::ErrorCode::Ok, job.runOnce(&deleted, NULL));
+    ASSERT_EQ(cm::ErrorCode::Ok, job.runOnce(&deleted, nullptr));
     EXPECT_EQ(std::size_t(100), deleted);
 
     std::size_t remaining = 0;

@@ -45,7 +45,7 @@ void TokenBucket::refill() {
 
 cm::ErrorCode TokenBucket::tryAcquire(std::uint64_t lenBytes,
                                       std::uint64_t* waitMs) {
-    if (waitMs != NULL) {
+    if (waitMs != nullptr) {
         *waitMs = 0;
     }
 
@@ -63,7 +63,7 @@ cm::ErrorCode TokenBucket::tryAcquire(std::uint64_t lenBytes,
     const double waitMsD = need * 1000.0 / static_cast<double>(m_rate);
     const std::uint64_t waitMillis =
         static_cast<std::uint64_t>(std::ceil(waitMsD));
-    if (waitMs != NULL) {
+    if (waitMs != nullptr) {
         *waitMs = waitMillis;
     }
     if (waitMillis > kMaxWaitMs) {

@@ -13,7 +13,7 @@ namespace protocol {
 
 ErrorCode Codec::encode(std::uint16_t type, std::uint32_t seq,
                         const std::string& payload, std::string* frame) {
-    if (frame == NULL || payload.size() > kMaxPayload) {
+    if (frame == nullptr || payload.size() > kMaxPayload) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -41,7 +41,7 @@ ErrorCode Codec::encode(std::uint16_t type, std::uint32_t seq,
 }
 
 ErrorCode Codec::decode(Buffer& in, Frame* out, DecodeStatus* status) {
-    if (out == NULL || status == NULL) {
+    if (out == nullptr || status == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     if (in.readableBytes() < kHeaderSize) {
@@ -101,7 +101,7 @@ ErrorCode Codec::decode(Buffer& in, Frame* out, DecodeStatus* status) {
 }
 
 ErrorCode Codec::decodeBulk(Buffer& in, RawFrame* out, DecodeStatus* status) {
-    if (out == NULL || status == NULL) {
+    if (out == nullptr || status == nullptr) {
         return ErrorCode::InvalidArgument;
     }
     if (in.readableBytes() < kHeaderSize) {

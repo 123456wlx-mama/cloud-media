@@ -49,7 +49,7 @@ void matrixSquare(std::uint32_t* square, const std::uint32_t* matrix) {
 Crc32::Crc32() : crc_(0xFFFFFFFFu) {}
 
 void Crc32::update(const void* data, std::size_t len) {
-    if (data == NULL || len == 0) {
+    if (data == nullptr || len == 0) {
         return;
     }
     const std::uint8_t* bytes = static_cast<const std::uint8_t*>(data);
