@@ -29,17 +29,30 @@ jobs:
 
       - name: start mysql and redis
         run: |
-          sudo service mysql start
-          sudo service redis-server start
+          sudo service mysql start || sudo systemctl start mysql
+          sudo service redis-server start || sudo systemctl start redis-server
           redis-cli ping
+          # GitHub ubuntu-22.04 上 service start 返回成功但 mysqld 可能尚未就绪，
+          # 紧接着的 sudo mysql 会撞上 socket 未建立。这里轮询到真正可连为止（最长 60s）。
+          for i in $(seq 1 60); do
+            if sudo mysqladmin ping --silent 2>/dev/null; then
+              echo "mysql ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sudo mysqladmin ping
 
       - name: init test database
         run: |
+          set -euo pipefail
           sudo mysql <<'SQL'
           CREATE DATABASE IF NOT EXISTS cloud_media_test
             DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-          CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED BY 'cm_test_pw_ci';
+          CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
+          CREATE USER IF NOT EXISTS 'cm_test'@'localhost' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
           GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'%';
+          GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'localhost';
           FLUSH PRIVILEGES;
           SQL
           mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/schema_v2.sql
