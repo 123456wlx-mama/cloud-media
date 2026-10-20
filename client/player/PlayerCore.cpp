@@ -37,7 +37,14 @@ namespace {
 
 const int kAudioBufferBytes = 192000 * 4;  // 一帧 PCM 上限（S16 立体声）
 const int kTickMs = 200;
+// 音画同步阈值（面试要能解释清楚，全部具名）：
+// - 视频比音频早 <=8ms：不等待（容差，避免每帧都 sleep）
+// - 视频比音频晚 >120ms：丢帧追赶（人眼对"画面落后"更敏感，宁可丢帧也不拖音频）
+// - seek 后 pts 早于目标 20ms 内的帧视为旧位置残留，直接丢
 const double kSyncSlopMs = 8.0;
+const double kVideoDropMs = 120.0;
+const double kSeekDropSlopMs = 20.0;
+const double kAudioSampleRate = 44100.0;
 
 std::string avErrorText(int code) {
     char buf[256];
@@ -60,6 +67,8 @@ struct PlayerCore::Impl {
           swsW(0), swsH(0),
           quit(false), paused(false), seekReq(false), seekTargetMs(0),
           positionMs(0), durationMs(0), audioClockMs(0.0), audioClockValid(false),
+          audioFramePts(0.0), audioFrameConsumed(0), seekDropMs(0), seekGen(0),
+          droppedFrames(0),
           wallStarted(false), wallStartMs(0.0), wallStartPts(0.0), volume(80),
           firstFrame(false), readFinished(false), videoDone(false),
           endedEmitted(false), audioDev(0), aFrame(nullptr), audioBufSize(0),
@@ -95,6 +104,14 @@ struct PlayerCore::Impl {
     std::atomic<qint64> durationMs;
     std::atomic<double> audioClockMs;
     std::atomic<bool> audioClockValid;
+    // 音频时钟按"已交给声卡的样本数"推进：帧起点 pts + 已消费样本/采样率
+    std::atomic<double> audioFramePts;
+    std::atomic<int> audioFrameConsumed;
+    // seek 屏障：早于该时刻的音频/视频帧直接丢弃（0=无）
+    std::atomic<qint64> seekDropMs;
+    // seek 代数：seek 时自增；解码线程发现"包的代数"变了就丢弃手上海帧（防回跳）
+    std::atomic<int> seekGen;
+    std::atomic<int> droppedFrames;
     std::atomic<bool> wallStarted;
     std::atomic<double> wallStartMs;
     std::atomic<double> wallStartPts;
@@ -402,9 +419,13 @@ void PlayerCore::Impl::doSeek() {
         audioBufSize = 0;
         audioBufIndex = 0;
     }
+    ++seekGen;  // 与 flush 同一时刻生效：此后解码出的旧包帧全部作废
     positionMs = targetMs;
     audioClockMs = static_cast<double>(targetMs);
     audioClockValid = audioIndex >= 0;
+    audioFramePts = static_cast<double>(targetMs);
+    audioFrameConsumed = 0;
+    seekDropMs = targetMs;  // 早于目标的旧帧一律丢弃，避免 seek 后画面/声音回跳
     wallStarted = false;
     readFinished = false;
     endedEmitted = false;
@@ -477,12 +498,14 @@ void PlayerCore::Impl::resetWallClock(double ptsMs) {
 }
 
 void PlayerCore::Impl::syncToClock(double ptsMs) {
+    // 无音频（或音频时钟还没起来）时用系统时钟做基准。锚点必须等"确认有效"的帧
+    // 交付前再设（videoLoop 里做），否则 seek 时一张旧帧会把基准锚回旧位置。
+    if ((audioDev == 0 || !audioClockValid.load()) && !wallStarted.load()) {
+        return;
+    }
     for (int i = 0; i < 400 && !quit; ++i) {
         if (paused) {
             return;
-        }
-        if (!wallStarted.load()) {
-            resetWallClock(ptsMs);
         }
         const double diff = ptsMs - referenceClockMs();
         if (diff <= kSyncSlopMs) {
@@ -549,6 +572,7 @@ void PlayerCore::Impl::videoLoop() {
             }
             continue;
         }
+        const int packetGen = seekGen.load();
         if (avcodec_send_packet(vctx, packet) < 0) {
             av_packet_unref(packet);
             continue;
@@ -572,20 +596,63 @@ void PlayerCore::Impl::videoLoop() {
             if (frame->pkt_duration > 0 && vstream != nullptr) {
                 frameDuration = frame->pkt_duration * av_q2d(vstream->time_base) * 1000.0;
             }
+            // 这个包是 seek 之前入队的：它解出来的帧一律作废（否则向后 seek 会回跳）
+            if (seekGen.load() != packetGen) {
+                av_frame_unref(frame);
+                continue;
+            }
+            // seek 屏障：目标之前的帧是旧位置残留，直接丢（防止回跳/花屏）
+            const qint64 drop = seekDropMs.load();
+            if (drop > 0 && ptsMs < static_cast<double>(drop) - kSeekDropSlopMs) {
+                av_frame_unref(frame);
+                continue;
+            }
             if (lastPts >= 0.0 && ptsMs < lastPts - 1.0) {
-                // seek 后回退：交给新的 pts
                 lastPts = -1.0;
             }
+            // 视频落后音频超过 120ms：丢帧追赶，不做"慢放"（音频是主时钟）
+            if (audioDev != 0 && audioClockValid.load() &&
+                referenceClockMs() - ptsMs > kVideoDropMs) {
+                ++droppedFrames;
+                av_frame_unref(frame);
+                continue;
+            }
             syncToClock(ptsMs);
+            // 等时钟的过程中可能又发生了 seek：交付前必须用最新状态再判一次
+            if (seekGen.load() != packetGen) {
+                av_frame_unref(frame);
+                continue;
+            }
+            const qint64 dropAfterWait = seekDropMs.load();
+            if (dropAfterWait > 0 &&
+                ptsMs < static_cast<double>(dropAfterWait) - kSeekDropSlopMs) {
+                av_frame_unref(frame);
+                continue;
+            }
+            if (audioDev != 0 && audioClockValid.load() &&
+                referenceClockMs() - ptsMs > kVideoDropMs) {
+                ++droppedFrames;
+                av_frame_unref(frame);
+                continue;
+            }
             if (paused.load() || quit.load()) {
                 av_frame_unref(frame);
                 continue;
             }
-            deliverFrame(frame);
-            lastPts = ptsMs;
-            positionMs = static_cast<qint64>(ptsMs);
-            if (!firstFrame.exchange(true)) {
-                q->bufferingChanged(false);
+            if (dropAfterWait > 0) {
+                seekDropMs = 0;  // 只有真正要渲染 target 之后的帧才解除屏障
+            }
+            if ((audioDev == 0 || !audioClockValid.load()) && !wallStarted.load()) {
+                resetWallClock(ptsMs);  // 无音频：用首个有效帧锚定系统时钟
+            }
+            if (deliverFrame(frame)) {
+                lastPts = ptsMs;
+                positionMs = static_cast<qint64>(ptsMs);
+                q->frameSync(static_cast<qint64>(ptsMs),
+                             static_cast<qint64>(referenceClockMs()));
+                if (!firstFrame.exchange(true)) {
+                    q->bufferingChanged(false);
+                }
             }
             av_frame_unref(frame);
         }
@@ -606,10 +673,24 @@ int PlayerCore::Impl::decodeAudio(std::uint8_t* out, int maxBytes) {
         const int rc = avcodec_receive_frame(actx, aFrame);
         if (rc == 0) {
             const std::int64_t pts = aFrame->best_effort_timestamp;
+            double framePts = audioClockMs.load();
             if (pts != AV_NOPTS_VALUE && astream != nullptr) {
-                audioClockMs = static_cast<double>(pts) * av_q2d(astream->time_base) * 1000.0;
-                audioClockValid = true;
+                framePts = static_cast<double>(pts) * av_q2d(astream->time_base) * 1000.0;
             }
+            const qint64 drop = seekDropMs.load();
+            if (drop > 0 && framePts < static_cast<double>(drop) - kSeekDropSlopMs) {
+                av_frame_unref(aFrame);  // seek 前的音频：丢掉，别让时钟倒退
+                continue;
+            }
+            if (drop > 0) {
+                seekDropMs = 0;
+            }
+            audioFramePts = framePts;
+            audioFrameConsumed = 0;
+            if (framePts > audioClockMs.load()) {
+                audioClockMs = framePts;  // 单调不回退
+            }
+            audioClockValid = true;
             const int maxSamples = maxBytes / 4;  // S16 立体声
             std::uint8_t* dst[1] = {out};
             const std::uint8_t* inData[AV_NUM_DATA_POINTERS];
@@ -676,6 +757,15 @@ void PlayerCore::Impl::fillAudio(std::uint8_t* stream, int len) {
         audioBufIndex += chunk;
         offset += chunk;
         len -= chunk;
+        // 音频时钟 = 当前帧起点 + 已交给声卡的样本数/采样率（单调递增）
+        int consumed = audioFrameConsumed.load() + samples;
+        audioFrameConsumed = consumed;
+        const double played =
+            audioFramePts.load() +
+            static_cast<double>(consumed) * 1000.0 / kAudioSampleRate;
+        if (played > audioClockMs.load()) {
+            audioClockMs = played;
+        }
     }
 }
 
@@ -789,9 +879,8 @@ void PlayerCore::seek(qint64 ms) {
     }
     m_impl->seekTargetMs = ms;
     m_impl->seekReq = true;
-    m_impl->positionMs = ms;
-    m_impl->audioClockMs = static_cast<double>(ms);
-    m_impl->resetWallClock(static_cast<double>(ms));
+    m_impl->positionMs = ms;  // 只让 UI 立刻跟手；时钟基准必须等 demux 线程 flush 后
+                              // 在 doSeek 里重置，否则旧帧会和新时钟打架（漂移 50s）
 }
 
 void PlayerCore::setVolume(int percent) {
@@ -832,6 +921,16 @@ QString PlayerCore::errorText() const { return m_impl->errorText; }
 
 qint64 PlayerCore::availableBytes() const {
     return m_impl->io != nullptr ? m_impl->io->availableBytes() : 0;
+}
+
+qint64 PlayerCore::audioClockMs() const {
+    return static_cast<qint64>(m_impl->audioClockMs.load());
+}
+
+int PlayerCore::droppedFrames() const { return m_impl->droppedFrames.load(); }
+
+bool PlayerCore::hasAudio() const {
+    return m_impl->audioIndex >= 0 && m_impl->audioDev != 0;
 }
 
 }  // namespace player

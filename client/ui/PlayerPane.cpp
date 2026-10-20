@@ -2,6 +2,7 @@
 
 #include <cstdio>
 
+#include <QDebug>
 #include <QDesktopServices>
 #include <QFile>
 #include <QFileInfo>
@@ -16,7 +17,7 @@
 
 #include "player/PlayerCore.h"
 #include "transfer/TransferQueue.h"
-#include "ui/VideoCanvas.h"
+#include "ui/VideoSurface.h"
 
 namespace cm {
 namespace ui {
@@ -40,8 +41,9 @@ const char* kSpinFrames[] = {"◐", "◓", "◑", "◒"};
 
 }  // namespace
 
-PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent)
-    : QWidget(parent), m_queue(queue), m_player(nullptr), m_canvas(nullptr),
+PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
+                       bool forcePainter)
+    : QWidget(parent), m_queue(queue), m_player(nullptr), m_surface(nullptr),
       m_playButton(nullptr), m_slider(nullptr), m_timeLabel(nullptr),
       m_volume(nullptr), m_fullButton(nullptr), m_emptyHint(nullptr),
       m_overlay(nullptr), m_overlayLabel(nullptr), m_errorPanel(nullptr),
@@ -67,8 +69,9 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent)
     layout->addWidget(header);
 
     m_player = new player::PlayerCore(this);
-    m_canvas = new VideoCanvas(this);
-    layout->addWidget(m_canvas, 1);
+    m_surface = createVideoSurface(this, forcePainter);
+    qInfo("player surface: %s", qPrintable(m_surface->backendName()));
+    layout->addWidget(m_surface->widget(), 1);
 
     m_emptyHint = new QLabel(
         QString::fromUtf8("未选择文件\n在左侧双击视频即可起播"), this);
@@ -178,7 +181,7 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent)
 
     connect(m_player, &player::PlayerCore::frameReady, this,
             [this](const QImage& image) {
-                m_canvas->setImage(image);
+                m_surface->setImage(image);
                 m_emptyHint->hide();
             });
     connect(m_player, &player::PlayerCore::opened, this,
@@ -268,7 +271,7 @@ void PlayerPane::stop() {
     m_spinTimer->stop();
     m_buffering = false;
     hideOverlays();
-    m_canvas->clear();
+    m_surface->clear();
     m_slider->setValue(0);
     m_slider->setEnabled(false);
     m_playButton->setEnabled(false);
@@ -444,10 +447,10 @@ void PlayerPane::updateTimeLabel() {
 }
 
 void PlayerPane::layoutOverlays() {
-    if (m_canvas == nullptr) {
+    if (m_surface == nullptr) {
         return;
     }
-    const QRect area = m_canvas->geometry();
+    const QRect area = m_surface->widget()->geometry();
     const int overlayWidth = 180;
     const int overlayHeight = 56;
     m_overlay->setGeometry(area.center().x() - overlayWidth / 2,

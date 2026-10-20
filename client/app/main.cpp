@@ -18,6 +18,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -305,6 +306,151 @@ int runPlaybackSmoke(cm::netapi::NetClient* net, cm::transfer::TransferQueue* qu
     return 0;
 }
 
+// P9-1 回归自检：seek 风暴 / 暂停恢复 / 音量 0-100 / 无音频轨。
+// 每帧通过 frameSync 采样 |视频 pts - 主时钟|，日志里给 max/当前漂移。
+struct SelftestState {
+    cm::player::PlayerCore* player;
+    QElapsedTimer clock;
+    int frames;
+    int framesAtVolume0;
+    double maxDrift;
+    double lastDrift;
+    int driftSamples;
+    qint64 posAtPause;
+    bool opened;
+
+    SelftestState() : player(nullptr), frames(0), framesAtVolume0(0), maxDrift(0.0),
+                      lastDrift(0.0), driftSamples(0), posAtPause(0), opened(false) {}
+
+    void resetDrift() {
+        maxDrift = 0.0;
+        lastDrift = 0.0;
+        driftSamples = 0;
+    }
+};
+
+SelftestState g_selftest;
+
+int runPlayerSelftest(const QString& path) {
+    g_selftest = SelftestState();
+    g_selftest.player = new cm::player::PlayerCore();
+    g_selftest.clock.start();
+    cm::player::PlayerCore* player = g_selftest.player;
+
+    QObject::connect(player, &cm::player::PlayerCore::frameSync,
+                     [](qint64 videoPts, qint64 clockMs) {
+        const double drift = std::fabs(static_cast<double>(videoPts - clockMs));
+        static int spikes = 0;
+        if (drift > 1000.0 && spikes < 8) {
+            ++spikes;
+            std::printf("SELFTEST_SPIKE video_pts=%lld clock=%lld drift=%.0f\n",
+                        static_cast<long long>(videoPts),
+                        static_cast<long long>(clockMs), drift);
+            std::fflush(stdout);
+        }
+        g_selftest.lastDrift = drift;
+        if (drift > g_selftest.maxDrift) {
+            g_selftest.maxDrift = drift;
+        }
+        ++g_selftest.driftSamples;
+    });
+    QObject::connect(player, &cm::player::PlayerCore::frameReady,
+                     [](const QImage&) { ++g_selftest.frames; });
+    QObject::connect(player, &cm::player::PlayerCore::opened,
+                     [](qint64 durationMs, int w, int h) {
+        g_selftest.opened = true;
+        std::printf("SELFTEST_OPEN duration_ms=%lld %dx%d has_audio=%d\n",
+                    static_cast<long long>(durationMs), w, h,
+                    g_selftest.player->hasAudio() ? 1 : 0);
+        std::fflush(stdout);
+    });
+    QObject::connect(player, &cm::player::PlayerCore::errorChanged,
+                     [](const QString& text) {
+        std::printf("SELFTEST_ERROR %s\n", text.toUtf8().constData());
+        std::fflush(stdout);
+        QCoreApplication::exit(5);
+    });
+
+    player->open(path, false);
+    player->play();
+
+    QTimer::singleShot(2000, []() {
+        std::printf("SELFTEST[base] pos_ms=%lld drift_ms=%.0f\n",
+                    static_cast<long long>(g_selftest.player->position()),
+                    g_selftest.lastDrift);
+        std::fflush(stdout);
+        g_selftest.resetDrift();
+    });
+    for (int i = 0; i < 20; ++i) {
+        QTimer::singleShot(2100 + i * 150, []() {
+            static int index = 0;
+            const qint64 duration = g_selftest.player->duration();
+            const int pct[] = {8, 92, 33, 66};
+            const qint64 target = duration * pct[index % 4] / 100;
+            ++index;
+            g_selftest.player->seek(target);
+        });
+    }
+    QTimer::singleShot(5600, []() {
+        std::printf("SELFTEST[seek-storm] seeks=20 pos_ms=%lld max_drift_ms=%.0f "
+                    "samples=%d dropped=%d\n",
+                    static_cast<long long>(g_selftest.player->position()),
+                    g_selftest.maxDrift, g_selftest.driftSamples,
+                    g_selftest.player->droppedFrames());
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(5700, []() {
+        g_selftest.posAtPause = g_selftest.player->position();
+        g_selftest.player->pause();
+        std::printf("SELFTEST[pause] pos_ms=%lld clock_ms=%lld\n",
+                    static_cast<long long>(g_selftest.posAtPause),
+                    static_cast<long long>(g_selftest.player->audioClockMs()));
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(7200, []() {
+        g_selftest.player->play();
+        g_selftest.resetDrift();
+        std::printf("SELFTEST[resume] pos_ms=%lld\n",
+                    static_cast<long long>(g_selftest.player->position()));
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(8600, []() {
+        std::printf("SELFTEST[pause-resume] pos_ms=%lld drift_ms=%.0f max_drift_ms=%.0f\n",
+                    static_cast<long long>(g_selftest.player->position()),
+                    g_selftest.lastDrift, g_selftest.maxDrift);
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(8700, []() {
+        g_selftest.framesAtVolume0 = g_selftest.frames;
+        g_selftest.player->setVolume(0);
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(9700, []() {
+        std::printf("SELFTEST[volume-0] frames_since=%d pos_ms=%lld\n",
+                    g_selftest.frames - g_selftest.framesAtVolume0,
+                    static_cast<long long>(g_selftest.player->position()));
+        std::fflush(stdout);
+        g_selftest.framesAtVolume0 = g_selftest.frames;
+        g_selftest.player->setVolume(100);
+    });
+    QTimer::singleShot(10700, []() {
+        std::printf("SELFTEST[volume-100] frames_since=%d pos_ms=%lld\n",
+                    g_selftest.frames - g_selftest.framesAtVolume0,
+                    static_cast<long long>(g_selftest.player->position()));
+        std::fflush(stdout);
+    });
+    QTimer::singleShot(11200, []() {
+        g_selftest.player->close();
+        std::printf("SELFTEST_DONE frames=%d max_drift_ms=%.0f dropped=%d\n",
+                    g_selftest.frames, g_selftest.maxDrift,
+                    g_selftest.player->droppedFrames());
+        std::printf("SELFTEST_OK\n");
+        std::fflush(stdout);
+        QCoreApplication::exit(0);
+    });
+    return 0;
+}
+
 struct Options {
     QString host;
     quint16 port;
@@ -313,17 +459,19 @@ struct Options {
     cm::app::SmokeOptions smoke;
     bool demo;
     bool smokeMode;
+    bool painter;
     QString screenshot;
     QString playFile;
     QString playUfId;
     QString playLocal;
     QString playRemoteUfId;
     QString playShareCode;
+    QString playSelftest;
     QString shareUfId;
     int shotDelayMs;
 
     Options() : host(QString::fromUtf8("127.0.0.1")), port(8004),
-                demo(false), smokeMode(false), shotDelayMs(2500) {}
+                demo(false), smokeMode(false), painter(false), shotDelayMs(2500) {}
 };
 
 void applyTheme(QApplication* app) {
@@ -383,12 +531,16 @@ int main(int argc, char** argv) {
             opt.demo = true;
         } else if (arg == "--smoke") {
             opt.smokeMode = true;
+        } else if (arg == "--painter") {
+            opt.painter = true;  // 强制 QPainter 渲染后端（远程桌面/无 GL）
         } else if (arg == "--auto-resume") {
             opt.smoke.autoResume = true;
         } else if (arg == "--play-file" && i + 1 < argc) {
             opt.playFile = QString::fromStdString(argv[++i]);
         } else if (arg == "--play-local" && i + 1 < argc) {
             opt.playLocal = QString::fromStdString(argv[++i]);
+        } else if (arg == "--play-selftest" && i + 1 < argc) {
+            opt.playSelftest = QString::fromStdString(argv[++i]);
         } else if (arg == "--ui-share" && i + 1 < argc) {
             opt.shareUfId = QString::fromStdString(argv[++i]);
         } else if (arg == "--play-share" && i + 1 < argc) {
@@ -410,6 +562,10 @@ int main(int argc, char** argv) {
 
     if (!opt.playFile.isEmpty()) {
         runPlayFile(opt.playFile);
+        return app.exec();
+    }
+    if (!opt.playSelftest.isEmpty()) {
+        runPlayerSelftest(opt.playSelftest);
         return app.exec();
     }
 
@@ -441,7 +597,7 @@ int main(int argc, char** argv) {
     }
 
     if (opt.demo) {
-        cm::ui::MainWindow window(&net, &queue);
+        cm::ui::MainWindow window(&net, &queue, nullptr, opt.painter);
         window.show();
         if (!opt.screenshot.isEmpty()) {
             const QString path = opt.screenshot;
@@ -459,12 +615,12 @@ int main(int argc, char** argv) {
         if (login.exec() != QDialog::Accepted) {
             return 0;
         }
-        cm::ui::MainWindow window(&net, &queue);
+        cm::ui::MainWindow window(&net, &queue, nullptr, opt.painter);
         window.show();
         return app.exec();
     }
 
-    cm::ui::MainWindow window(&net, &queue);
+    cm::ui::MainWindow window(&net, &queue, nullptr, opt.painter);
     window.show();
     net.login(opt.tel, opt.password);
     if (!opt.playLocal.isEmpty()) {

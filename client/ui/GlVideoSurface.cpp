@@ -1,6 +1,8 @@
-#include "ui/VideoCanvas.h"
+#include "ui/GlVideoSurface.h"
 
 #include <QOpenGLShaderProgram>
+
+#include "ui/Letterbox.h"
 
 namespace cm {
 namespace ui {
@@ -30,13 +32,13 @@ const float kQuad[] = {
 
 }  // namespace
 
-VideoCanvas::VideoCanvas(QWidget* parent)
+GlVideoSurface::GlVideoSurface(QWidget* parent)
     : QOpenGLWidget(parent), m_program(nullptr), m_texture(0), m_dirty(false) {
     setObjectName(QString::fromUtf8("videoCanvas"));
     setMinimumSize(160, 90);
 }
 
-VideoCanvas::~VideoCanvas() {
+GlVideoSurface::~GlVideoSurface() {
     if (m_texture != 0) {
         makeCurrent();
         glDeleteTextures(1, &m_texture);
@@ -44,7 +46,7 @@ VideoCanvas::~VideoCanvas() {
     }
 }
 
-void VideoCanvas::setImage(const QImage& image) {
+void GlVideoSurface::setImage(const QImage& image) {
     if (image.isNull()) {
         return;
     }
@@ -53,13 +55,13 @@ void VideoCanvas::setImage(const QImage& image) {
     update();
 }
 
-void VideoCanvas::clear() {
+void GlVideoSurface::clear() {
     m_image = QImage();
     m_dirty = true;
     update();
 }
 
-void VideoCanvas::initializeGL() {
+void GlVideoSurface::initializeGL() {
     initializeOpenGLFunctions();
     glGenTextures(1, &m_texture);
     glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -81,7 +83,7 @@ void VideoCanvas::initializeGL() {
     m_vbo.release();
 }
 
-void VideoCanvas::paintGL() {
+void GlVideoSurface::paintGL() {
     glClearColor(0.07f, 0.09f, 0.11f, 1.0f);  // bg-base #12161B
     glClear(GL_COLOR_BUFFER_BIT);
     if (m_image.isNull() || m_program == nullptr) {
@@ -96,22 +98,9 @@ void VideoCanvas::paintGL() {
         m_dirty = false;
     }
 
-    const double imgAspect = static_cast<double>(m_image.width()) /
-                             static_cast<double>(m_image.height());
-    const double widgetAspect = static_cast<double>(width()) /
-                                static_cast<double>(height() > 0 ? height() : 1);
-    int vx = 0;
-    int vy = 0;
-    int vw = width();
-    int vh = height();
-    if (imgAspect > widgetAspect) {
-        vh = static_cast<int>(width() / imgAspect);
-        vy = (height() - vh) / 2;
-    } else {
-        vw = static_cast<int>(height() * imgAspect);
-        vx = (width() - vw) / 2;
-    }
-    glViewport(vx, vy, vw, vh);
+    const QRect box = letterboxRect(m_image.size(), size());
+    glViewport(box.x(), height() - box.y() - box.height(), box.width(),
+               box.height());
 
     m_program->bind();
     m_vbo.bind();

@@ -81,6 +81,21 @@ set_target_properties(client_flow_tests PROPERTIES
 )
 add_test(NAME client_flow_tests COMMAND client_flow_tests)
 
+add_executable(client_ui_tests
+    test_letterbox.cpp
+)
+target_include_directories(client_ui_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(client_ui_tests PRIVATE
+    cm_compile_options
+    GTest::gtest
+    GTest::gtest_main
+    Qt5::Core
+)
+set_target_properties(client_ui_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME client_ui_tests COMMAND client_ui_tests)
+
 # ctest 继承的 PATH 里可能有 64 位 MinGW（cmake 自带那套），
 # 32 位 exe 会加载到 64 位 libstdc++-6.dll 直接 0xc000007b。
 get_filename_component(_cm_mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -92,6 +107,6 @@ endif()
 # 注意：ENVIRONMENT 的值是 CMake 列表，分隔符 ; 必须转义，否则第二条会被吞掉。
 string(REPLACE ";" "\\;" _cm_test_path "${_cm_mingw_bin};${_cm_qt_bin}/bin")
 set_tests_properties(client_netapi_tests client_transfer_tests client_sqlapi_tests
-    client_flow_tests
+    client_flow_tests client_ui_tests
     PROPERTIES ENVIRONMENT "PATH=${_cm_test_path}"
 )

@@ -43,7 +43,7 @@ class MainWindow : public QMainWindow {
 
 public:
     MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
-               QWidget* parent = nullptr);
+               QWidget* parent = nullptr, bool forcePainter = false);
     ~MainWindow() override;
 
 public slots:
@@ -107,6 +107,7 @@ private:
     QPushButton* m_upButton;
     QPushButton* m_moreButton;
     Toast* m_toast;
+    bool m_forcePainter;
 
     // 面包屑栈：(ufId, 显示名)，首项固定为 (0, 全部文件)
     QVector<QPair<quint64, QString> > m_path;

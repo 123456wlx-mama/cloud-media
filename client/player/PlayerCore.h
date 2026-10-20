@@ -48,6 +48,10 @@ public:
     QString path() const;
     QString errorText() const;
     qint64 availableBytes() const;
+    // 诊断：当前音频时钟 / 累计丢帧数 / 是否有音频轨（回归日志用）
+    qint64 audioClockMs() const;
+    int droppedFrames() const;
+    bool hasAudio() const;
 
 signals:
     void opened(qint64 durationMs, int width, int height);
@@ -57,6 +61,8 @@ signals:
     void frameReady(const QImage& image);
     void ended();
     void errorChanged(const QString& text);
+    // 每渲染一帧发一次：视频 pts 与当前主时钟（音频或系统），用于同步漂移取证
+    void frameSync(qint64 videoPtsMs, qint64 clockMs);
 
 private:
     struct Impl;

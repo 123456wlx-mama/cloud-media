@@ -48,14 +48,14 @@ bool isVideoFile(const QString& name) {
 }  // namespace
 
 MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
-                       QWidget* parent)
+                       QWidget* parent, bool forcePainter)
     : QMainWindow(parent), m_net(net), m_queue(queue), m_share(nullptr),
       m_recycle(nullptr), m_transferPane(nullptr), m_playerPane(nullptr),
       m_splitter(nullptr),
       m_model(nullptr), m_table(nullptr), m_fileEmpty(nullptr),
       m_linkBadge(nullptr), m_listHint(nullptr), m_pathLabel(nullptr),
       m_upButton(nullptr), m_moreButton(nullptr), m_toast(nullptr),
-      m_cursorId(0), m_hasMore(false) {
+      m_forcePainter(forcePainter), m_cursorId(0), m_hasMore(false) {
     setWindowTitle(QString::fromUtf8("cloud-media"));
     resize(1280, 800);
 
@@ -341,7 +341,7 @@ QWidget* MainWindow::buildPlayerPane() {
         return buildPane(QString::fromUtf8("播放"), QString::fromUtf8(kPlayerHint),
                          QString::fromUtf8("playerPane"));
     }
-    m_playerPane = new PlayerPane(m_queue, this);
+    m_playerPane = new PlayerPane(m_queue, this, m_forcePainter);
     connect(m_playerPane, &PlayerPane::notice, this, [this](const QString& text) {
         if (m_toast != nullptr) {
             m_toast->showText(text);

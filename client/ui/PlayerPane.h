@@ -20,7 +20,7 @@ class TransferQueue;
 
 namespace ui {
 
-class VideoCanvas;
+class VideoSurface;
 
 // 播放区：渲染画布 + 控制条（播放/暂停、进度、音量、全屏）+ 缓冲/失败态。
 // 只调 PlayerCore 的 Qt 接口，不碰 FFmpeg/SDL（契约 §1.2、依赖红线）。
@@ -28,7 +28,9 @@ class PlayerPane : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PlayerPane(transfer::TransferQueue* queue, QWidget* parent = nullptr);
+    // forcePainter=true 时强制走 QPainter 后端（远程桌面/无 GL 环境）
+    explicit PlayerPane(transfer::TransferQueue* queue, QWidget* parent = nullptr,
+                        bool forcePainter = false);
     ~PlayerPane() override;
 
 public slots:
@@ -69,7 +71,7 @@ private:
 
     transfer::TransferQueue* m_queue;
     player::PlayerCore* m_player;
-    VideoCanvas* m_canvas;
+    VideoSurface* m_surface;
     QPushButton* m_playButton;
     QSlider* m_slider;
     QLabel* m_timeLabel;

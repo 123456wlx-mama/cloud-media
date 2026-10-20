@@ -51,8 +51,13 @@ add_executable(cloud-media-client
     ui/TransferPane.h
     ui/PlayerPane.cpp
     ui/PlayerPane.h
-    ui/VideoCanvas.cpp
-    ui/VideoCanvas.h
+    ui/VideoSurface.cpp
+    ui/VideoSurface.h
+    ui/GlVideoSurface.cpp
+    ui/GlVideoSurface.h
+    ui/PainterVideoSurface.cpp
+    ui/PainterVideoSurface.h
+    ui/Letterbox.h
     ui/Toast.cpp
     ui/Toast.h
     ui/ShareDialog.cpp
