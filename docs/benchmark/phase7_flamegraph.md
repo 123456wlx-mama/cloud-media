@@ -35,7 +35,7 @@ FlameGraph 脚本：GitHub 被墙（wget rc=4），走 gitee 镜像 `gitee.com/m
 | upload 10MB | `-c 100 -t 4 -size 10 --inflight 64`，record 30s | 4.3 file/s / 51.85 MB/s / p99 14.7s | 3730 | `flamegraph_upload_before.svg` |
 | list | `-c 1000 -t 4`，60s，record 30s | 2311 QPS / p99 588ms | 1138 | `flamegraph_list.svg` |
 
-> 采样期两个场景都低于 before 表（upload 84.7→51.9MB/s，list 3765→2311 QPS），原因是机器已累计约 20GB 上传（磁盘 63% 占用 + 脏页回写压力）。用同一个 Release 二进制复测 upload 得到 56.5MB/s，**证明这是环境劣化，与 build-prof / perf 无关**；热点占比不受影响（见 §1 对照表）。
+> 采样期两个场景都低于 before 表（upload 84.7→51.9MB/s，list 3765→2311 QPS）。**P7-5 复盘**：upload 的"84.7"本身是 bencher 计数器虚高（真实 ~42MB/s，见 phase7_bench_before.md §0），下降的真实原因是 compiz 抢占 0.67 核 + 磁盘已累计 20GB（P7-5 杀掉 compiz 后 list 回到 4310 QPS）。本条只影响**绝对值**，本文所有**占比与比值**（MD5 41%、CRC 28.6%、2 写 3 读）不受影响。
 
 ## 3. upload 10MB Top20
 
