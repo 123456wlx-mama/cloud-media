@@ -32,7 +32,9 @@ public slots:
     void start();
     void stop();
     void loginRequest(quint32 seq, const QString& tel, const QString& password);
-    void listRequest(quint32 seq, quint64 parentId, quint32 limit);
+    // 目录分页：cursorKey/cursorId 为空/0 表示首页（ListFileRs 透传）。
+    void listRequest(quint32 seq, quint64 parentId, quint32 limit,
+                     const QString& cursorKey, quint64 cursorId);
     // 通用请求：transfer 层自己组 payload（复用 common/protocol 的结构体），netapi 只负责收发。
     void sendRequest(quint16 type, quint32 seq, QByteArray payload);
 
@@ -40,7 +42,8 @@ signals:
     // state: 0=连接中 1=已连接 2=重连中 3=失败
     void linkState(int state, const QString& detail);
     void loginFinished(quint32 seq, quint32 code, quint64 uid, const QString& name);
-    void listFinished(quint32 seq, quint32 code, const QVariantList& rows);
+    void listFinished(quint32 seq, quint32 code, const QVariantList& rows,
+                      bool hasMore, const QString& nextKey, quint64 nextId);
     // 链路正常但服务端未在 5s 内响应（可重试）。
     void requestTimeout(quint32 seq, quint16 type);
     // 连接断开导致在途请求中止（不是失败：契约 §3 断网→任务暂停）。

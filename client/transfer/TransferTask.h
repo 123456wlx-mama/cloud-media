@@ -46,6 +46,7 @@ struct TransferTask {
     quint64 ufId;
     quint64 fId;
     QString ticket;
+    QString shareTicket;  // 非空 = 分享链接下载（DownloadOpenRq 用它替代 ufId）
     quint32 blockSize;
     quint32 blockCount;
     quint32 nextBlock;

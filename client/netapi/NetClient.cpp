@@ -20,8 +20,10 @@ NetClient::NetClient(QObject* parent)
             SLOT(onLinkState(int, QString)));
     connect(m_worker, SIGNAL(loginFinished(quint32, quint32, quint64, QString)),
             this, SLOT(onLoginFinished(quint32, quint32, quint64, QString)));
-    connect(m_worker, SIGNAL(listFinished(quint32, quint32, QVariantList)), this,
-            SLOT(onListFinished(quint32, quint32, QVariantList)));
+    connect(m_worker,
+            SIGNAL(listFinished(quint32, quint32, QVariantList, bool, QString, quint64)),
+            this,
+            SLOT(onListFinished(quint32, quint32, QVariantList, bool, QString, quint64)));
     connect(m_worker, SIGNAL(requestTimeout(quint32, quint16)), this,
             SLOT(onRequestTimeout(quint32, quint16)));
     connect(m_worker, SIGNAL(requestAborted(quint32, quint16, QString)), this,
@@ -69,11 +71,13 @@ void NetClient::login(const QString& tel, const QString& password) {
                               Q_ARG(QString, password));
 }
 
-void NetClient::listFiles(quint64 parentId, quint32 limit) {
+void NetClient::listFiles(quint64 parentId, quint32 limit,
+                          const QString& cursorKey, quint64 cursorId) {
     QMetaObject::invokeMethod(m_worker, "listRequest", Qt::QueuedConnection,
                               Q_ARG(quint32, nextSeq()),
                               Q_ARG(quint64, static_cast<quint64>(parentId)),
-                              Q_ARG(quint32, limit));
+                              Q_ARG(quint32, limit), Q_ARG(QString, cursorKey),
+                              Q_ARG(quint64, cursorId));
 }
 
 quint32 NetClient::sendRequest(quint16 type, const QByteArray& payload) {
@@ -105,9 +109,10 @@ void NetClient::onLoginFinished(quint32 seq, quint32 code, quint64 uid,
 }
 
 void NetClient::onListFinished(quint32 seq, quint32 code,
-                               const QVariantList& rows) {
+                               const QVariantList& rows, bool hasMore,
+                               const QString& nextKey, quint64 nextId) {
     Q_UNUSED(seq);
-    emit listFinished(code, rows);
+    emit listFinished(code, rows, hasMore, nextKey, nextId);
 }
 
 void NetClient::onRequestTimeout(quint32 seq, quint16 type) {

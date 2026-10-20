@@ -177,7 +177,9 @@ void TransferQueue::pauseForLink(TransferTask* task, const QString& message) {
 }
 
 void TransferQueue::finish(TransferTask* task) {
-    task->bytesDone = task->size;
+    if (!task->instant) {
+        task->bytesDone = task->size;  // 秒传没有真实字节流动，保持 0（契约 §3）
+    }
     setState(task, TaskState::Done);
     if (m_runningUploads > 0 && task->type == TaskType::Upload) {
         --m_runningUploads;
@@ -192,6 +194,9 @@ void TransferQueue::finish(TransferTask* task) {
     emit notice(task->instant ? QString::fromUtf8("%1 已秒传").arg(task->remoteName)
                               : QString::fromUtf8("%1 已完成").arg(task->remoteName),
                 false);
+    if (task->instant) {
+        emit instantUploaded(task->remoteName);
+    }
     touch(task->id, false);
     pump();
 }
@@ -204,6 +209,24 @@ int TransferQueue::enqueueUpload(const QString& localPath, const QString& remote
     task.remoteName = remoteName.isEmpty() ? QFileInfo(localPath).fileName()
                                            : remoteName;
     task.size = static_cast<quint64>(QFileInfo(localPath).size());
+    task.state = TaskState::Queued;
+    m_tasks.append(task);
+    touch(task.id, true);
+    pump();
+    return task.id;
+}
+
+int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
+                                         const QString& fileName, quint64 size) {
+    TransferTask task;
+    task.id = nextTaskId();
+    task.type = TaskType::Download;
+    task.ufId = 0;
+    task.shareTicket = shareTicket;
+    task.remoteName = fileName.isEmpty() ? QString::fromUtf8("shared_file.bin")
+                                         : fileName;
+    task.size = size;
+    task.localPath = QDir::tempPath() + QString::fromUtf8("/") + task.remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);
@@ -544,8 +567,9 @@ void TransferQueue::startDownload(TransferTask* task) {
         touch(task->id, false);
         return;
     }
-    // 有 .part.state 才发 DownloadStatRq 比对，否则直接 open。
-    if (QFile::exists(partStatePath(*task)) && loadPartState(task)) {
+    // 分享下载没有本账号的 ufId，DownloadStatRq 用不了：直接 open（票据里有 fId）。
+    if (task->shareTicket.isEmpty() && QFile::exists(partStatePath(*task)) &&
+        loadPartState(task)) {
         protocol::DownloadStatRq rq;
         rq.ufId = task->ufId;
         const QByteArray payload = encodePayload(rq);
@@ -562,6 +586,7 @@ void TransferQueue::startDownload(TransferTask* task) {
 void TransferQueue::requestDownloadOpen(TransferTask* task) {
     protocol::DownloadOpenRq rq;
     rq.ufId = task->ufId;
+    rq.shareTicket = task->shareTicket.toStdString();  // 分享下载时用票据替代 ufId
     rq.startBlock = 0;
     const QByteArray payload = encodePayload(rq);
     const quint32 seq = m_net->sendRequest(t(protocol::MessageType::DownloadOpenRq), payload);

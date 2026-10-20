@@ -25,8 +25,12 @@ public:
                         int role = Qt::DisplayRole) const override;
 
     void setRows(const QVariantList& rows);
+    void appendRows(const QVariantList& rows);
+    void clearRows();
     quint64 ufIdAt(int row) const;
     quint64 sizeAt(int row) const;
+    bool isDirAt(int row) const;
+    QString nameAt(int row) const;
 
 private:
     struct Row {

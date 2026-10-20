@@ -130,14 +130,73 @@ TASK 1 download state=已完成 bytes=20971520/20971520 blocks=5/5 fetched=2
 
 落盘 20971520 字节，`.part` / `.part.state` 已清理；`cm-tasks.db` 已加入 .gitignore。
 
+## 联调记录（P8-3 分享 / 回收站 / 秒传 / 分页）
+
+**代码落点**：`shareapi/ShareFlow`（创建/打开/取消 + 2003/2004 文案）、`recycleapi/RecycleFlow`
+（软删/恢复/列表/彻底删除）、`transfer` 增加 `enqueueSharedDownload` 与 `instantUploaded`、
+`ui/` 增加 `Toast`/`ShareDialog`/`ShareOpenDialog`/`RecycleDialog` 并补齐面包屑与分页。
+
+**证据（VM 192.168.142.131:8004，账号 p81）**
+
+~~~text
+# 1) 创建分享（右键分享 → ShareCreateRq）
+SHARE code=583GEH access=7329 required=1 expire=2026-10-27 19:59
+
+# 2) 错提取码 → 契约 §2.2 文案
+SHARE_FAIL code=2004 text=提取码错误
+
+# 3) 过期分享（把 s_expire_at 改到过去 + 失效缓存）→ 契约 §2.2 文案
+SHARE_FAIL code=2003 text=分享已过期
+
+# 3.5) 取消分享（ShareCancelRq）→ 再用同一码打开
+SHARE_CANCELLED Q55TQQ
+SHARE_FAIL code=2003 text=分享已过期      # 服务端把"已取消"归到 ShareExpired
+
+# 4) 用码打开 → shareTicket → 复用下载链路
+SHARE_OPEN_OK file=p82_big.bin size=20971520 ticket=yes
+TASK 1 download state=传输中 bytes=4194304/20971520 blocks=1/5 fetched=1
+TASK 1 download state=已完成 bytes=20971520/20971520 blocks=5/5 fetched=5
+
+# 5) 删除 → 回收站 → 撤销恢复
+DELETE_OK uf=30669 name=p81_demo.mp4
+RECYCLE_COUNT 1
+RECYCLE_ITEM uf=30669 p81_demo.mp4 size=2097152
+UNDO
+RESTORE_OK uf=30669 name=p81_demo.mp4
+RECYCLE_COUNT 0
+LIST code=0 rows=3 hasMore=0   # p81_demo.mp4 回到列表
+
+# 6) 秒传（同一 md5 换名上传）
+NOTICE OK p83_instant2.bin 已秒传
+INSTANT p83_instant2.bin
+TASK 1 upload state=已秒传 bytes=0/20971520 blocks=0/0 fetched=0
+
+# 7) 分页（--page-size 2）与目录导航（--cd <dirUfId>）
+LIST code=0 rows=2 hasMore=1
+PAGE next limit=2
+LIST code=0 rows=1 hasMore=0
+CD uf=30671
+LIST code=0 rows=1 hasMore=0
+ROW uf=30668 p81_report.pdf size=1048576 dir=0
+~~~
+
+界面取证：`docs/screenshots/p8-3-main.png`（面包屑 + 打开分享/回收站/刷新 + 文件表 + 传输区）。
+
+**重命名处置**：协议只有 10025 软删 / 10036 恢复 / 10038 彻底删除，没有 RenameRq。按"不为界面发明
+协议"的原则，契约 §0 的非目标、§1.2 的文件区职责、§6 的 legacy 对照表都改成"不做重命名"，
+右键菜单只保留 打开目录 / 下载 / 分享 / 删除。
+
+**联调踩坑**：协议里的 shareCode 是 31 字符表（去掉 0/O/1/I/L）的 6 位大写码，shareTicket 必须是
+十六进制串；单测里随手写的 `ABC123`/`ticket-xyz` 会让 encode 直接返回 false（表现为"响应解析失败"）。
+
 ## Tasks
 
 | # | 任务 | 验收 | 状态 |
 |---|---|---|---|
 | **T8-0** | 环境锁定 + 设计契约 + 三段式骨架 | 零告警构建、`--version` 输出 v2、骨架截图、红线 grep | **本批完成** |
 | T8-1 | netapi：QTcpSocket + 网络线程 + LoginRq/ListFileRq | 登录/列表在真服务端跑通，错误码有文案 | **本批完成** |
-| T8-2 | 文件区：QAbstractTableModel + 面包屑 + 右键菜单 + 拖拽上传 | 1000 行列表滚动不卡，排序/分页走协议 | 待做 |
-| T8-3 | 传输区：上传/下载队列、进度、暂停/取消、断点续传 | 中断后重启可续；限速 2MB/s 时速度显示正确 | 待做 |
+| T8-2 | 文件区：QAbstractTableModel + 面包屑 + 右键菜单 + 拖拽上传 | 1000 行列表滚动不卡，排序/分页走协议 | **功能完成（P8-3）**；1000 行滚动压测待补 |
+| T8-3 | 传输区：上传/下载队列、进度、暂停/取消、断点续传 | 中断后重启可续；限速 2MB/s 时速度显示正确 | **本批完成**（续传/秒传/断线暂停已联调） |
 | T8-4 | 分享：生成/提取/过期提示 | 分享码 + 提取码全流程 | 待做 |
 | T8-5 | 播放器：FFmpeg 解码 + 边下边播 + 基础 HLS | 10MB 视频首块起播 < 1.5s | 待做 |
 | T8-6 | 主题打磨 + 打包（windeployqt） | 双击可运行，DLL 齐全 | 待做 |

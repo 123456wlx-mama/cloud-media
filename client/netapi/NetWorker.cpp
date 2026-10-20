@@ -218,11 +218,14 @@ void NetWorker::loginRequest(quint32 seq, const QString& tel,
     sendFrame(toType(protocol::MessageType::LoginRq), seq, payload);
 }
 
-void NetWorker::listRequest(quint32 seq, quint64 parentId, quint32 limit) {
+void NetWorker::listRequest(quint32 seq, quint64 parentId, quint32 limit,
+                          const QString& cursorKey, quint64 cursorId) {
     protocol::ListFileRq rq;
     rq.parentId = parentId;
     rq.sort = 1;  // 创建时间倒序，与契约 §2.1 的"最近上传"一致
     rq.limit = limit;
+    rq.cursorKey = cursorKey.toStdString();
+    rq.cursorId = cursorId;
     std::string payload;
     if (!rq.encode(&payload)) {
         emit requestFailed(seq, toType(protocol::MessageType::ListFileRq),
@@ -269,7 +272,7 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
             return;
         }
         if (pending.type == toType(protocol::MessageType::ListFileRq)) {
-            emit listFinished(frame.seq, code, QVariantList());
+            emit listFinished(frame.seq, code, QVariantList(), false, QString(), 0);
             return;
         }
         // 传输层需要原始 code+文案（不能吞成"超时"），把 ErrorRs 帧原样抛给上层。
@@ -319,7 +322,8 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
                        QVariant::fromValue<qulonglong>(item.updatedAtMs));
             rows.append(row);
         }
-        emit listFinished(frame.seq, rs.code, rows);
+        emit listFinished(frame.seq, rs.code, rows, rs.hasMore != 0,
+                          QString::fromStdString(rs.nextKey), rs.nextId);
         return;
     }
 

@@ -99,8 +99,12 @@ QWidget* TransferPane::buildRow(const transfer::TransferTask& task, bool upload)
     QLabel* name = new QLabel(task.remoteName, row);
     name->setObjectName(QString::fromUtf8("taskName"));
     top->addWidget(name, 1);
-    QLabel* state = new QLabel(task.stateText(), row);
-    state->setObjectName(QString::fromUtf8("taskState"));
+    // 契约 §3：秒传命中 → 绿色勾 + "已秒传 · 0 字节"，不显示进度条
+    const bool instant = task.instant && task.state == transfer::TaskState::Done;
+    QLabel* state = new QLabel(
+        instant ? QString::fromUtf8("✓ 已秒传 · 0 字节") : task.stateText(), row);
+    state->setObjectName(instant ? QString::fromUtf8("taskStateInstant")
+                                 : QString::fromUtf8("taskState"));
     top->addWidget(state);
     QLabel* speed = new QLabel(
         task.isActive() ? formatSpeed(task.speedBps) : QString::fromUtf8("—"), row);
@@ -121,6 +125,7 @@ QWidget* TransferPane::buildRow(const transfer::TransferTask& task, bool upload)
     bar->setRange(0, 1000);
     bar->setValue(static_cast<int>(task.progress() * 1000.0));
     bar->setTextVisible(false);
+    bar->setVisible(!instant);
     bottom->addWidget(bar, 1);
 
     if (task.state == transfer::TaskState::Failed) {

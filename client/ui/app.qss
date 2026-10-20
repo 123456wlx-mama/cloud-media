@@ -191,3 +191,124 @@ QToolTip {
     color: #E6EDF5;
     padding: 4px 8px;
 }
+
+/* ---------- P8-3：面包屑 / 右键菜单 / Toast / 分享 / 回收站 ---------- */
+#pathBar {
+    background-color: #1A2028;
+    border-bottom: 1px solid #2C3542;
+}
+
+#pathLabel {
+    color: #E6EDF5;
+    font-size: 13px;
+    padding-left: 4px;
+}
+
+QPushButton#rowButton {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    border-radius: 6px;
+    color: #E6EDF5;
+    font-size: 12px;
+    padding: 4px 10px;
+}
+
+QPushButton#rowButton:hover {
+    border-color: #3D8BFF;
+}
+
+QPushButton#rowButton:disabled {
+    color: #5C6879;
+    border-color: #2C3542;
+}
+
+QPushButton#dangerButton {
+    background-color: #222A34;
+    border: 1px solid #E5544B;
+    border-radius: 6px;
+    color: #E5544B;
+    padding: 6px 14px;
+}
+
+QPushButton#dangerButton:hover {
+    background-color: #E5544B;
+    color: #FFFFFF;
+}
+
+#taskName {
+    color: #E6EDF5;
+    font-size: 13px;
+}
+
+#taskState {
+    color: #9AA7B8;
+    font-size: 12px;
+}
+
+#taskStateInstant {
+    color: #35C46B;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+#taskError {
+    color: #E5544B;
+    font-size: 12px;
+}
+
+#recycleRow {
+    background-color: #1A2028;
+}
+
+#toast {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    border-radius: 8px;
+}
+
+#toastText {
+    color: #E6EDF5;
+    font-size: 13px;
+}
+
+QPushButton#toastAction {
+    background: transparent;
+    border: none;
+    color: #3D8BFF;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 4px;
+}
+
+QPushButton#toastAction:hover {
+    color: #5AA0FF;
+}
+
+#shareCode {
+    color: #3D8BFF;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 4px;
+    padding: 12px 0;
+}
+
+QMenu {
+    background-color: #222A34;
+    border: 1px solid #2C3542;
+    color: #E6EDF5;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #22344F;
+}
+
+QMenu::item:disabled {
+    color: #5C6879;
+}
+

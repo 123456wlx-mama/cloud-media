@@ -11,13 +11,20 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableView>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include "netapi/NetClient.h"
+#include "recycleapi/RecycleFlow.h"
+#include "shareapi/ShareFlow.h"
 #include "transfer/TransferQueue.h"
 #include "ui/FileTableModel.h"
+#include "ui/RecycleDialog.h"
+#include "ui/ShareDialog.h"
+#include "ui/Toast.h"
 #include "ui/TransferPane.h"
 
 namespace cm {
@@ -26,17 +33,27 @@ namespace {
 
 const char* kTransferHint = "没有传输任务\n上传 / 下载进度会实时显示在这里";
 const char* kPlayerHint = "未选择文件\n在左侧点一个视频即可起播";
+const quint32 kPageSize = 50;
 
 }  // namespace
 
 MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                        QWidget* parent)
-    : QMainWindow(parent), m_net(net), m_queue(queue), m_transferPane(nullptr),
-      m_splitter(nullptr), m_model(nullptr),
-      m_table(nullptr), m_fileEmpty(nullptr), m_linkBadge(nullptr),
-      m_listHint(nullptr) {
+    : QMainWindow(parent), m_net(net), m_queue(queue), m_share(nullptr),
+      m_recycle(nullptr), m_transferPane(nullptr), m_splitter(nullptr),
+      m_model(nullptr), m_table(nullptr), m_fileEmpty(nullptr),
+      m_linkBadge(nullptr), m_listHint(nullptr), m_pathLabel(nullptr),
+      m_upButton(nullptr), m_moreButton(nullptr), m_toast(nullptr),
+      m_cursorId(0), m_hasMore(false) {
     setWindowTitle(QString::fromUtf8("cloud-media"));
     resize(1280, 800);
+
+    m_path.append(qMakePair(static_cast<quint64>(0),
+                            QString::fromUtf8("全部文件")));
+    if (m_net != nullptr) {
+        m_share = new shareapi::ShareFlow(m_net, this);
+        m_recycle = new recycleapi::RecycleFlow(m_net, this);
+    }
 
     setAcceptDrops(true);  // 拖文件入队上传
     m_splitter = new QSplitter(Qt::Horizontal, this);
@@ -56,13 +73,56 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
     statusBar()->addPermanentWidget(m_linkBadge);
     statusBar()->showMessage(QString::fromUtf8("未登录"));
 
+    m_toast = new Toast(centralWidget());
+    if (m_recycle != nullptr) {
+        connect(m_toast, &Toast::actionTriggered, this, [this]() {
+            m_recycle->undo();  // Toast 上的「撤销」= RestoreRq（契约 §2.2）
+        });
+        connect(m_recycle, &recycleapi::RecycleFlow::deleted, this,
+                &MainWindow::onDeleted);
+        connect(m_recycle, &recycleapi::RecycleFlow::restored, this,
+                [this](quint64, const QString& name) {
+                    m_toast->showText(
+                        name.isEmpty() ? QString::fromUtf8("已恢复")
+                                       : QString::fromUtf8("「%1」已恢复").arg(name));
+                    refreshList();
+                });
+        connect(m_recycle, &recycleapi::RecycleFlow::failed, this,
+                [this](const QString& text) { m_toast->showText(text); });
+    }
+    if (m_share != nullptr) {
+        connect(m_share, &shareapi::ShareFlow::created, this,
+                &MainWindow::onShareCreated);
+        connect(m_share, &shareapi::ShareFlow::opened, this,
+                &MainWindow::onShareOpened);
+        connect(m_share, &shareapi::ShareFlow::cancelled, this,
+                [this](const QString&) {
+                    m_toast->showText(QString::fromUtf8("已取消分享"));
+                });
+        connect(m_share, &shareapi::ShareFlow::failed, this,
+                [this](quint32, const QString& text) {
+                    if (!m_share->busy()) {
+                        m_toast->showText(text);
+                    }
+                });
+    }
+    if (m_queue != nullptr) {
+        connect(m_queue, &transfer::TransferQueue::instantUploaded, this,
+                [this](const QString& name) {
+                    m_toast->showText(
+                        QString::fromUtf8("「%1」已秒传 · 0 字节").arg(name));
+                });
+    }
+
     if (m_net != nullptr) {
         connect(m_net, SIGNAL(linkState(int, QString)), this,
                 SLOT(onLinkState(int, QString)));
         connect(m_net, SIGNAL(loginFinished(quint32, quint64, QString)), this,
                 SLOT(onLoginSucceeded(quint32, quint64, QString)));
-        connect(m_net, SIGNAL(listFinished(quint32, QVariantList)), this,
-                SLOT(onListFinished(quint32, QVariantList)));
+        connect(m_net,
+                SIGNAL(listFinished(quint32, QVariantList, bool, QString, quint64)),
+                this,
+                SLOT(onListFinished(quint32, QVariantList, bool, QString, quint64)));
         connect(m_net, SIGNAL(requestFailed(quint16, QString)), this,
                 SLOT(onRequestFailed(quint16, QString)));
         if (m_net->uid() != 0) {
@@ -121,6 +181,37 @@ QWidget* MainWindow::buildFilePane() {
     headerLayout->addStretch(1);
     layout->addWidget(header);
 
+    // 面包屑 + 工具栏（契约 §1.2：目录浏览、上传入口）
+    QWidget* bar = new QWidget(pane);
+    bar->setObjectName(QString::fromUtf8("pathBar"));
+    bar->setFixedHeight(38);
+    QHBoxLayout* barLayout = new QHBoxLayout(bar);
+    barLayout->setContentsMargins(8, 0, 8, 0);
+    barLayout->setSpacing(6);
+    m_upButton = new QPushButton(QString::fromUtf8("← 上级"), bar);
+    m_upButton->setObjectName(QString::fromUtf8("rowButton"));
+    m_upButton->setEnabled(false);
+    barLayout->addWidget(m_upButton);
+    m_pathLabel = new QLabel(bar);
+    m_pathLabel->setObjectName(QString::fromUtf8("pathLabel"));
+    barLayout->addWidget(m_pathLabel, 1);
+
+    QPushButton* openShare = new QPushButton(QString::fromUtf8("打开分享"), bar);
+    openShare->setObjectName(QString::fromUtf8("rowButton"));
+    barLayout->addWidget(openShare);
+    QPushButton* recycle = new QPushButton(QString::fromUtf8("回收站"), bar);
+    recycle->setObjectName(QString::fromUtf8("rowButton"));
+    barLayout->addWidget(recycle);
+    QPushButton* refresh = new QPushButton(QString::fromUtf8("刷新"), bar);
+    refresh->setObjectName(QString::fromUtf8("rowButton"));
+    barLayout->addWidget(refresh);
+    layout->addWidget(bar);
+
+    connect(m_upButton, &QPushButton::clicked, this, &MainWindow::onGoUp);
+    connect(openShare, &QPushButton::clicked, this, &MainWindow::onOpenShare);
+    connect(recycle, &QPushButton::clicked, this, &MainWindow::onOpenRecycle);
+    connect(refresh, &QPushButton::clicked, this, &MainWindow::refreshList);
+
     m_model = new FileTableModel(this);
     m_table = new QTableView(pane);
     m_table->setObjectName(QString::fromUtf8("fileTable"));
@@ -145,6 +236,16 @@ QWidget* MainWindow::buildFilePane() {
     m_fileEmpty->setAlignment(Qt::AlignCenter);
     layout->addWidget(m_fileEmpty, 1);
 
+    m_moreButton = new QPushButton(QString::fromUtf8("加载更多"), pane);
+    m_moreButton->setObjectName(QString::fromUtf8("rowButton"));
+    m_moreButton->setVisible(false);
+    QHBoxLayout* moreRow = new QHBoxLayout();
+    moreRow->addStretch(1);
+    moreRow->addWidget(m_moreButton);
+    moreRow->addStretch(1);
+    layout->addLayout(moreRow);
+    connect(m_moreButton, &QPushButton::clicked, this, &MainWindow::onLoadMore);
+
     QPushButton* upload = new QPushButton(QString::fromUtf8("上传文件"), pane);
     upload->setObjectName(QString::fromUtf8("primaryButton"));
     upload->setMaximumWidth(120);
@@ -155,7 +256,13 @@ QWidget* MainWindow::buildFilePane() {
     layout->addLayout(emptyRow);
     connect(upload, SIGNAL(clicked()), this, SLOT(onUploadClicked()));
 
-    // 右键下载（契约 §1.2 文件区职责）
+    connect(m_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
+        if (index.isValid() && m_model->isDirAt(index.row())) {
+            onEnterFolder();
+        }
+    });
+
+    // 右键菜单：打开（目录）/ 下载 / 分享 / 删除。重命名已从契约移除（协议无 RenameRq）。
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QTableView::customContextMenuRequested, this,
             [this](const QPoint& pos) {
@@ -163,12 +270,34 @@ QWidget* MainWindow::buildFilePane() {
         if (!index.isValid()) {
             return;
         }
+        m_table->selectRow(index.row());
+        const bool isDir = m_model->isDirAt(index.row());
         QMenu menu(this);
+        QAction* enter = nullptr;
+        if (isDir) {
+            enter = menu.addAction(QString::fromUtf8("打开文件夹"));
+        }
         QAction* download = menu.addAction(QString::fromUtf8("下载"));
-        if (menu.exec(m_table->viewport()->mapToGlobal(pos)) == download) {
+        QAction* share = menu.addAction(QString::fromUtf8("分享"));
+        menu.addSeparator();
+        QAction* del = menu.addAction(QString::fromUtf8("删除"));
+        download->setEnabled(!isDir);
+        share->setEnabled(!isDir);  // 分享只对已完成文件可用（契约 §1.3）
+        QAction* chosen = menu.exec(m_table->viewport()->mapToGlobal(pos));
+        if (chosen == nullptr) {
+            return;
+        }
+        if (chosen == enter) {
+            onEnterFolder();
+        } else if (chosen == download) {
             onDownloadSelected();
+        } else if (chosen == share) {
+            onShareSelected();
+        } else if (chosen == del) {
+            onDeleteSelected();
         }
     });
+    updateBreadcrumb();
     return pane;
 }
 
@@ -187,34 +316,180 @@ QWidget* MainWindow::buildPlayerPane() {
                      QString::fromUtf8("playerPane"));
 }
 
+quint64 MainWindow::currentParent() const {
+    return m_path.isEmpty() ? 0 : m_path.last().first;
+}
+
+void MainWindow::updateBreadcrumb() {
+    QStringList parts;
+    for (int i = 0; i < m_path.size(); ++i) {
+        parts.append(m_path.at(i).second);
+    }
+    m_pathLabel->setText(parts.join(QString::fromUtf8("  /  ")));
+    m_upButton->setEnabled(m_path.size() > 1);
+}
+
 void MainWindow::refreshList() {
+    loadPage(true);
+}
+
+void MainWindow::loadPage(bool reset) {
     if (m_net == nullptr) {
         return;
     }
+    if (reset) {
+        m_model->clearRows();
+        m_cursorKey.clear();
+        m_cursorId = 0;
+        m_hasMore = false;
+        m_moreButton->setVisible(false);
+    }
     m_listHint->setText(QString::fromUtf8("加载中…"));
-    m_net->listFiles(0, 50);
+    m_net->listFiles(currentParent(), kPageSize, m_cursorKey, m_cursorId);
 }
 
-void MainWindow::onDownloadSelected() {
-    if (m_queue == nullptr || m_table == nullptr) {
+void MainWindow::onLoadMore() {
+    if (!m_hasMore) {
         return;
+    }
+    loadPage(false);
+}
+
+void MainWindow::onGoUp() {
+    if (m_path.size() <= 1) {
+        return;
+    }
+    m_path.removeLast();
+    updateBreadcrumb();
+    refreshList();
+}
+
+void MainWindow::onEnterFolder() {
+    const int row = currentRow();
+    if (row < 0 || !m_model->isDirAt(row)) {
+        return;
+    }
+    m_path.append(qMakePair(m_model->ufIdAt(row), m_model->nameAt(row)));
+    updateBreadcrumb();
+    refreshList();
+}
+
+int MainWindow::currentRow() const {
+    if (m_table == nullptr || m_table->selectionModel() == nullptr) {
+        return -1;
     }
     const QModelIndexList rows = m_table->selectionModel()->selectedRows();
     if (rows.isEmpty()) {
+        return -1;
+    }
+    return rows.first().row();
+}
+
+void MainWindow::onDownloadSelected() {
+    if (m_queue == nullptr) {
         return;
     }
-    const int row = rows.first().row();
+    const int row = currentRow();
+    if (row < 0) {
+        return;
+    }
     const quint64 ufId = m_model->ufIdAt(row);
-    if (ufId == 0) {
+    if (ufId == 0 || m_model->isDirAt(row)) {
         return;
     }
-    const QString name = m_model->index(row, FileTableModel::ColName).data().toString();
-    const quint64 size = m_model->sizeAt(row);
-    m_queue->enqueueDownload(ufId, name, size);
+    m_queue->enqueueDownload(ufId, m_model->nameAt(row), m_model->sizeAt(row));
+    m_toast->showText(
+        QString::fromUtf8("「%1」已加入下载").arg(m_model->nameAt(row)));
+}
+
+void MainWindow::onShareSelected() {
+    if (m_share == nullptr) {
+        return;
+    }
+    const int row = currentRow();
+    if (row < 0 || m_model->isDirAt(row)) {
+        return;
+    }
+    m_share->create(m_model->ufIdAt(row), 2 /*7 天*/, 1 /*生成提取码*/);
+}
+
+void MainWindow::onShareCreated() {
+    ShareDialog dialog(m_share->info(), this);
+    connect(&dialog, &ShareDialog::cancelRequested, this,
+            [this](const QString& code) { m_share->cancel(code); });
+    dialog.exec();
+}
+
+void MainWindow::onShareOpened() {
+    const shareapi::ShareInfo& info = m_share->info();
+    if (m_queue == nullptr || info.shareTicket.isEmpty()) {
+        return;
+    }
+    m_queue->enqueueSharedDownload(info.shareTicket, info.fileName, info.size);
+    m_toast->showText(
+        QString::fromUtf8("「%1」已加入下载").arg(info.fileName));
+}
+
+void MainWindow::onDeleteSelected() {
+    if (m_recycle == nullptr) {
+        return;
+    }
+    const int row = currentRow();
+    if (row < 0) {
+        return;
+    }
+    const QString name = m_model->nameAt(row);
+    if (m_model->isDirAt(row)) {
+        m_toast->showText(QString::fromUtf8("文件夹删除暂未开放"));
+        return;
+    }
+    if (hasActiveTransferFor(name)) {
+        // 契约 §1.3：删除不取消正在跑的任务，先提示
+        m_toast->showText(
+            QString::fromUtf8("「%1」正在传输，完成后再删除").arg(name));
+        return;
+    }
+    m_recycle->deleteFile(m_model->ufIdAt(row), name);
+}
+
+bool MainWindow::hasActiveTransferFor(const QString& name) const {
+    if (m_queue == nullptr) {
+        return false;
+    }
+    const QVector<transfer::TransferTask>& tasks = m_queue->tasks();
+    for (int i = 0; i < tasks.size(); ++i) {
+        if (tasks.at(i).remoteName == name && !tasks.at(i).isTerminal()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MainWindow::onDeleted(quint64 ufId, const QString& name) {
+    Q_UNUSED(ufId);
+    m_toast->showText(QString::fromUtf8("「%1」已移入回收站").arg(name),
+                      QString::fromUtf8("撤销"));
+    refreshList();
+}
+
+void MainWindow::onOpenShare() {
+    if (m_share == nullptr) {
+        return;
+    }
+    ShareOpenDialog dialog(m_share, this);
+    dialog.exec();
+}
+
+void MainWindow::onOpenRecycle() {
+    if (m_recycle == nullptr) {
+        return;
+    }
+    RecycleDialog dialog(m_recycle, this);
+    dialog.exec();
 }
 
 void MainWindow::onUploadClicked() {
-    // P8-2 的骨架入口：拖拽是主路径，按钮先给提示（P8-3 接 QFileDialog）。
+    // 拖拽是主路径，按钮给提示（QFileDialog 入口留到 P8-6 打包时一起）。
     statusBar()->showMessage(QString::fromUtf8("把文件拖进窗口即可上传"));
 }
 
@@ -287,17 +562,30 @@ void MainWindow::setLinkBadge(int state, const QString& detail) {
         QString::fromUtf8("color:%1; font-size:12px; padding-right:8px;").arg(color));
 }
 
-void MainWindow::onListFinished(quint32 code, const QVariantList& rows) {
+void MainWindow::onListFinished(quint32 code, const QVariantList& rows,
+                                bool hasMore, const QString& nextKey,
+                                quint64 nextId) {
     if (code != 0) {
         m_listHint->setText(QString::fromUtf8("加载失败 · code=%1").arg(code));
         return;
     }
-    m_model->setRows(rows);
-    m_listHint->setText(QString::fromUtf8("%1 项").arg(rows.size()));
-    const bool empty = rows.isEmpty();
+    m_model->appendRows(rows);
+    m_hasMore = hasMore;
+    m_cursorKey = nextKey;
+    m_cursorId = nextId;
+    m_moreButton->setVisible(hasMore);
+
+    const int total = m_model->rowCount();
+    m_listHint->setText(QString::fromUtf8("%1 项%2")
+                            .arg(total)
+                            .arg(hasMore ? QString::fromUtf8("（还有更多）")
+                                         : QString()));
+    const bool empty = total == 0;
     m_table->setVisible(!empty);
     m_fileEmpty->setVisible(empty);
-    statusBar()->showMessage(QString::fromUtf8("已登录 · %1").arg(m_net->userName()));
+    statusBar()->showMessage(
+        QString::fromUtf8("已登录 · %1").arg(m_net != nullptr ? m_net->userName()
+                                                              : QString()));
 }
 
 void MainWindow::onRequestFailed(quint16 type, const QString& reason) {

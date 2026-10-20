@@ -99,7 +99,18 @@ QVariant FileTableModel::headerData(int section, Qt::Orientation orientation,
 void FileTableModel::setRows(const QVariantList& rows) {
     beginResetModel();
     m_rows.clear();
-    m_rows.reserve(rows.size());
+    endResetModel();
+    appendRows(rows);
+}
+
+// 分页追加：只插入新区间，不 reset 整表（契约 §1.3 不整表刷新）。
+void FileTableModel::appendRows(const QVariantList& rows) {
+    if (rows.isEmpty()) {
+        return;
+    }
+    const int first = m_rows.size();
+    beginInsertRows(QModelIndex(), first, first + rows.size() - 1);
+    m_rows.reserve(first + rows.size());
     for (int i = 0; i < rows.size(); ++i) {
         const QVariantMap map = rows.at(i).toMap();
         Row row;
@@ -110,7 +121,30 @@ void FileTableModel::setRows(const QVariantList& rows) {
         row.updatedAtMs = map.value(QString::fromUtf8("updatedAtMs")).toULongLong();
         m_rows.append(row);
     }
+    endInsertRows();
+}
+
+void FileTableModel::clearRows() {
+    if (m_rows.isEmpty()) {
+        return;
+    }
+    beginResetModel();
+    m_rows.clear();
     endResetModel();
+}
+
+bool FileTableModel::isDirAt(int row) const {
+    if (row < 0 || row >= m_rows.size()) {
+        return false;
+    }
+    return m_rows[row].isDir;
+}
+
+QString FileTableModel::nameAt(int row) const {
+    if (row < 0 || row >= m_rows.size()) {
+        return QString();
+    }
+    return m_rows[row].name;
 }
 
 quint64 FileTableModel::sizeAt(int row) const {

@@ -37,6 +37,9 @@ public:
 
     int enqueueUpload(const QString& localPath, const QString& remoteName);
     int enqueueDownload(quint64 ufId, const QString& remoteName, quint64 size);
+    // 分享下载：先 ShareOpenRq 拿 shareTicket，再走同一套下载链路（ufId=0）。
+    int enqueueSharedDownload(const QString& shareTicket, const QString& fileName,
+                              quint64 size);
 
     void pause(int id);
     void resume(int id);
@@ -55,6 +58,8 @@ public:
 signals:
     void changed();
     void notice(const QString& text, bool error);
+    // 秒传命中：UI 弹 Toast「已秒传 · 0 字节」（契约 §3 必须显式提示）
+    void instantUploaded(const QString& remoteName);
 
 private slots:
     void onFrame(quint16 type, quint32 seq, const QByteArray& payload);

@@ -23,12 +23,21 @@ set(CM_CLIENT_SQLAPI_SOURCES
     sqlapi/TaskStore.cpp
     sqlapi/TaskStore.h
 )
+set(CM_CLIENT_FLOW_SOURCES
+    shareapi/ShareFlow.cpp
+    shareapi/ShareFlow.h
+    recycleapi/RecycleFlow.cpp
+    recycleapi/RecycleFlow.h
+)
 
 add_executable(cloud-media-client
     app/main.cpp
+    app/smoke.cpp
+    app/smoke.h
     ${CM_CLIENT_NETAPI_SOURCES}
     ${CM_CLIENT_TRANSFER_SOURCES}
     ${CM_CLIENT_SQLAPI_SOURCES}
+    ${CM_CLIENT_FLOW_SOURCES}
     ui/MainWindow.cpp
     ui/MainWindow.h
     ui/LoginDialog.cpp
@@ -37,6 +46,12 @@ add_executable(cloud-media-client
     ui/FileTableModel.h
     ui/TransferPane.cpp
     ui/TransferPane.h
+    ui/Toast.cpp
+    ui/Toast.h
+    ui/ShareDialog.cpp
+    ui/ShareDialog.h
+    ui/RecycleDialog.cpp
+    ui/RecycleDialog.h
     ui/resources.qrc
 )
 
