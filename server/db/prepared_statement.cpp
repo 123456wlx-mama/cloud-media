@@ -152,7 +152,7 @@ bool PreparedStatement::bindInt64(std::size_t index, std::int64_t value) {
     bind.buffer = &m_intValues[index];
     bind.buffer_length = sizeof(std::int64_t);
     bind.is_unsigned = 0;
-    bind.is_null = &m_paramNulls[index];
+    bind.is_null = cmBoolPtr(&m_paramNulls[index]);
     m_paramNulls[index] = 0;
     return true;
 }
@@ -169,7 +169,7 @@ bool PreparedStatement::bindUInt64(std::size_t index, std::uint64_t value) {
     bind.buffer = &m_uintValues[index];
     bind.buffer_length = sizeof(std::uint64_t);
     bind.is_unsigned = 1;
-    bind.is_null = &m_paramNulls[index];
+    bind.is_null = cmBoolPtr(&m_paramNulls[index]);
     m_paramNulls[index] = 0;
     return true;
 }
@@ -190,7 +190,7 @@ bool PreparedStatement::bindString(std::size_t index, const std::string& value) 
     bind.buffer = const_cast<char*>(stored.data());
     bind.buffer_length = static_cast<unsigned long>(stored.size());
     bind.length = &m_paramLengths[index];
-    bind.is_null = &m_paramNulls[index];
+    bind.is_null = cmBoolPtr(&m_paramNulls[index]);
     return true;
 }
 
@@ -205,7 +205,7 @@ bool PreparedStatement::bindNull(std::size_t index) {
     bind.buffer_type = MYSQL_TYPE_NULL;
     bind.buffer = nullptr;
     bind.buffer_length = 0;
-    bind.is_null = &m_paramNulls[index];
+    bind.is_null = cmBoolPtr(&m_paramNulls[index]);
     return true;
 }
 
@@ -327,8 +327,8 @@ bool PreparedStatement::prepareResult() {
         bind.buffer = &m_resultBuffers[i][0];
         bind.buffer_length = maxLength;
         bind.length = &m_resultLengths[i];
-        bind.is_null = &m_resultNulls[i];
-        bind.error = &m_resultErrors[i];
+        bind.is_null = cmBoolPtr(&m_resultNulls[i]);
+        bind.error = cmBoolPtr(&m_resultErrors[i]);
     }
 
     if (mysql_stmt_bind_result(m_stmt, &m_resultBinds[0]) != 0) {

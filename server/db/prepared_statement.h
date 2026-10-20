@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mysql.h>
+#include "mysql_compat.h"
 
 #include <chrono>
 #include <cstddef>

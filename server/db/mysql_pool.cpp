@@ -1,6 +1,6 @@
 #include "mysql_pool.h"
 
-#include <mysql.h>
+#include "mysql_compat.h"
 
 #include <sstream>
 
