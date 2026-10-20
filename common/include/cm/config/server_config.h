@@ -17,6 +17,7 @@ struct ServerConfig {
     std::string logLevel;
     int logMaxSizeMb;
     int logRollDays;
+    bool logAsync;  // [log] async；默认 true，false 用于压测对照
 
     std::string mysqlHost;
     int mysqlPort;

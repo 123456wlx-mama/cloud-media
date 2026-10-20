@@ -1,10 +1,16 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "cm/protocol/frame.h"
+#include "logic/download_limits.h"
+#include "logic/rate_limiter.h"
 
 namespace cm {
 namespace logic {
@@ -12,6 +18,40 @@ namespace logic {
 class DownloadService;
 class BlockSender;
 class SendfileBlockSender;
+
+// 下载侧限速与流控（D-5 / D-6）。
+//   - 连接级令牌桶 2MB/s（容量 4MB）、用户级 8MB/s（容量 16MB）
+//   - 流数上限：全局 512、每用户 8（StreamLimiter）
+// 令牌不足但等待 <= 2s 时返回 Timeout + waitMs，由 handler 用 conn.runAfter
+// 延迟重发（不 sleep 工作线程）；等待 > 2s 才回 3006。
+class DownloadRateLimit {
+public:
+    DownloadRateLimit();
+
+    // 占一个流槽位；同一连接重复调用幂等。失败（超全局/每用户上限）→ 调用方回 3006。
+    bool acquireStream(const std::string& connKey, std::uint64_t uid);
+    void releaseStream(const std::string& connKey);
+
+    // 预扣 bytes 令牌（按块计费）。
+    //   Ok          —— 立即发；
+    //   Timeout     —— *waitMs 后重发；
+    //   RateLimited —— 回 3006。
+    cm::ErrorCode consume(const std::string& connKey, std::uint64_t uid,
+                          std::uint64_t bytes, std::uint64_t* waitMs);
+
+    // 连接关闭：归还流槽位并回收该连接的桶。
+    void onConnClose(const std::string& connKey);
+
+    std::size_t activeStreams() const { return m_streams.activeStreams(); }
+
+private:
+    // 同一把锁保护桶表；桶本身无锁（每桶只在该锁内使用）。
+    mutable std::mutex m_mutex;
+    std::map<std::string, std::shared_ptr<TokenBucket> > m_connBuckets;
+    std::map<std::uint64_t, std::shared_ptr<TokenBucket> > m_userBuckets;
+    std::map<std::string, std::uint64_t> m_streamOwner;  // connKey -> uid
+    StreamLimiter m_streams;
+};
 
 // 下载请求 handler（10010/10027/10013/10040）。不 include net：
 // 发送回调由连接层注入，绑定到发起请求的连接。
@@ -30,6 +70,9 @@ public:
         // sendfile 交付：先 send(header19) 再 sendFile(fd, offset, len)；返回是否受理。
         std::function<bool(const std::string& header, int fd,
                            std::int64_t offset, std::size_t len)> sendFile;
+        // 连接标识（限速桶按连接维度）与延迟执行（令牌桶等待不阻塞工作线程）。
+        std::string connKey;
+        std::function<void(std::int64_t ms, std::function<void()> task)> runAfter;
     };
 
     DownloadHandlers(DownloadService& service, BlockSender& buffered);
@@ -50,9 +93,19 @@ public:
     void setSendfileSender(SendfileBlockSender& sender) { m_sendfile = &sender; }
 #endif
 
+    // 连接关闭时归还流槽位（由连接层调用）。
+    void onConnClose(const std::string& connKey) { m_rate.onConnClose(connKey); }
+    std::size_t activeStreams() const { return m_rate.activeStreams(); }
+
 private:
+    // 限速通过后真正取块（handleRange 的直接路径与 runAfter 延迟路径共用）。
+    void sendRangeNow(std::uint64_t uid, const std::string& ticket,
+                      std::uint64_t fId, std::uint32_t blockIndex,
+                      std::uint32_t seq, const Conn& conn);
+
     DownloadService& m_service;
     BlockSender& m_buffered;
+    DownloadRateLimit m_rate;
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
     SendfileBlockSender* m_sendfile;
 #endif

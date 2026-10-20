@@ -264,21 +264,20 @@ TEST_F(UploadChunkServiceTest, UploadChunkExpiredTask) {
     EXPECT_FALSE(fileExists(chunkPath(taskId, 0)));
 }
 
-TEST_F(UploadChunkServiceTest, UploadChunkBadCrcCloses) {
-    // 帧级 9005 + forceClose 由 ConnectionDecoder 在业务入口之前完成（bulk_gate 覆盖）；
-    // 这里验证业务入口的等价约束：payload 与声明的分片 MD5 不符时不得落盘、不得计数。
+TEST_F(UploadChunkServiceTest, UploadChunkTamperedPayloadDeferredToMerge) {
+    // O7-a 之后收片阶段不再重算分片 MD5：传输完整性由帧 CRC（Codec::verifyFrameCrc）
+    // 负责，内容完整性由 complete 阶段 mergeChunks 逐片重算兜底（坏片进 badIndexes，
+    // 见 test_upload_complete 的 badIndexes 用例）。因此这里断言"收下并落盘"。
     const std::string taskId = createTask(m_uid, 13, 50ULL * 1024 * 1024);
     cm::protocol::UploadChunkRq rq = makeChunk(taskId, 0, 0, makeData(kChunkSize, 'c'));
     rq.data[100] = 'd';  // 篡改一个字节，chunk_md5 不再匹配
 
     cm::protocol::UploadChunkRs rs;
-    EXPECT_EQ(cm::ErrorCode::Md5Mismatch,
-              m_handler->handle(m_uid, 1, rq, nullptr, &rs));
-    EXPECT_EQ(3003u, rs.code);
+    EXPECT_EQ(cm::ErrorCode::Ok, m_handler->handle(m_uid, 1, rq, nullptr, &rs));
+    EXPECT_EQ(0u, rs.code);
 
     cm::db::ChunkRow row;
-    EXPECT_FALSE(findChunkRow(taskId, 0, &row));
-    EXPECT_FALSE(fileExists(chunkPath(taskId, 0)));
+    EXPECT_TRUE(findChunkRow(taskId, 0, &row));
 }
 
 TEST_F(UploadChunkServiceTest, UploadChunkInFlightLimit) {

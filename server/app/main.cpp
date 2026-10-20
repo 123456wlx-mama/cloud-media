@@ -217,8 +217,10 @@ void sendUploadCompleteRs(const ConnectionPtr& conn, std::uint32_t seq,
 }
 
 // 下载 handler 的发送回调绑定到当前连接（logic 不 include net）。
-cm::logic::DownloadHandlers::Conn makeDownloadConn(const ConnectionPtr& conn) {
+cm::logic::DownloadHandlers::Conn makeDownloadConn(const ConnectionPtr& conn,
+                                                   net::TimerQueue* timers) {
     cm::logic::DownloadHandlers::Conn c;
+    c.connKey = conn ? conn->name() : std::string();
     c.sendFrame = [conn](std::uint16_t type, std::uint32_t seq,
                          const std::string& payload) {
         sendFramePayload(conn, static_cast<cm::protocol::MessageType>(type),
@@ -242,6 +244,14 @@ cm::logic::DownloadHandlers::Conn makeDownloadConn(const ConnectionPtr& conn) {
         // fd 由连接接管；完成回调里连接已断开时无需额外处理。
         return conn->sendFile(fd, offset, len, [conn](bool) {});
     };
+    // 令牌桶等待用 loop 定时器：工作在 worker 线程，必须先 runInLoop 回 loop 再挂定时器。
+    if (conn && timers != nullptr) {
+        net::EventLoop* loop = conn->getLoop();
+        net::TimerQueue* tq = timers;
+        c.runAfter = [loop, tq](std::int64_t ms, std::function<void()> task) {
+            loop->runInLoop([tq, ms, task]() { tq->runAfter(ms, task); });
+        };
+    }
     return c;
 }
 
@@ -684,37 +694,41 @@ void handleUploadComplete(const ConnectionPtr& conn,
 void handleDownloadOpen(const ConnectionPtr& conn,
                         const cm::protocol::Frame& frame,
                         ConnStateTable& states,
-                        cm::logic::DownloadHandlers& handlers) {
+                        cm::logic::DownloadHandlers& handlers,
+                        net::TimerQueue* timers) {
     std::shared_ptr<ConnState> state = states.get(conn->name());
     const std::uint64_t uid = state ? state->uid.load() : 0;
-    handlers.handleOpen(uid, frame, makeDownloadConn(conn));
+    handlers.handleOpen(uid, frame, makeDownloadConn(conn, timers));
 }
 
 void handleDownloadStat(const ConnectionPtr& conn,
                         const cm::protocol::Frame& frame,
                         ConnStateTable& states,
-                        cm::logic::DownloadHandlers& handlers) {
+                        cm::logic::DownloadHandlers& handlers,
+                        net::TimerQueue* timers) {
     std::shared_ptr<ConnState> state = states.get(conn->name());
     const std::uint64_t uid = state ? state->uid.load() : 0;
-    handlers.handleStat(uid, frame, makeDownloadConn(conn));
+    handlers.handleStat(uid, frame, makeDownloadConn(conn, timers));
 }
 
 void handleDownloadRange(const ConnectionPtr& conn,
-                         const cm::protocol::Frame& frame,
-                         ConnStateTable& states,
-                         cm::logic::DownloadHandlers& handlers) {
+                        const cm::protocol::Frame& frame,
+                        ConnStateTable& states,
+                        cm::logic::DownloadHandlers& handlers,
+                        net::TimerQueue* timers) {
     std::shared_ptr<ConnState> state = states.get(conn->name());
     const std::uint64_t uid = state ? state->uid.load() : 0;
-    handlers.handleRange(uid, frame, makeDownloadConn(conn));
+    handlers.handleRange(uid, frame, makeDownloadConn(conn, timers));
 }
 
 void handleDownloadDone(const ConnectionPtr& conn,
                         const cm::protocol::Frame& frame,
                         ConnStateTable& states,
-                        cm::logic::DownloadHandlers& handlers) {
+                        cm::logic::DownloadHandlers& handlers,
+                        net::TimerQueue* timers) {
     std::shared_ptr<ConnState> state = states.get(conn->name());
     const std::uint64_t uid = state ? state->uid.load() : 0;
-    handlers.handleDone(uid, frame, makeDownloadConn(conn));
+    handlers.handleDone(uid, frame, makeDownloadConn(conn, timers));
 }
 
 int runServer(const cm::ServerConfig& cfg) {
@@ -732,7 +746,7 @@ int runServer(const cm::ServerConfig& cfg) {
     logCfg.max_size_bytes =
         static_cast<std::size_t>(cfg.logMaxSizeMb) * 1024ULL * 1024ULL;
     logCfg.roll_days = cfg.logRollDays;
-    logCfg.async = true;
+    logCfg.async = cfg.logAsync;
     logCfg.console = true;
 
     std::string logError;
@@ -985,9 +999,9 @@ int runServer(const cm::ServerConfig& cfg) {
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadOpenRq),
-            [&states, &downloadHandlers](const ConnectionPtr& conn,
+            [&states, &downloadHandlers, &timers](const ConnectionPtr& conn,
                                          const cm::protocol::Frame& frame) {
-                handleDownloadOpen(conn, frame, states, downloadHandlers);
+                handleDownloadOpen(conn, frame, states, downloadHandlers, &timers);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register DownloadOpen failed\n");
         return 1;
@@ -996,9 +1010,9 @@ int runServer(const cm::ServerConfig& cfg) {
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadStatRq),
-            [&states, &downloadHandlers](const ConnectionPtr& conn,
+            [&states, &downloadHandlers, &timers](const ConnectionPtr& conn,
                                          const cm::protocol::Frame& frame) {
-                handleDownloadStat(conn, frame, states, downloadHandlers);
+                handleDownloadStat(conn, frame, states, downloadHandlers, &timers);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register DownloadStat failed\n");
         return 1;
@@ -1007,9 +1021,9 @@ int runServer(const cm::ServerConfig& cfg) {
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadRangeRq),
-            [&states, &downloadHandlers](const ConnectionPtr& conn,
+            [&states, &downloadHandlers, &timers](const ConnectionPtr& conn,
                                          const cm::protocol::Frame& frame) {
-                handleDownloadRange(conn, frame, states, downloadHandlers);
+                handleDownloadRange(conn, frame, states, downloadHandlers, &timers);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register DownloadRange failed\n");
         return 1;
@@ -1018,9 +1032,9 @@ int runServer(const cm::ServerConfig& cfg) {
     if (registry.registerHandler(
             static_cast<std::uint16_t>(
                 cm::protocol::MessageType::DownloadDoneRq),
-            [&states, &downloadHandlers](const ConnectionPtr& conn,
+            [&states, &downloadHandlers, &timers](const ConnectionPtr& conn,
                                          const cm::protocol::Frame& frame) {
-                handleDownloadDone(conn, frame, states, downloadHandlers);
+                handleDownloadDone(conn, frame, states, downloadHandlers, &timers);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register DownloadDone failed\n");
         return 1;
@@ -1135,7 +1149,9 @@ int runServer(const cm::ServerConfig& cfg) {
         states.put(conn->name(), state);
     });
 
-    server.setCloseCallback([&states](const ConnectionPtr& conn) {
+    server.setCloseCallback([&states, &downloadHandlers](const ConnectionPtr& conn) {
+        // 连接关闭：归还下载流槽位并回收该连接的令牌桶。
+        downloadHandlers.onConnClose(conn->name());
         states.erase(conn->name());
     });
 

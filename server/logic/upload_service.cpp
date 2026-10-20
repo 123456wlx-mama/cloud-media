@@ -197,11 +197,16 @@ cm::ErrorCode mergeChunks(const std::string& dataDir,
                           std::string* wholeMd5,
                           std::vector<std::uint32_t>* badIndexes) {
     const std::string taskDir = dataDir + "/tmp/" + task.taskId;
-    *mergedPath = taskDir + "/merged.bin.tmp";
+    // O1：合并结果直接写进 blob 目标目录（aa/bb 由声明的 fileMd5 推导），
+    // 发布阶段只剩一次同目录 rename，省掉 tmp→blob 的第二次全量写。
+    // 临时名以 '.' 开头并带 taskId，避免并发任务同名冲突。
+    const std::string blobDir = dataDir + "/blobs/" + task.fileMd5.substr(0, 2) +
+                                "/" + task.fileMd5.substr(2, 2);
+    *mergedPath = blobDir + "/." + task.taskId + ".merged.tmp";
     wholeMd5->clear();
 
     // 零分片的任务也要能进入逐片校验（全部回 bad_indexes），而不是直接报磁盘错误。
-    if (!makeDirs(taskDir)) {
+    if (!makeDirs(taskDir) || !makeDirs(blobDir)) {
         return cm::ErrorCode::NoSpace;
     }
 
@@ -622,6 +627,8 @@ ErrorCode UploadService::completeUpload(
 
     // 整文件 MD5 与客户端声明不符：7→1，客户端重新 init。
     if (wholeMd5 != task.fileMd5) {
+        // O1 后合并文件落在 blobs 目录里，必须就地清掉，避免留下隐藏残留。
+        ::unlink(mergedPath.c_str());
         returnToUploading();
         out->code = static_cast<std::uint32_t>(ErrorCode::Md5Mismatch);
         return ErrorCode::Md5Mismatch;
@@ -712,10 +719,9 @@ ErrorCode UploadService::completeUpload(
     if (!writeBlobMeta(blobPath, task.totalSize, wholeMd5)) {
         // TODO(log): Logger 就绪后记 WARN（.meta 写入失败）。
     }
-    // 块 CRC sidecar 与 .meta 同级：失败只 WARN，D-4 会退化为缓冲路径。
-    if (writeBlockCrc(blobPath, task.totalSize) != ErrorCode::Ok) {
-        // TODO(log): Logger 就绪后记 WARN（.crc 写入失败）。
-    }
+    // 块 CRC sidecar 改为懒生成（O7-c）：上传只落 blob + .meta，
+    // 首个下载请求由 ensureBlockCrc（sendfile_block_sender）按块补算并写回。
+    // 收益：省掉「合并完成后再把整个 blob 读一遍算 CRC」的那趟 10MB 读 + 16% CPU。
 
     // 成功后清理本任务临时目录（分片 + merged 临时文件）。
     removeTree(m_dataDir + "/tmp/" + rq.taskId);

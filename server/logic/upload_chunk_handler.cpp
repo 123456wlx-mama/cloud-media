@@ -12,7 +12,6 @@
 #include <memory>
 #include <string>
 
-#include "cm/base/md5.h"
 #include "db/mysql_pool.h"
 #include "db/transfer_dao.h"
 
@@ -290,9 +289,11 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
         return fail(out, ErrorCode::InvalidArgument);
     }
 
-    // 分片 MD5：写盘前校验，坏片不落盘。
-    if (cm::md5Hex(rq.data) != rq.chunkMd5) {
-        return fail(out, ErrorCode::Md5Mismatch);
+    // 分片 MD5 不再在收片时重算（O7-a）：传输完整性已由帧 CRC（Codec::verifyFrameCrc）
+    // 覆盖，内容完整性由 complete 阶段 mergeChunks 逐片重算 + 整文件 MD5 兜底，
+    // 坏片会以 badIndexes 返回让客户端重传。这里只保留长度校验。
+    if (rq.chunkMd5.size() != 32) {
+        return fail(out, ErrorCode::InvalidArgument);
     }
 
     // 已确认且内容不同：先拒绝，避免把好分片覆盖成坏内容；

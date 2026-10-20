@@ -22,7 +22,8 @@ struct Options {
     std::string cursorKey;
     std::uint64_t cursorId;
 
-    Options() : port(8004), parentId(0), sort(0), limit(0), cursorId(0) {
+    // limit 默认 50（与用法文案「0=50」一致；传 0 也按 50 处理）。
+    Options() : port(8004), parentId(0), sort(0), limit(50), cursorId(0) {
     }
 };
 
@@ -111,7 +112,7 @@ int main(int argc, char** argv) {
     cm::protocol::ListFileRq rq;
     rq.parentId = opt.parentId;
     rq.sort = opt.sort;
-    rq.limit = opt.limit;
+    rq.limit = opt.limit == 0 ? 50 : opt.limit;
     rq.cursorKey = opt.cursorKey;
     rq.cursorId = opt.cursorId;
 

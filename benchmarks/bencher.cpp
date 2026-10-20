@@ -779,6 +779,21 @@ bool wasMeasured(const Conn* conn) {
     return conn->reqStartUs != 0 && conn->reqStartUs >= g_measureStartUs.load();
 }
 
+// 吞吐/分片计数必须与 completed 用同一个判定：只统计「在测量窗口内开始」的请求。
+// 否则 warmup 期间开始、窗口内完成的请求会把 bytes 抬高而 completed 不变，
+// 让 MB/s 虚高（P7-2 的 84.7MB/s 就是这么来的，真实值约 42MB/s）。
+void countBytes(const Conn* conn, long long bytes) {
+    if (wasMeasured(conn)) {
+        g_bytes.fetch_add(bytes);
+    }
+}
+
+void countChunk(const Conn* conn) {
+    if (wasMeasured(conn)) {
+        ++g_chunks;
+    }
+}
+
 // 前向声明
 void startRequest(Worker* worker, int connIndex);
 void finishRequest(Worker* worker, Conn* conn, bool ok, const std::string& reason);
@@ -1190,7 +1205,7 @@ void onFrame(Worker* worker, Conn* conn, const cm::protocol::Frame& frame) {
                 finishRequest(worker, conn, false, errKey("chunk", rs.code));
                 return;
             }
-            ++g_chunks;
+            countChunk(conn);
             sendNextChunk(worker, conn);
             break;
         }
@@ -1204,7 +1219,7 @@ void onFrame(Worker* worker, Conn* conn, const cm::protocol::Frame& frame) {
                 finishRequest(worker, conn, false, errKey("complete", rs.code));
                 return;
             }
-            g_bytes.fetch_add(static_cast<long long>(worker->env->model.totalSize));
+            countBytes(conn, static_cast<long long>(worker->env->model.totalSize));
             finishRequest(worker, conn, true, "");
             break;
         }
@@ -1229,8 +1244,8 @@ void onFrame(Worker* worker, Conn* conn, const cm::protocol::Frame& frame) {
             break;
         }
         case static_cast<std::uint16_t>(MessageType::DownloadDataRs): {
-            g_bytes.fetch_add(static_cast<long long>(frame.payload.size()));
-            ++g_chunks;
+            countBytes(conn, static_cast<long long>(frame.payload.size()));
+            countChunk(conn);
             ++conn->blockIndex;
             sendNextBlock(worker, conn);
             break;

@@ -64,6 +64,7 @@ ServerConfig::ServerConfig()
       logLevel("info"),
       logMaxSizeMb(100),
       logRollDays(7),
+      logAsync(true),
       mysqlHost("127.0.0.1"),
       mysqlPort(3306),
       mysqlUser(""),
@@ -159,6 +160,11 @@ ErrorCode loadServerConfig(const std::string& path, ServerConfig* out,
                      &cfg.logRollDays, err);
     if (result != ErrorCode::Ok) {
         return result;
+    }
+    // async 只认 true/false（也接受 1/0），非法值按 true 处理，避免压测配置把日志关死。
+    {
+        const std::string asyncText = ini.getString("log", "async", "true");
+        cfg.logAsync = !(asyncText == "false" || asyncText == "0");
     }
 
     result = requireString(ini, "mysql", "host", &cfg.mysqlHost, err);
