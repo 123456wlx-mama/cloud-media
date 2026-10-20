@@ -1,4 +1,4 @@
-# Phase 6 总验收（T6-4 ~ T6-6，2026-10-20）
+# Phase 6 总验收（T6-4 ~ T6-7，2026-10-20）
 
 ## DoD 对照
 
@@ -9,7 +9,7 @@
 | `server/net/` 行覆盖 | ≥ 60% | **83.2%** | 通过 |
 | 全量 ctest | 全绿 | **43/43 Passed** | 通过 |
 | Codec/Buffer Fuzz | 1M 随机输入无崩溃 | **1,000,000 迭代，ASan 0 报错**（T6-6） | 通过 |
-| CI | 脚本 + workflow | `scripts/ci.sh` 本地全绿；`.github/workflows/ci.yml` 待推远端 | 待首次推送 |
+| CI | 脚本 + workflow，每次提交自动跑 | **GitHub Actions 首跑全绿**（run 39370428189，2m19s）：cpp11 红线 ALL CLEAN + 43/43 + common 92.3% / net 83.7% | 通过 |
 
 > 用例数说明：355 是早期估算；按 `--gtest_list_tests` 统计当前 ctest 实际注册的 17 个 gtest 可执行，共 346 例。
 > `build/bin` 里另有 5 个未注册的旧 DAO 可执行（28 例），属于历史残留，不计入。
@@ -24,6 +24,7 @@
 | T6-4 | `scripts/ci.sh`；`.github/workflows/ci.yml` |
 | T6-5 | 本文 |
 | T6-6 | `common/protocol/tests/fuzz_codec_driver.cpp` + `cm_fuzz_driver` target；`docs/benchmark/phase6_fuzz.md`（1M 迭代 ASan 0 报错） |
+| T6-7 | CI 首跑打通：MySQL 改服务容器、补 `default-mysql-client`、新增 `server/db/mysql_compat.h`（my_bool 8.0 兼容）；run 39370428189 全绿 |
 
 ## 覆盖率复测（T6-2 后）
 
@@ -81,15 +82,30 @@
 
 `.github/workflows/ci.yml` 要点：
 
-- `ubuntu-22.04`，apt 安装 `cmake g++ lcov mysql-server redis-server default-libmysqlclient-dev libhiredis-dev`；
-- 启动 MySQL/Redis，创建 `cloud_media_test` 与 `cm_test`，导入 `sql/schema_v2.sql` + 两个 patch；
+- `ubuntu-22.04`，apt 安装 `cmake g++ make lcov redis-server default-mysql-client default-libmysqlclient-dev libhiredis-dev`；
+- **MySQL 用服务容器**（`services.mysql`，`mysql:8.0`，`MYSQL_ROOT_PASSWORD` + `MYSQL_DATABASE` + `mysqladmin ping` health check），
+  不用 runner 预装 MySQL——其 root 非 auth_socket、口令未知，`sudo mysql` 会 Access denied；
+- init 步骤：root 建 `cm_test`（`mysql_native_password`），导入 `sql/schema_v2.sql` + 两个 patch；
 - `cmake ... -DCMAKE_CXX_STANDARD=11 -DCMAKE_CXX_EXTENSIONS=OFF -DENABLE_COVERAGE=ON -DENABLE_DB_INTEGRATION_TESTS=ON`；
 - 实际构建/测试/覆盖率统一调用 `bash scripts/ci.sh`，避免 workflow 与本地脚本漂移；
 - 覆盖率阈值在 `ci.sh` 内断言（common ≥80、server/net ≥60）。
 
+### 首跑记录（T6-7，run 39370428189）
+
+前 7 次失败逐一定位：①runner 预装 MySQL root 非 auth_socket（`ERROR 1045`，`::error::` 注解抓到）→
+②改 `mysqld --init-file` 后台常驻不可靠 → ③改服务容器但漏装 `mysql` CLI → ④补 CLI 后
+暴露真正的编译问题：**MySQL 8.0 客户端移除 `my_bool`**。最终以 `server/db/mysql_compat.h`
+（8.0 恢复 1 字节别名 + `cmBoolPtr()` 转换 `MYSQL_BIND.is_null/.error`）双兼容 5.7/8.0，
+run 39370428189 全绿：ALL CLEAN + 43/43 + common 92.3% / net 83.7% + CI OK（2m19s）。
+
+**g++11 vs g++5.4 差异记录**（此前标记「待首次推送验证」）：
+
+- 无编译错误差异；唯一硬错误是 `my_bool`（属 MySQL 8.0 客户端头文件差异，非编译器差异），已由 `mysql_compat.h` 解决；
+- 警告无新增阻断项（项目未开 `-Werror`）；覆盖率略有出入属编译器版本正常波动（common 91.0%→92.3%、net 83.2%→83.7%，均为 g++11 侧数据）；
+- `Node.js 20 deprecation` 警告来自 `actions/checkout@v4`，与项目代码无关。
+
 ## 遗留与风险
 
 1. **分支覆盖未采集**：lcov 报 `branches...: no data found`，当前 `--coverage` 只产出行/函数数据。
-2. **g++11 runner 未实测**：workflow 显式 `-std=c++11`，但 g++11 可能比 g++5.4 多警告；项目未开 `-Werror`，不会因此放宽标准。首次推送后需记录差异。
-3. **远端未建**：`git remote` 为空，workflow 尚未真正触发；推送后补一次运行记录。
-4. `build/bin` 存在 5 个历史 DAO 可执行（未注册 ctest），建议后续清理构建目录，不影响当前 43 项。
+2. `build/bin` 存在 5 个历史 DAO 可执行（未注册 ctest），建议后续清理构建目录，不影响当前 43 项。
+3. `actions/checkout@v4` 的 Node.js 20 弃用警告：升级到 v5 可消除，非功能问题。
