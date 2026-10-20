@@ -11,6 +11,9 @@ compile_commands.json
 # player 运行期 DLL（二进制不入库；用 scripts/sync_player_dlls.sh 从 legacy 复制）
 /client/player/deps/dll/
 
+# 打包产物（windeployqt 输出，不入库）
+/deploy/
+
 # runtime data
 /data/
 /logs/

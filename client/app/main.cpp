@@ -115,24 +115,59 @@ int runPlayFile(const QString& path) {
 
 // 里程碑 B 取证：边下边播。双击文件 → playback 下载写 .part → 播放器读这个增长中的文件。
 int runPlaybackSmoke(cm::netapi::NetClient* net, cm::transfer::TransferQueue* queue,
-                     const QString& ufId) {
+                     const QString& ufId, const QString& shareCode,
+                     const QString& accessCode) {
     static cm::player::PlayerCore player;
     static QElapsedTimer clock;
     static int frames = 0;
     static int taskId = 0;
     static bool sourceDone = false;
+    static cm::shareapi::ShareFlow* share = nullptr;
     clock.start();
 
     QObject::connect(net, &cm::netapi::NetClient::loginFinished,
-                     [net](quint32 code, quint64, const QString&) {
+                     [net, shareCode, accessCode](quint32 code, quint64,
+                                                  const QString&) {
         if (code != 0) {
             std::printf("LOGIN_FAIL code=%u\n", code);
             std::fflush(stdout);
             QCoreApplication::exit(2);
             return;
         }
+        if (!shareCode.isEmpty() && share != nullptr) {
+            std::printf("SHARE_OPEN code=%s access=%s\n",
+                        shareCode.toUtf8().constData(),
+                        accessCode.toUtf8().constData());
+            std::fflush(stdout);
+            share->openShare(shareCode, accessCode);
+            return;
+        }
         net->listFiles(0, 50);  // 先拿列表，才能把 ufId 映射成文件名/大小
     });
+
+    if (!shareCode.isEmpty()) {
+        share = new cm::shareapi::ShareFlow(net);
+        QObject::connect(share, &cm::shareapi::ShareFlow::opened, [queue]() {
+            const cm::shareapi::ShareInfo& info = share->info();
+            std::printf("SHARE_OPEN_OK code=%s file=%s size=%llu ticket=yes\n",
+                        info.shareCode.toUtf8().constData(),
+                        info.fileName.toUtf8().constData(),
+                        static_cast<unsigned long long>(info.size));
+            taskId = queue->enqueueSharedPlayback(info.shareTicket, info.fileName,
+                                                  info.size);
+            std::printf("PLAY_STREAM_QUEUE task=%d file=%s size=%llu\n", taskId,
+                        info.fileName.toUtf8().constData(),
+                        static_cast<unsigned long long>(info.size));
+            std::fflush(stdout);
+        });
+        QObject::connect(share, &cm::shareapi::ShareFlow::failed,
+                         [](quint32 code, const QString& text) {
+            std::printf("SHARE_FAIL code=%u text=%s\n", code,
+                        text.toUtf8().constData());
+            std::fflush(stdout);
+            QCoreApplication::exit(4);
+        });
+    }
     QObject::connect(net, &cm::netapi::NetClient::listFinished,
                      [queue, ufId](quint32 code, const QVariantList& rows, bool,
                                    const QString&, quint64) {
@@ -140,6 +175,9 @@ int runPlaybackSmoke(cm::netapi::NetClient* net, cm::transfer::TransferQueue* qu
             std::printf("LIST_FAIL code=%u\n", code);
             std::fflush(stdout);
             QCoreApplication::exit(2);
+            return;
+        }
+        if (ufId.isEmpty()) {
             return;
         }
         const QString target = ufId;
@@ -203,8 +241,9 @@ int runPlaybackSmoke(cm::netapi::NetClient* net, cm::transfer::TransferQueue* qu
                         static_cast<unsigned long long>(task->bytesDone));
             std::fflush(stdout);
             // 下载完成后跳到结尾附近，验证"播到真正的文件末尾会自然结束"
+            // 短片段自然播完（demo 用 20s 片），长视频才跳到结尾取证
             if (!jumpedToEnd && task->state == cm::transfer::TaskState::Done &&
-                player.duration() > 5000) {
+                player.duration() > 60000) {
                 jumpedToEnd = true;
                 const qint64 target = player.duration() - 3000;
                 std::printf("PLAY_STREAM_SEEK_NEAR_END ms=%lld\n",
@@ -279,6 +318,8 @@ struct Options {
     QString playUfId;
     QString playLocal;
     QString playRemoteUfId;
+    QString playShareCode;
+    QString shareUfId;
     int shotDelayMs;
 
     Options() : host(QString::fromUtf8("127.0.0.1")), port(8004),
@@ -348,6 +389,10 @@ int main(int argc, char** argv) {
             opt.playFile = QString::fromStdString(argv[++i]);
         } else if (arg == "--play-local" && i + 1 < argc) {
             opt.playLocal = QString::fromStdString(argv[++i]);
+        } else if (arg == "--ui-share" && i + 1 < argc) {
+            opt.shareUfId = QString::fromStdString(argv[++i]);
+        } else if (arg == "--play-share" && i + 1 < argc) {
+            opt.playShareCode = QString::fromStdString(argv[++i]);
         } else if (arg == "--play-remote" && i + 1 < argc) {
             opt.playRemoteUfId = QString::fromStdString(argv[++i]);
         } else if (arg == "--shot-delay" && i + 1 < argc) {
@@ -376,8 +421,9 @@ int main(int argc, char** argv) {
     queue.restoreFromStore();
     net.connectTo(opt.host, opt.port);
 
-    if (!opt.playUfId.isEmpty()) {
-        runPlaybackSmoke(&net, &queue, opt.playUfId);
+    if (!opt.playUfId.isEmpty() || !opt.playShareCode.isEmpty()) {
+        runPlaybackSmoke(&net, &queue, opt.playUfId, opt.playShareCode,
+                         opt.smoke.accessCode);
         net.login(opt.tel, opt.password);
         return app.exec();
     }
@@ -429,10 +475,19 @@ int main(int argc, char** argv) {
         // 等列表回来再点播（列表是登录后异步拉的）
         QTimer::singleShot(1500, [&window, ufId]() { window.playRemoteByUfId(ufId); });
     }
+    if (!opt.shareUfId.isEmpty()) {
+        const quint64 ufId = opt.shareUfId.toULongLong();
+        QTimer::singleShot(1500, [&window, ufId]() { window.shareByUfId(ufId); });
+    }
     if (!opt.screenshot.isEmpty()) {
         const QString path = opt.screenshot;
         QTimer::singleShot(opt.shotDelayMs, [&window, path]() {
-            window.grab().save(path);
+            // 分享窗是模态框，截它而不是主窗口
+            QWidget* target = QApplication::activeModalWidget();
+            if (target == nullptr) {
+                target = &window;
+            }
+            target->grab().save(path);
             QApplication::quit();
         });
     }

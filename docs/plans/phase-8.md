@@ -243,6 +243,81 @@ PLAY_STREAM_ENDED frames=333                 # 下载完成后播到真正末尾
 4. **SDL 抢 main**：只做音频输出也要在 include 前 `#define SDL_MAIN_HANDLED`，否则链接期要 `WinMain`。
 5. **mpeg4 的宽高不在头里**：`opened` 信号的宽高可能是 0×0，渲染以第一帧 QImage 的尺寸为准。
 
+## 联调记录（P8-5 全链路 + 打包）
+
+**一条连续流程**（`scripts/e2e_p8.sh`，可重复执行，日志 `build-client/e2e-run/e2e_p8.log`）：
+
+~~~text
+=== 1/5 登录 + 上传 ===   LOGIN_OK uid=6679 / TASK 1 upload 已完成 bytes=1001690
+=== 2/5 列表定位 ===      ROW uf=30675 e2e_p85_*.mp4
+=== 3/5 分享 ===          SHARE code=JTSJWT access=3788 required=1 expire=2026-10-27
+=== 4/5 新进程打开分享 ===  SHARE_OPEN_OK file=e2e_p85_*.mp4 size=1001690 ticket=yes
+                          PLAY_STREAM_FIRST_FRAME at_ms=417
+                          PLAY_STREAM_SOURCE_DONE state=已完成 bytes=1001690
+                          PLAY_STREAM_POS 160 → 5040 → 10080 → 15200
+                          PLAY_STREAM_ENDED frames=499
+=== 5/5 关键节点截图 ===    p8-5-share-dialog.png / p8-5-playing.png
+FULL_LINK_OK
+~~~
+
+脚本每轮用 ffmpeg 改 `comment` 元数据生成新 md5 的 20s faststart 片，避免"第二次起全是秒传"，
+同时清空 `e2e-run/cm-tasks.db`，保证每轮都是从干净任务库开始。
+
+**顺带修掉的坑**：`UploadInitRq.reqId` 原来直接用任务号（每次启动从 1 开始），会命中服务端幂等键
+复用上一轮已完成的 taskId，分片上报直接 3005。现在用毫秒时间戳保唯一。
+
+## P8 DoD 对照
+
+| 环节 | 实现位置 | 证据 | 截图 |
+|---|---|---|---|
+| 登录 | `ui/LoginDialog` + `netapi`（LoginRq/LoginRs，2001/2004/4007 文案） | P8-1 联调 + P8-5 每步 LOGIN_OK | p8-1-login-list.png |
+| 上传 | `transfer`（init/chunk/complete、坏片重传、秒传 INSTANT） | P8-2 20MB 上传 + P8-5 bytes=1001690 | p8-0/p8-3 |
+| 断点续传 | `.part.state` bitmap + DownloadStatRq；断线转暂停、重连只补缺块 | P8-2：12MB 暂停 → 续传"本次只取 2 块" | —（日志） |
+| 分享 | `shareapi/ShareFlow` + ShareDialog/ShareOpenDialog（2003/2004） | P8-3 错码/过期/取消 + P8-5 全链路 | p8-5-share-dialog.png |
+| 在线播放 | `player/PlayerCore` + `ui/PlayerPane`（边下边播、seek、音量、全屏） | P8-4 首帧 188ms / P8-5 播到 20s 结尾 | p8-4-stream.png、p8-5-playing.png |
+
+截图共 **8 张**（docs/screenshots）：p8-0-skeleton、p8-1-login-list、p8-3-main、p8-4-local-play、
+p8-4-stream、p8-5-share-dialog、p8-5-playing、p8-5-deploy-clean-path。
+
+## 三套命令
+
+~~~bash
+# 构建（客户端，32 位）
+export PATH="/d/QT/Tools/mingw730_32/bin:/d/QT/5.12.11/mingw73_32/bin:$PATH"
+cmake -S . -B build-client -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SERVER=OFF -DBUILD_CLIENT=ON \
+  -DCMAKE_PREFIX_PATH=D:/QT/5.12.11/mingw73_32 \
+  -DCMAKE_CXX_COMPILER=D:/QT/Tools/mingw730_32/bin/g++.exe \
+  -DCMAKE_C_COMPILER=D:/QT/Tools/mingw730_32/bin/gcc.exe
+cmake --build build-client -j8
+ctest --test-dir build-client --output-on-failure
+
+# 运行（开发态，依赖 PATH 里的 Qt/MinGW/播放器 DLL）
+build-client/bin/cloud-media-client.exe --host 192.168.142.131 --port 8004 \
+  --tel 13900000011 --password-env CM_CLI_PASSWORD
+
+# 打包（可独立运行，不依赖 PATH）
+scripts/sync_player_dlls.sh          # 从 legacy 复制 FFmpeg/SDL DLL
+scripts/package_client.sh --verify   # windeployqt + 出 deploy/ + 干净 PATH 自检
+
+# 全链路 demo
+scripts/e2e_p8.sh                    # 结尾打印 FULL_LINK_OK
+~~~
+
+**打包**：`deploy/`（39 个文件，约 103MB）含 Qt5*.dll、`platforms/qwindows.dll`、
+`sqldrivers/qsqlite.dll`、FFmpeg/SDL 全部 DLL、32 位 `libgcc_s_dw2-1.dll`。
+在只留 `C:\Windows\system32;C:\Windows` 的 PATH 下，`--version` 与登录列表都正常
+（截图 `p8-5-deploy-clean-path.png`）。
+
+## 遗留项（明确 deferred）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| HLS m3u8 侧车 | **deferred** | 服务端 `DownloadOpenRs.hls` 已预留；客户端本批只走"下载+播放"主链路 |
+| 1000 行列表滚动压测 | **deferred** | Model/View + 分页已就绪，未做大数据量滚动帧率测量 |
+| 多清晰度转码 / 字幕 / 弹幕 | 非目标 | 需求冻结，不做 |
+| 服务端 zip 打包 | 非目标 | 批量下载由客户端多任务实现 |
+
 ## Tasks
 
 | # | 任务 | 验收 | 状态 |
@@ -253,7 +328,7 @@ PLAY_STREAM_ENDED frames=333                 # 下载完成后播到真正末尾
 | T8-3 | 传输区：上传/下载队列、进度、暂停/取消、断点续传 | 中断后重启可续；限速 2MB/s 时速度显示正确 | **本批完成**（续传/秒传/断线暂停已联调） |
 | T8-4 | 分享：生成/提取/过期提示 | 分享码 + 提取码全流程 | 待做 |
 | T8-5 | 播放器：FFmpeg 解码 + 边下边播 + 基础 HLS | 10MB 视频首块起播 < 1.5s | **部分完成（P8-4）**：解码/同步/seek/边下边播完成（首帧 188ms）；HLS 侧车待做 |
-| T8-6 | 主题打磨 + 打包（windeployqt） | 双击可运行，DLL 齐全 | 待做 |
+| T8-6 | 主题打磨 + 打包（windeployqt） | 双击可运行，DLL 齐全 | **本批完成**：deploy/ 干净 PATH 自检通过 |
 
 ## 风险
 

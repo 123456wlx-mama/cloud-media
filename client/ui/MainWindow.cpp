@@ -542,6 +542,19 @@ void MainWindow::playLocalFile(const QString& path) {
     }
 }
 
+void MainWindow::shareByUfId(quint64 ufId) {
+    if (m_model == nullptr) {
+        return;
+    }
+    for (int i = 0; i < m_model->rowCount(); ++i) {
+        if (m_model->ufIdAt(i) == ufId) {
+            m_table->selectRow(i);
+            onShareSelected();
+            return;
+        }
+    }
+}
+
 void MainWindow::playRemoteByUfId(quint64 ufId) {
     if (m_model == nullptr) {
         return;

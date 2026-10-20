@@ -226,6 +226,16 @@ int TransferQueue::enqueuePlaybackDownload(quint64 ufId, const QString& remoteNa
     return id;
 }
 
+int TransferQueue::enqueueSharedPlayback(const QString& shareTicket,
+                                         const QString& fileName, quint64 size) {
+    const int id = enqueueSharedDownload(shareTicket, fileName, size);
+    TransferTask* task = find(id);
+    if (task != nullptr) {
+        task->playback = true;
+    }
+    return id;
+}
+
 int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
                                          const QString& fileName, quint64 size) {
     TransferTask task;
@@ -383,7 +393,10 @@ void TransferQueue::startUpload(TransferTask* task) {
     rq.chunkSize = kBlockSize;
     rq.totalChunks = static_cast<std::uint32_t>((task->size + kBlockSize - 1) / kBlockSize);
     rq.flags = 1;
-    rq.reqId = static_cast<std::uint32_t>(task->id);
+    // reqId 是服务端幂等键：不能只用任务号（每次进程启动都从 1 开始，会撞历史请求，
+    // 导致复用已完成的 taskId，分片上报直接 3005）。用毫秒时间戳保唯一。
+    rq.reqId = static_cast<std::uint32_t>(
+        QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF);
     const QByteArray payload = encodePayload(rq);
     if (payload.isEmpty()) {
         fail(task, 0, QString::fromUtf8("组包失败"));

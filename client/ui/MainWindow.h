@@ -50,6 +50,7 @@ public slots:
     void refreshList();
     void playLocalFile(const QString& path);
     void playRemoteByUfId(quint64 ufId);  // 联调/命令行入口：按 ufId 起播
+    void shareByUfId(quint64 ufId);       // 联调/截图入口：按 ufId 弹分享窗
 
 private slots:
     void onLoginSucceeded(quint32 code, quint64 uid, const QString& name);
