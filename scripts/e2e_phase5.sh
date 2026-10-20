@@ -19,7 +19,7 @@ MYSQL_DB="${CM_MYSQL_DB:-cloud_media_test}"
 HOST="${E2E_HOST:-127.0.0.1}"
 PORT="${E2E_PORT:-8004}"
 ROOT="${E2E_ROOT:-/home/colin/cloud-media}"
-BIN="$ROOT/build/bin"
+BIN="${E2E_BIN:-$ROOT/build/bin}"
 CONF="$ROOT/build/e2e.conf"
 DATA="${E2E_DATA:-/home/colin/cm_e2e_data}"
 TESTDATA="${E2E_TESTDATA:-/home/colin/cm_testdata}"
@@ -46,12 +46,21 @@ kv() {
 }
 
 stop_server() {
-    if [ -f "$DATA/server.pid" ]; then
-        kill -9 "$(cat "$DATA/server.pid")" 2>/dev/null || true
-        rm -f "$DATA/server.pid"
-    fi
-    pkill -9 -f 'build/bin/cloud-media-server -c' 2>/dev/null || true
-    sleep 1
+    local pids
+    pids=$(ps -eo pid,args | awk '/[c]loud-media-server -c/ {print $1}')
+    for p in $pids; do kill -9 "$p" 2>/dev/null || true; done
+    rm -f "$DATA/server.pid"
+    # 端口兜底：ps 列表可能漏掉刚 fork 的实例，导致重启时 bind 失败。
+    fuser -k -9 8004/tcp >/dev/null 2>&1 || true
+    for _ in $(seq 1 50); do
+        if ss -ltn 2>/dev/null | grep -q ':8004 '; then
+            sleep 0.1
+        else
+            return 0
+        fi
+    done
+    echo "port 8004 still in use" >&2
+    return 1
 }
 
 start_server() {

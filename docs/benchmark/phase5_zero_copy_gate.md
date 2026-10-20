@@ -64,11 +64,45 @@ make -j8
 
 > 说明：D-1 的 `DownloadOpenRs.zero_copy` 直接反映该编译期开关；D-3/D-4 才真正实现两条块发送路径。
 
-## 待补记录
+## ON / OFF 实测记录（2026-10-19）
 
-执行后在此追加：
+### 构建配置
 
-- [ ] 构建配置与 commit
-- [ ] ctest 输出摘要（128 组）
-- [ ] 失败用例（如有）
-- [ ] 最终结论 PASS / FAIL
+~~~text
+build-on : cmake .. -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON
+           CM_DOWNLOAD_ZEROCOPY:BOOL=ON
+build-off: cmake .. -DBUILD_SERVER=ON -DBUILD_STORAGE=ON -DBUILD_TESTS=ON -DCM_DOWNLOAD_ZEROCOPY=OFF
+           CM_DOWNLOAD_ZEROCOPY:BOOL=OFF
+~~~
+
+两者均 `cmake --build . -- -j4` 完成，零 warning；编译命令含 `-std=c++11`。
+
+### ctest 摘要
+
+| 配置 | 过滤 | 结果 |
+|---|---|---|
+| ON | `download|block_sender|crc32_combine` | 6/6 Passed（crc32_combine、download_open、download_ticket、block_sender、block_sender_sendfile、download_service），2.07s |
+| OFF | `download|block_sender` | 5/5 Passed，1.42s |
+| ON 全量 | 全部 41 项（CM_TEST_MYSQL=1、CM_TEST_REDIS=1） | **41/41 Passed，30.47s** |
+
+### zero_copy=1 证据
+
+用 `build-on/bin` 的 server + CLI 跑 `scripts/e2e_phase5.sh`（50 MiB）：
+
+~~~text
+=== C) download interrupt + resume ===
+ZERO_COPY=1
+ZERO_COPY=1
+STATUS=OK
+C_MD5=ba84a1d236af9021ca38d8844595c025
+=== ALL PASSED ===
+~~~
+
+- `ZERO_COPY=1` 来自 10012 `DownloadOpenRs.zero_copy`，说明服务端按 sendfile 路径构建并完成 13 个块的下载。
+- 下载结果与上传源文件 MD5 一致（A_FINAL_MD5 = C_MD5）。
+- 中断后续传仍走同一路径（第二次 `ZERO_COPY=1`）。
+
+### 结论
+
+**PASS。** ON（sendfile 零拷贝）与 OFF（4MB 缓冲回退）两套构建的下载/块发送用例全绿；
+ON 端到端 50 MiB 下载 MD5 一致且 `zero_copy=1`。`CM_DOWNLOAD_ZEROCOPY` 默认 ON 可保持。

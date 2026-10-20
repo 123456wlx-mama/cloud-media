@@ -55,6 +55,7 @@ docker run --rm -v D:/cloud-media:/src -w /src ubuntu:22.04 bash -lc "apt-get up
 | ENABLE_TSAN | OFF | 与 ENABLE_ASAN 互斥 |
 | ENABLE_COVERAGE | OFF | gcov/--coverage；仅 GCC/Clang |
 | USE_BUNDLED_THIRDPARTY | Windows=ON | 预留；当前 thirdparty 为空 |
+| CM_DOWNLOAD_ZEROCOPY | ON | 下载块 sendfile 零拷贝；`-DCM_DOWNLOAD_ZEROCOPY=OFF` 回退到 4MB 缓冲路径，无需改协议 |
 
 ## CMake Target 与依赖方向
 
@@ -91,6 +92,27 @@ cm_compile_options (INTERFACE)
 | 对话框、Model/View、传输中心 | client/ui/ |
 | 压测工具 | benchmarks/ |
 | 架构/协议/数据库/压测文档 | docs/ |
+
+## 服务端 CLI（仅 BUILD_SERVER=ON）
+
+产物在 build/bin，密码优先用环境变量 CM_CLI_PASSWORD，不写命令行/日志：
+
+~~~bash
+# 上传（-r 续传，--stop-after-chunks N 主动中断）
+./bin/upload_cli --host 127.0.0.1 --port 8004 --tel <tel> \
+  --password "$CM_CLI_PASSWORD" --file big.bin [--remote name.bin] [-r]
+
+# 下载（--uf-id 或 --share-code 二选一；-j 并发，--rate 限速）
+./bin/download_cli --host 127.0.0.1 --port 8004 --tel <tel> \
+  --password "$CM_CLI_PASSWORD" --uf-id 123 --out big.bin [-j 4] [-r]
+
+# 列表 / 回收站
+./bin/list_cli --host 127.0.0.1 --port 8004 --tel <tel> --password "$CM_CLI_PASSWORD" [--parent-id 0]
+./bin/recycle_cli list|delete|restore|purge --host 127.0.0.1 --port 8004 \
+  --tel <tel> --password "$CM_CLI_PASSWORD" [--uf-id N]
+~~~
+
+退出码：0 成功 / 2 参数或登录失败 / 3 网络 / 4 服务端拒绝 / 9 主动中断。
 
 ## 测试、Lint 与验证
 

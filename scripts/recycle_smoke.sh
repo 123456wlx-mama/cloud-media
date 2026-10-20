@@ -37,7 +37,17 @@ stop_server() {
     local pids
     pids=$(ps -eo pid,args | awk '/[c]loud-media-server -c/ {print $1}')
     for p in $pids; do kill -9 "$p" 2>/dev/null || true; done
-    sleep 1
+    # 端口兜底：ps 列表可能漏掉刚 fork 的实例，导致重启时 bind 失败。
+    fuser -k -9 8004/tcp >/dev/null 2>&1 || true
+    for _ in $(seq 1 50); do
+        if ss -ltn 2>/dev/null | grep -q ':8004 '; then
+            sleep 0.1
+        else
+            return 0
+        fi
+    done
+    echo "port 8004 still in use" >&2
+    return 1
 }
 
 start_server() {

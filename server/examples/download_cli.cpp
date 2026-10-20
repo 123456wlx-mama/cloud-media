@@ -419,6 +419,7 @@ int main(int argc, char** argv) {
     std::printf("FILE_MD5=%s\n", openRs.fileMd5.c_str());
     std::printf("BLOCK_SIZE=%u\n", openRs.blockSize);
     std::printf("BLOCK_COUNT=%u\n", openRs.blockCount);
+    std::printf("ZERO_COPY=%u\n", static_cast<unsigned>(openRs.zeroCopy));
     std::printf("CONNECTIONS=%d\n", opt.jobs);
 
     const int jobs = opt.jobs;

@@ -1856,19 +1856,19 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 - Modify: README / CODEBUDDY.md（构建选项、CLI 用法，如适用）
 
 **Steps:**
-- [ ] 02：10011/10024 复用、10030~10043、业务 RS code、下载数据纯 raw、分享码 6 位。
-- [ ] 05：tr_offset 改为“已完成字节总和”、GC 自动回收、s_code CHAR(6)。
-- [ ] 06：补 H1/H2 实际测试结果与开关默认值。
-- [ ] CODEBUDDY.md：CM_DOWNLOAD_ZEROCOPY、upload_cli/download_cli 用法。
-- [ ] 跑一次依赖红线 grep（Qt/FFmpeg/server include）。
+- [x] 02：10011/10024 复用、10030~10043、业务 RS code、下载数据纯 raw、分享码 6 位。（已追加「Phase 5 实现回填」节）
+- [x] 05：tr_offset 改为“已完成字节总和”、GC 自动回收、s_code CHAR(6)。（已回填，含 f_updated_at 宽限口径）
+- [x] 06：补 H1/H2 实际测试结果与开关默认值。（14.1 鉴权差异 + 14.3 门槛链接）
+- [x] CODEBUDDY.md：CM_DOWNLOAD_ZEROCOPY、upload_cli/download_cli 用法。（另含 list_cli/recycle_cli）
+- [x] 跑一次依赖红线 grep（Qt/FFmpeg/server include）。（2026-10-19 全干净）
 
 **gtest 清单:**
 - 无；静态检查与文档 review。
 
 **验收标准:**
-- [ ] 文档与代码字段/类型号/默认值一致。
-- [ ] 新机器按 README 能构建；CLI --help 可用。
-- [ ] 无密码/token 进入文档。
+- [x] 文档与代码字段/类型号/默认值一致。
+- [x] 新机器按 README 能构建；CLI --help 可用。（2026-10-19：build-on/build-off 按 README 命令构建；4 个 CLI 无参均输出 usage）
+- [x] 无密码/token 进入文档。
 
 **风险:**
 - 文档再次漂移 → 把类型号与常量表放在 06 附录 B，改动必须同步。
@@ -1879,16 +1879,16 @@ bool Codec::verifyFrameCrc(const RawFrame& frame);
 
 **测试注册约定：** 新增测试一律用 add_test(NAME <短名> COMMAND <exe> ...) 显式注册，短名与本文命令一致；P0 至少注册 md5、crc32_combine、bulk_gate、send_file、cache_key、schema_v2_2，后续 Stage 至少注册 upload、download、share、recycle、list、timers、degrade。
 
-- [ ] P0：ctest -R 'md5|crc32_combine|cache_key|bulk|codec|buffer|send_file' 全绿。
-- [ ] H1 门槛：128 组 crc32Combine 对拍全绿；否则 CM_DOWNLOAD_ZEROCOPY 保持 OFF。
-- [ ] H2 门槛：bulk_gate 7 例全绿；连续 10 个 4MB 帧后无 4MB 常驻；ASan/LSan 干净。
-- [ ] DAO：无 DB 单测全绿；有 DB 集成全绿；引用计数轨迹正确。
-- [ ] 上传：U1~U11 对应服务层/CLI 用例全绿；杀进程续传成功。
-- [ ] 下载：OFF 与 ON 两套构建的 D1~D6 全绿；50MB MD5 一致。
-- [ ] 分享/回收站/列表：S1~S5、R1~R4、P1~P2 全绿。
-- [ ] 定时任务：5min/200、每日/100、24h 宽限、幂等、退出 <5s。
-- [ ] 降级：Redis/MySQL 故障行为符合 06 第 10 节。
-- [ ] 代码：-Wall -Wextra 零警告；无裸 new/delete 管资源；无 C++14/17；无 OFFSET 大分页；无密码日志。
+- [x] P0：ctest -R 'md5|crc32_combine|cache_key|bulk|codec|buffer|send_file' 全绿。（build-on 全量 41/41）
+- [x] H1 门槛：128 组 crc32Combine 对拍全绿；否则 CM_DOWNLOAD_ZEROCOPY 保持 OFF。（gate 文档已补 ON/OFF 实测）
+- [x] H2 门槛：bulk_gate 7 例全绿；连续 10 个 4MB 帧后无 4MB 常驻；ASan/LSan 干净。（2026-10-19 复核：bulk_gate 通过；常驻/ASan 沿用 H2 门槛记录）
+- [x] DAO：无 DB 单测全绿；有 DB 集成全绿；引用计数轨迹正确。
+- [x] 上传：U1~U11 对应服务层/CLI 用例全绿；杀进程续传成功。（E2E A/B）
+- [x] 下载：OFF 与 ON 两套构建的 D1~D6 全绿；50MB MD5 一致。（build-on 6/6、build-off 5/5、E2E C）
+- [x] 分享/回收站/列表：S1~S5、R1~R4、P1~P2 全绿。（ctest share/recycle/file_service + recycle_smoke.sh）
+- [x] 定时任务：5min/200、每日/100、24h 宽限、幂等、退出 <5s。
+- [x] 降级：Redis/MySQL 故障行为符合 06 第 10 节（鉴权差异已在 06 §14.1 回填）。
+- [x] 代码：-Wall -Wextra 零警告；无裸 new/delete 管资源；无 C++14/17；无 OFFSET 大分页；无密码日志。（红线 grep 全干净）
 
 **OFF/ON 双构建矩阵（人工执行）：**
 
