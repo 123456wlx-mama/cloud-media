@@ -178,15 +178,14 @@ void DownloadHandlers::handleRange(std::uint64_t uid,
         return;
     }
     if (rl == ErrorCode::Timeout && conn.runAfter) {
-        // 令牌不足但在 2s 内可补足：交给 loop 定时器延迟重发，绝不 sleep 工作线程。
-        const std::string ticket = rq.ticket;
-        const std::uint64_t fId = rq.fId;
-        const std::uint32_t blockIndex = rq.blockIndex;
-        const std::uint32_t seq = frame.seq;
+        // 令牌不足但在 2s 内可补足：交给 loop 定时器延迟后**重新走一遍限速**，
+        // 绝不 sleep 工作线程。注意必须重入 consume——直接 sendRangeNow 会漏计费，
+        // 等价于把速率翻倍（P7-4 的 3.9MB/s 就是这么来的）。
         const Conn delayed = conn;
+        const protocol::Frame retryFrame = frame;
         conn.runAfter(static_cast<std::int64_t>(waitMs),
-                      [this, uid, ticket, fId, blockIndex, seq, delayed]() {
-                          sendRangeNow(uid, ticket, fId, blockIndex, seq, delayed);
+                      [this, uid, retryFrame, delayed]() {
+                          handleRange(uid, retryFrame, delayed);
                       });
         return;
     }
