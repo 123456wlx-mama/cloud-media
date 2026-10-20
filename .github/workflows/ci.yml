@@ -8,6 +8,22 @@ jobs:
   build-test:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    # MySQL 用服务容器：root 口令已知、端口稳定、就绪由 health check 保证，
+    # 绕开 runner 预装 MySQL 的 auth_socket/未知 root 口令问题。
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: cloud_media_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
     env:
       # CI 临时测试库口令；不是生产密钥，VM/本地不依赖此值。
       CM_MYSQL_PASSWORD: cm_test_pw_ci
@@ -15,6 +31,7 @@ jobs:
       CM_TEST_MYSQL_DB: cloud_media_test
       CM_TEST_REDIS: "1"
       CI_JOBS: "4"
+
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -24,60 +41,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake g++ make lcov \
-            mysql-server redis-server \
+            redis-server \
             default-libmysqlclient-dev libhiredis-dev
 
-      - name: start mysql and redis
+      - name: start redis
         run: |
-          set +e
-          # runner 上 MySQL root 口令未知（非 auth_socket），sudo mysql 会被 Access denied。
-          # 改用 --init-file 在 mysqld 启动阶段以 root 特权直接建库建用户，绕开 root 口令。
-          sudo tee /tmp/cm-init.sql >/dev/null <<'EOF'
-          CREATE DATABASE IF NOT EXISTS cloud_media_test DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-          CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
-          CREATE USER IF NOT EXISTS 'cm_test'@'localhost' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
-          GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'%';
-          GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'localhost';
-          FLUSH PRIVILEGES;
-          EOF
-
-          sudo service mysql stop >/dev/null 2>&1 || true
-          sudo mkdir -p /var/run/mysqld
-          sudo chown mysql:mysql /var/run/mysqld
-          sudo nohup mysqld --user=mysql --init-file=/tmp/cm-init.sql >/tmp/mysqld.log 2>&1 &
-          disown || true
-
-          for i in $(seq 1 60); do
-            if sudo mysqladmin ping --silent 2>/dev/null; then echo "mysql ready after ${i}s"; break; fi
-            sleep 1
-          done
-          sudo mysqladmin ping
-
           sudo service redis-server start || sudo systemctl start redis-server
           redis-cli ping
 
       - name: init test database
         run: |
-          set +e
-
-          echo "== mysql client version =="
-          mysql --version
-
-          echo "== import schema/patches =="
-          for f in sql/schema_v2.sql sql/patch_v2_1_index.sql sql/patch_v2_2_phase5.sql; do
-            out=$(mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < "$f" 2>&1)
-            rc=$?
-            if [ $rc -ne 0 ]; then
-              echo "::error::import $f failed (exit $rc): $out"
-              sudo tail -30 /var/log/mysql/error.log 2>/dev/null || true
-              exit 1
-            fi
-            echo "imported $f"
-          done
+          set -euo pipefail
+          # MySQL 服务容器已就绪（health check），root 口令来自 services.mysql.env
+          mysql -h 127.0.0.1 -uroot -proot <<'SQL'
+          CREATE USER IF NOT EXISTS 'cm_test'@'%' IDENTIFIED WITH mysql_native_password BY 'cm_test_pw_ci';
+          GRANT ALL PRIVILEGES ON cloud_media_test.* TO 'cm_test'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/schema_v2.sql
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_1_index.sql
+          mysql -h 127.0.0.1 -ucm_test -p"$CM_MYSQL_PASSWORD" cloud_media_test < sql/patch_v2_2_phase5.sql
 
       # 与 VM 对齐：显式 C++11；项目的 cmake/compiler_flags.cmake 也是 11。
-      # g++11 可能比 g++5.4 多出警告；项目未开 -Werror，warnings 不阻断，
-      # 差异会在首次推送时记录到 docs/benchmark/phase6_summary.md。
+      # g++11 可能比 g++5.4 多出警告；项目未开 -Werror，warnings 不阻断。
       - name: ci (build + ctest + coverage gate)
         env:
           CI_BUILD_DIR: ${{ github.workspace }}/build-ci
