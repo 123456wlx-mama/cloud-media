@@ -10,7 +10,7 @@ namespace netapi {
 
 NetClient::NetClient(QObject* parent)
     : QObject(parent), m_thread(nullptr), m_worker(nullptr), m_seq(0),
-      m_port(0), m_haveCreds(false), m_uid(0) {
+      m_port(0), m_haveCreds(false), m_uid(0), m_linkState(0) {
     m_thread = new QThread(this);
     m_worker = new NetWorker();
     m_worker->moveToThread(m_thread);
@@ -108,6 +108,7 @@ quint32 NetClient::sendRequest(quint16 type, const QByteArray& payload) {
 }
 
 void NetClient::onLinkState(int state, const QString& detail) {
+    m_linkState = state;
     emit linkState(state, detail);
     // 重连成功且之前登录过：自动重登，UI 无感（契约 §3 断线重连）。
     if (state == 1 && m_haveCreds && m_uid != 0) {

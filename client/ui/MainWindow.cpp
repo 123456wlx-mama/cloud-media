@@ -3,6 +3,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QDialog>
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -48,6 +49,53 @@ bool isVideoFile(const QString& name) {
            suffix == QString::fromUtf8("avi") || suffix == QString::fromUtf8("mov") ||
            suffix == QString::fromUtf8("flv") || suffix == QString::fromUtf8("ts") ||
            suffix == QString::fromUtf8("m4v") || suffix == QString::fromUtf8("webm");
+}
+
+// 自绘文本输入框：QInputDialog 在深色 QSS 下尺寸给不足（用户要手动拉伸），
+// 还带个没用的"?"按钮。这里自己搭：固定最小宽、深色、两个按钮。
+bool askText(QWidget* parent, const QString& title, const QString& label,
+             const QString& initial, QString* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    QDialog dialog(parent);
+    dialog.setWindowTitle(title);
+    dialog.setObjectName(QString::fromUtf8("formDialog"));
+    dialog.setModal(true);
+    dialog.setMinimumWidth(420);
+
+    QVBoxLayout* root = new QVBoxLayout(&dialog);
+    root->setContentsMargins(24, 20, 24, 18);
+    root->setSpacing(12);
+
+    QLabel* tip = new QLabel(label, &dialog);
+    root->addWidget(tip);
+
+    QLineEdit* edit = new QLineEdit(initial, &dialog);
+    edit->selectAll();
+    root->addWidget(edit);
+
+    QHBoxLayout* buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    QPushButton* cancel = new QPushButton(QString::fromUtf8("取消"), &dialog);
+    cancel->setObjectName(QString::fromUtf8("rowButton"));
+    QPushButton* ok = new QPushButton(QString::fromUtf8("确定"), &dialog);
+    ok->setObjectName(QString::fromUtf8("primaryButton"));
+    ok->setDefault(true);
+    buttons->addWidget(cancel);
+    buttons->addWidget(ok);
+    root->addLayout(buttons);
+
+    QObject::connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(edit, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+
+    edit->setFocus();
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+    *out = edit->text().trimmed();
+    return !out->isEmpty();
 }
 
 }  // namespace
@@ -99,6 +147,11 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
     m_linkBadge->setObjectName(QString::fromUtf8("linkBadge"));
     statusBar()->addPermanentWidget(m_linkBadge);
     statusBar()->showMessage(QString::fromUtf8("未登录"));
+    // 链路可能在本窗口创建前就连上了（connectTo 早于 MainWindow），
+    // 那时 linkState(1) 已经发过，这里补一次当前状态，否则徽标永远停在"连接中"。
+    if (m_net != nullptr) {
+        setLinkBadge(m_net->linkStateValue(), QString());
+    }
 
     m_toast = new Toast(centralWidget());
     if (m_recycle != nullptr) {
@@ -283,7 +336,7 @@ QWidget* MainWindow::buildFilePane() {
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(52);  // 字号调大后行高同步
+    m_table->verticalHeader()->setDefaultSectionSize(58);  // 字号调大后行高同步
     QHeaderView* tableHeader = m_table->horizontalHeader();
     tableHeader->setStretchLastSection(false);
     tableHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -672,14 +725,13 @@ void MainWindow::onAddFolderClicked() {
     if (m_net == nullptr) {
         return;
     }
-    bool ok = false;
-    const QString name = QInputDialog::getText(
-        this, QString::fromUtf8("新建文件夹"), QString::fromUtf8("文件夹名"),
-        QLineEdit::Normal, QString::fromUtf8("新建文件夹"), &ok);
-    if (!ok || name.trimmed().isEmpty()) {
+    QString name;
+    if (!askText(this, QString::fromUtf8("新建文件夹"),
+                 QString::fromUtf8("请输入文件夹名："),
+                 QString::fromUtf8("新建文件夹"), &name)) {
         return;
     }
-    m_net->addFolder(currentParent(), name.trimmed());
+    m_net->addFolder(currentParent(), name);
 }
 
 void MainWindow::onAddFolderFinished(quint32 code, quint64 ufId,
@@ -760,6 +812,10 @@ void MainWindow::setLinkBadge(int state, const QString& detail) {
     QString text;
     QString color;
     switch (state) {
+        case 0:
+            text = QString::fromUtf8("● 连接中…");
+            color = QString::fromUtf8("#F0A63A");
+            break;
         case 1:
             text = QString::fromUtf8("● 已连接");
             color = QString::fromUtf8("#35C46B");

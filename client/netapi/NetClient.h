@@ -36,6 +36,9 @@ public:
 
     quint64 uid() const { return m_uid; }
     QString userName() const { return m_userName; }
+    // 最近一次链路状态（0连接中 1已连接 2重连中 3失败）。
+    // 界面晚于 connectTo 创建时，用它补一次初始状态，避免徽标一直停在"连接中"。
+    int linkStateValue() const { return m_linkState; }
     // 最近一次分配的 seq（诊断/测试用）。
     quint32 lastSeq() const { return m_seq; }
 
@@ -80,6 +83,7 @@ private:
     bool m_haveCreds;
     quint64 m_uid;
     QString m_userName;
+    int m_linkState;
 };
 
 }  // namespace netapi

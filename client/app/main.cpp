@@ -475,7 +475,7 @@ struct Options {
 };
 
 void applyTheme(QApplication* app) {
-    QFont font(QString::fromUtf8("Microsoft YaHei UI"), 9);
+    QFont font(QString::fromUtf8("Microsoft YaHei UI"), 11);
     app->setFont(font);
     QFile qss(QString::fromUtf8(":/app.qss"));
     if (qss.open(QIODevice::ReadOnly)) {
@@ -555,6 +555,11 @@ int main(int argc, char** argv) {
             opt.screenshot = QString::fromStdString(argv[++i]);
         }
     }
+
+    // 高 DPI：Windows 缩放 125%/150% 时不开这两个属性，Qt 按物理像素渲染，
+    // 整个界面（含所有 QSS px 字号）都会显得特别小。必须在 QApplication 之前设置。
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
     QApplication app(argc, argv);
     app.setApplicationName(QString::fromUtf8("cloud-media"));
