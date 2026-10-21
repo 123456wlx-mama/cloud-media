@@ -283,7 +283,7 @@ QWidget* MainWindow::buildFilePane() {
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(44);  // 字号调大后行高同步
+    m_table->verticalHeader()->setDefaultSectionSize(52);  // 字号调大后行高同步
     QHeaderView* tableHeader = m_table->horizontalHeader();
     tableHeader->setStretchLastSection(false);
     tableHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -318,7 +318,8 @@ QWidget* MainWindow::buildFilePane() {
     upload->setObjectName(QString::fromUtf8("primaryButton"));
     upload->setMaximumWidth(120);
     QPushButton* uploadFolder = new QPushButton(QString::fromUtf8("上传文件夹"), pane);
-    uploadFolder->setObjectName(QString::fromUtf8("rowButton"));
+    // 与「上传文件」同款主按钮：外观、hover/按下效果一致
+    uploadFolder->setObjectName(QString::fromUtf8("primaryButton"));
     uploadFolder->setMaximumWidth(120);
     QHBoxLayout* emptyRow = new QHBoxLayout();
     emptyRow->addStretch(1);

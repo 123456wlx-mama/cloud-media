@@ -5,7 +5,7 @@ QWidget {
     background-color: #12161B;
     color: #E6EDF5;
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-    font-size: 15px;
+    font-size: 17px;
 }
 
 QMainWindow, QDialog {
@@ -28,13 +28,13 @@ QSplitter#mainSplitter::handle {
 
 #paneTitle {
     color: #E6EDF5;
-    font-size: 16px;
+    font-size: 19px;
     font-weight: 600;
 }
 
 #emptyHint {
     color: #5C6879;
-    font-size: 15px;
+    font-size: 17px;
     line-height: 20px;
 }
 
@@ -42,7 +42,7 @@ QSplitter#mainSplitter::handle {
     background-color: #1A2028;
     border-top: 1px solid #2C3542;
     color: #9AA7B8;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 /* ---------- 登录 ---------- */
@@ -52,13 +52,13 @@ QSplitter#mainSplitter::handle {
 
 #brandTitle {
     color: #E6EDF5;
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 600;
 }
 
 #brandSubtitle {
     color: #9AA7B8;
-    font-size: 15px;
+    font-size: 17px;
     margin-top: 6px;
 }
 
@@ -68,7 +68,7 @@ QSplitter#mainSplitter::handle {
     border-radius: 6px;
     padding: 10px 12px;
     color: #E6EDF5;
-    font-size: 16px;
+    font-size: 19px;
         selection-background-color: #3D8BFF;
 }
 
@@ -78,7 +78,7 @@ QSplitter#mainSplitter::handle {
 
 #formError {
     color: #E5544B;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 #primaryButton {
@@ -86,7 +86,7 @@ QSplitter#mainSplitter::handle {
     border: none;
     border-radius: 6px;
     color: #FFFFFF;
-    font-size: 16px;
+    font-size: 19px;
     font-weight: 600;
     padding: 10px 16px;
 }
@@ -108,7 +108,7 @@ QSplitter#mainSplitter::handle {
     background: transparent;
     border: none;
     color: #3D8BFF;
-    font-size: 15px;
+    font-size: 17px;
     padding: 0 2px;
 }
 
@@ -118,7 +118,7 @@ QSplitter#mainSplitter::handle {
 
 #hintText {
     color: #9AA7B8;
-    font-size: 15px;
+    font-size: 17px;
 }
 
 /* ---------- 通用控件占位（P8-1 起真正使用） ---------- */
@@ -200,7 +200,7 @@ QToolTip {
 
 #pathLabel {
     color: #E6EDF5;
-    font-size: 15px;
+    font-size: 17px;
     padding-left: 4px;
 }
 
@@ -209,7 +209,7 @@ QPushButton#rowButton {
     border: 1px solid #2C3542;
     border-radius: 6px;
     color: #E6EDF5;
-    font-size: 14px;
+    font-size: 16px;
     padding: 4px 10px;
 }
 
@@ -237,23 +237,23 @@ QPushButton#dangerButton:hover {
 
 #taskName {
     color: #E6EDF5;
-    font-size: 15px;
+    font-size: 17px;
 }
 
 #taskState {
     color: #9AA7B8;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 #taskStateInstant {
     color: #35C46B;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
 }
 
 #taskError {
     color: #E5544B;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 #recycleRow {
@@ -268,14 +268,14 @@ QPushButton#dangerButton:hover {
 
 #toastText {
     color: #E6EDF5;
-    font-size: 15px;
+    font-size: 17px;
 }
 
 QPushButton#toastAction {
     background: transparent;
     border: none;
     color: #3D8BFF;
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 600;
     padding: 0 4px;
 }
@@ -286,7 +286,7 @@ QPushButton#toastAction:hover {
 
 #shareCode {
     color: #3D8BFF;
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 600;
     letter-spacing: 4px;
     padding: 12px 0;
@@ -328,7 +328,7 @@ QPushButton#playButton {
     border: 1px solid #2C3542;
     border-radius: 14px;
     color: #E6EDF5;
-    font-size: 16px;
+    font-size: 19px;
 }
 
 QPushButton#playButton:hover {
@@ -365,7 +365,7 @@ QSlider::handle:horizontal:hover {
 
 #bufferLabel {
     color: #E6EDF5;
-    font-size: 15px;
+    font-size: 17px;
 }
 
 #playerErrorPanel {
@@ -389,8 +389,8 @@ QTabWidget::tab-bar {
 QTabBar::tab {
     background-color: #222A34;
     color: #9AA7B8;
-    min-width: 72px;
-    padding: 6px 14px;
+    min-width: 56px;
+    padding: 5px 8px;
     border: 1px solid #2C3542;
     border-bottom: none;
     border-top-left-radius: 6px;
