@@ -64,6 +64,8 @@ add_executable(cloud-media-client
     ui/ShareDialog.h
     ui/RecycleDialog.cpp
     ui/RecycleDialog.h
+    ui/RegisterDialog.cpp
+    ui/RegisterDialog.h
     ui/resources.qrc
 )
 

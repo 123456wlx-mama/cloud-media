@@ -1,13 +1,13 @@
 #include "ui/LoginDialog.h"
 
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
 
 #include "netapi/NetClient.h"
+#include "ui/RegisterDialog.h"
 
 namespace cm {
 namespace ui {
@@ -79,8 +79,6 @@ LoginDialog::LoginDialog(netapi::NetClient* net, QWidget* parent)
     if (m_net != nullptr) {
         connect(m_net, SIGNAL(loginFinished(quint32, quint64, QString)), this,
                 SLOT(onLoginFinished(quint32, quint64, QString)));
-        connect(m_net, SIGNAL(registerFinished(quint32, quint64)), this,
-                SLOT(onRegisterFinished(quint32, quint64)));
         connect(m_net, SIGNAL(requestFailed(quint16, QString)), this,
                 SLOT(onRequestFailed(quint16, QString)));
     }
@@ -116,42 +114,18 @@ void LoginDialog::onLoginClicked() {
 }
 
 void LoginDialog::onRegisterClicked() {
+    // 先注册再登录：打开独立注册表单，成功回来只回填手机号/密码，不自动登录。
     if (m_net == nullptr) {
         showError(QString::fromUtf8("网络层未初始化"));
         return;
     }
-    if (tel().isEmpty() || password().isEmpty()) {
-        showError(QString::fromUtf8("请先填手机号和密码，再点注册"));
+    RegisterDialog dialog(m_net, this);
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    if (password().size() < 6) {
-        showError(QString::fromUtf8("密码至少 6 位"));
-        return;
-    }
-    bool ok = false;
-    const QString name = QInputDialog::getText(
-        this, QString::fromUtf8("注册"), QString::fromUtf8("昵称"),
-        QLineEdit::Normal, QString::fromUtf8("用户") + tel().right(4), &ok);
-    if (!ok || name.trimmed().isEmpty()) {
-        return;
-    }
-    m_error->setVisible(false);
-    setBusy(true);
-    m_net->registerAccount(tel(), password(), name.trimmed());
-}
-
-void LoginDialog::onRegisterFinished(quint32 code, quint64 uid) {
-    Q_UNUSED(uid);
-    setBusy(false);
-    if (code == 0) {
-        showError(QString::fromUtf8("注册成功，直接点「登录」即可"));
-        return;
-    }
-    if (code == 1003) {
-        showError(QString::fromUtf8("该手机号已注册，请直接登录"));
-        return;
-    }
-    showError(QString::fromUtf8("注册失败(code=%1)").arg(code));
+    m_tel->setText(dialog.tel());
+    m_password->setText(dialog.password());
+    showError(QString::fromUtf8("注册成功，请输入密码后点「登录」"));
 }
 
 void LoginDialog::onLoginFinished(quint32 code, quint64 uid, const QString& name) {

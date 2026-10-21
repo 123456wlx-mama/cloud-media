@@ -45,6 +45,7 @@ SOURCES += \
     ui/Toast.cpp \
     ui/ShareDialog.cpp \
     ui/RecycleDialog.cpp \
+    ui/RegisterDialog.cpp \
     player/PlayerCore.cpp \
     player/PacketQueue.cpp \
     player/GrowingFileIO.cpp
@@ -71,6 +72,7 @@ HEADERS += \
     ui/Toast.h \
     ui/ShareDialog.h \
     ui/RecycleDialog.h \
+    ui/RegisterDialog.h \
     player/PlayerCore.h \
     player/PacketQueue.h \
     player/GrowingFileIO.h
