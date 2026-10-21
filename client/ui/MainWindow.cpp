@@ -39,7 +39,7 @@ namespace ui {
 namespace {
 
 const char* kTransferHint = "没有传输任务\n上传 / 下载进度会实时显示在这里";
-const char* kPlayerHint = "未选择文件\n在左侧点一个视频即可起播";
+const char* kPlayerHint = "暂无播放内容\n在左侧双击音视频文件即可开始播放";
 const quint32 kPageSize = 50;
 
 // 双击这些后缀走播放器（其余给提示，不做"用系统播放器打开"的自动降级）
@@ -130,9 +130,11 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
     m_splitter->setStretchFactor(0, 5);
     m_splitter->setStretchFactor(1, 3);
     m_splitter->setStretchFactor(2, 4);
+    // 初始比例：文件区宽一点、传输区窄一点，避免三栏都空的时候中间留一大片黑
+    m_splitter->setSizes(QList<int>() << 560 << 280 << 480);
     // QSplitter 不给子控件最小宽度时会被挤成 0（截图里播放区/传输区时隐时现）。
     if (QWidget* w = m_splitter->widget(0)) {
-        w->setMinimumWidth(300);
+        w->setMinimumWidth(420);
     }
     if (QWidget* w = m_splitter->widget(1)) {
         w->setMinimumWidth(200);
@@ -306,14 +308,18 @@ QWidget* MainWindow::buildFilePane() {
     m_pathLabel->setObjectName(QString::fromUtf8("pathLabel"));
     barLayout->addWidget(m_pathLabel, 1);
 
-    QPushButton* openShare = new QPushButton(QString::fromUtf8("打开分享"), bar);
+    // 工具栏空间有限，标签取短名 + 悬浮提示（否则字号一大就被裁字）
+    QPushButton* openShare = new QPushButton(QString::fromUtf8("分享码"), bar);
     openShare->setObjectName(QString::fromUtf8("rowButton"));
+    openShare->setToolTip(QString::fromUtf8("输入分享码打开别人的分享"));
     barLayout->addWidget(openShare);
     QPushButton* recycle = new QPushButton(QString::fromUtf8("回收站"), bar);
     recycle->setObjectName(QString::fromUtf8("rowButton"));
+    recycle->setToolTip(QString::fromUtf8("已删除的文件"));
     barLayout->addWidget(recycle);
-    QPushButton* addFolder = new QPushButton(QString::fromUtf8("新建文件夹"), bar);
+    QPushButton* addFolder = new QPushButton(QString::fromUtf8("新建"), bar);
     addFolder->setObjectName(QString::fromUtf8("rowButton"));
+    addFolder->setToolTip(QString::fromUtf8("新建文件夹"));
     barLayout->addWidget(addFolder);
     QPushButton* refresh = new QPushButton(QString::fromUtf8("刷新"), bar);
     refresh->setObjectName(QString::fromUtf8("rowButton"));
@@ -334,6 +340,10 @@ QWidget* MainWindow::buildFilePane() {
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
+    // 文件名过长时右省略 + 悬浮看全名（配合 FileTableModel 的 ToolTipRole）
+    m_table->setTextElideMode(Qt::ElideRight);
+    m_table->setWordWrap(false);
+    m_table->setIconSize(QSize(20, 20));
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(58);  // 字号调大后行高同步
@@ -352,7 +362,7 @@ QWidget* MainWindow::buildFilePane() {
     layout->addWidget(m_table, 1);
 
     m_fileEmpty = new QLabel(
-        QString::fromUtf8("还没有文件\n把文件拖进来，或点「上传」"), pane);
+        QString::fromUtf8("这里还是空的\n把文件拖进窗口，或点下面的「上传文件」"), pane);
     m_fileEmpty->setObjectName(QString::fromUtf8("emptyHint"));
     m_fileEmpty->setAlignment(Qt::AlignCenter);
     layout->addWidget(m_fileEmpty, 1);

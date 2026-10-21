@@ -101,7 +101,7 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
     layout->addWidget(m_surface->widget(), 1);
 
     m_emptyHint = new QLabel(
-        QString::fromUtf8("未选择文件\n在左侧双击视频即可起播"), this);
+        QString::fromUtf8("暂无播放内容\n在左侧双击音视频文件即可开始播放"), this);
     m_emptyHint->setObjectName(QString::fromUtf8("emptyHint"));
     m_emptyHint->setAlignment(Qt::AlignCenter);
     layout->addWidget(m_emptyHint, 1);

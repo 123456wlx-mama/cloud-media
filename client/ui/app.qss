@@ -96,18 +96,32 @@ QDialog#formDialog {
     font-size: 18px;
 }
 
+/* 主按钮：降低饱和度的深蓝渐变 + 细描边，避免在暗色底上"跳"出来 */
 #primaryButton {
-    background-color: #3D8BFF;
-    border: none;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                      stop:0 #2E6FC4, stop:1 #24589E);
+    border: 1px solid #3C7FD0;
     border-radius: 6px;
-    color: #FFFFFF;
+    color: #EAF2FF;
     font-size: 21px;
     font-weight: 600;
     padding: 10px 16px;
 }
 
 #primaryButton:hover {
-    background-color: #5AA0FF;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                      stop:0 #367FDB, stop:1 #2A64B4);
+    border-color: #4A8FE0;
+}
+
+#primaryButton:pressed {
+    background-color: #1F4E8C;
+}
+
+#primaryButton:disabled {
+    background-color: #2A3542;
+    border-color: #333C4A;
+    color: #7A8794;
 }
 
 #primaryButton:pressed {
@@ -180,24 +194,52 @@ QProgressBar::chunk {
     border-radius: 3px;
 }
 
+/* 滚动条：垂直 + 水平都化细深色。
+   之前只写了垂直，水平滚条还是系统亮灰 —— 文件列表底下那条白杠就是它。 */
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
+    width: 12px;
+    margin: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 12px;
     margin: 0;
 }
 
 QScrollBar::handle:vertical {
-    background: #2C3542;
-    border-radius: 5px;
-    min-height: 24px;
+    background: #333C4A;
+    border-radius: 6px;
+    min-height: 32px;
 }
 
-QScrollBar::handle:vertical:hover {
-    background: #3A4553;
+QScrollBar::handle:horizontal {
+    background: #333C4A;
+    border-radius: 6px;
+    min-width: 32px;
 }
 
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {
+    background: #46525F;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
     height: 0;
+    background: transparent;
+}
+
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: transparent;
+}
+
+/* 表格右下角那块小方块 */
+QAbstractScrollArea::corner {
+    background: #161C23;
+    border: none;
 }
 
 QToolTip {
@@ -224,8 +266,8 @@ QPushButton#rowButton {
     border: 1px solid #2C3542;
     border-radius: 6px;
     color: #E6EDF5;
-    font-size: 18px;
-    padding: 4px 10px;
+    font-size: 17px;
+    padding: 3px 8px;
 }
 
 QPushButton#rowButton:hover {
