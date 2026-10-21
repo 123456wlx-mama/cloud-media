@@ -230,7 +230,8 @@ int TransferQueue::enqueueUpload(const QString& localPath, const QString& remote
 
 int TransferQueue::enqueuePlaybackDownload(quint64 ufId, const QString& remoteName,
                                            quint64 size) {
-    const int id = enqueueDownload(ufId, remoteName, size);
+    // 播放是临时的：落系统临时目录，播完由 PlayerPane 清理，不污染用户「下载」文件夹。
+    const int id = enqueueDownload(ufId, remoteName, size, true);
     TransferTask* task = find(id);
     if (task != nullptr) {
         task->playback = true;
@@ -240,7 +241,7 @@ int TransferQueue::enqueuePlaybackDownload(quint64 ufId, const QString& remoteNa
 
 int TransferQueue::enqueueSharedPlayback(const QString& shareTicket,
                                          const QString& fileName, quint64 size) {
-    const int id = enqueueSharedDownload(shareTicket, fileName, size);
+    const int id = enqueueSharedDownload(shareTicket, fileName, size, true);
     TransferTask* task = find(id);
     if (task != nullptr) {
         task->playback = true;
@@ -249,7 +250,8 @@ int TransferQueue::enqueueSharedPlayback(const QString& shareTicket,
 }
 
 int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
-                                         const QString& fileName, quint64 size) {
+                                         const QString& fileName, quint64 size,
+                                         bool transient) {
     TransferTask task;
     task.id = nextTaskId();
     task.type = TaskType::Download;
@@ -258,7 +260,8 @@ int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
     task.remoteName = fileName.isEmpty() ? QString::fromUtf8("shared_file.bin")
                                          : fileName;
     task.size = size;
-    task.localPath = downloadRoot() + QString::fromUtf8("/") + task.remoteName;
+    task.localPath = (transient ? QDir::tempPath() : downloadRoot()) +
+                     QString::fromUtf8("/") + task.remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);
@@ -267,7 +270,7 @@ int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
 }
 
 int TransferQueue::enqueueDownload(quint64 ufId, const QString& remoteName,
-                                   quint64 size) {
+                                   quint64 size, bool transient) {
     TransferTask task;
     task.id = nextTaskId();
     task.type = TaskType::Download;
@@ -275,7 +278,8 @@ int TransferQueue::enqueueDownload(quint64 ufId, const QString& remoteName,
     task.remoteName = remoteName;
     task.size = size;
     // 落到用户「下载」文件夹（用户可在资源管理器直接找到）。
-    task.localPath = downloadRoot() + QString::fromUtf8("/") + remoteName;
+    task.localPath = (transient ? QDir::tempPath() : downloadRoot()) +
+                     QString::fromUtf8("/") + remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);

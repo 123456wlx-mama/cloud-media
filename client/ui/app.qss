@@ -374,3 +374,40 @@ QSlider::handle:horizontal:hover {
     border-radius: 8px;
 }
 
+/* 传输区「上传/下载」页签：之前没写样式，Qt 默认白底白字 → 一片白框看不清 */
+QTabWidget::pane {
+    background-color: #1A2028;
+    border: 1px solid #2C3542;
+    border-radius: 6px;
+    top: -1px;
+}
+
+QTabWidget::tab-bar {
+    alignment: left;
+}
+
+QTabBar::tab {
+    background-color: #222A34;
+    color: #9AA7B8;
+    min-width: 72px;
+    padding: 6px 14px;
+    border: 1px solid #2C3542;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+
+QTabBar::tab:selected {
+    background-color: #1A2028;
+    color: #E6EDF5;
+    border-bottom: 2px solid #3D8BFF;
+}
+
+QTabBar::tab:hover {
+    color: #E6EDF5;
+}
+
+QTabBar::tab:!selected {
+    margin-top: 2px;
+}
+

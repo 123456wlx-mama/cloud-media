@@ -77,6 +77,16 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
     m_splitter->setStretchFactor(0, 5);
     m_splitter->setStretchFactor(1, 3);
     m_splitter->setStretchFactor(2, 4);
+    // QSplitter 不给子控件最小宽度时会被挤成 0（截图里播放区/传输区时隐时现）。
+    if (QWidget* w = m_splitter->widget(0)) {
+        w->setMinimumWidth(300);
+    }
+    if (QWidget* w = m_splitter->widget(1)) {
+        w->setMinimumWidth(200);
+    }
+    if (QWidget* w = m_splitter->widget(2)) {
+        w->setMinimumWidth(320);
+    }
     setCentralWidget(m_splitter);
 
     statusBar()->setObjectName(QString::fromUtf8("mainStatusBar"));
@@ -243,11 +253,17 @@ QWidget* MainWindow::buildFilePane() {
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(36);
-    m_table->horizontalHeader()->setStretchLastSection(true);
-    m_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_table->setColumnWidth(FileTableModel::ColName, 320);
-    m_table->setColumnWidth(FileTableModel::ColSize, 100);
-    m_table->setColumnWidth(FileTableModel::ColKind, 80);
+    QHeaderView* tableHeader = m_table->horizontalHeader();
+    tableHeader->setStretchLastSection(false);
+    tableHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // 名称列吃剩余宽度，其余按内容自适应；否则窄面板下"名称"会被挤掉半截。
+    tableHeader->setSectionResizeMode(FileTableModel::ColName, QHeaderView::Stretch);
+    tableHeader->setSectionResizeMode(FileTableModel::ColSize,
+                                      QHeaderView::ResizeToContents);
+    tableHeader->setSectionResizeMode(FileTableModel::ColKind,
+                                      QHeaderView::ResizeToContents);
+    tableHeader->setSectionResizeMode(FileTableModel::ColUpdatedAt,
+                                      QHeaderView::ResizeToContents);
     m_table->setVisible(false);
     layout->addWidget(m_table, 1);
 

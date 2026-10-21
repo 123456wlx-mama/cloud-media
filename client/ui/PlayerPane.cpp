@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSlider>
@@ -38,6 +39,32 @@ QString formatMs(qint64 ms) {
 }
 
 const char* kSpinFrames[] = {"◐", "◓", "◑", "◒"};
+
+// 可点击跳转的进度条：Qt 默认点滑槽只翻一页，且不触发 sliderPressed/Released，
+// 业务层的 seek 收不到事件（表现为"随机点一个位置播不过去"）。这里按点击位置直接定位。
+class ClickableSlider : public QSlider {
+public:
+    explicit ClickableSlider(Qt::Orientation orientation, QWidget* parent = nullptr)
+        : QSlider(orientation, parent) {}
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && maximum() > minimum()) {
+            const int span = maximum() - minimum();
+            const int extent = (orientation() == Qt::Horizontal) ? width() : height();
+            const int pos = (orientation() == Qt::Horizontal) ? event->pos().x()
+                                                              : event->pos().y();
+            if (extent > 0) {
+                setValue(minimum() + span * pos / extent);
+                emit sliderPressed();
+                emit sliderMoved(value());
+                emit sliderReleased();
+                return;
+            }
+        }
+        QSlider::mousePressEvent(event);
+    }
+};
 
 }  // namespace
 
@@ -98,7 +125,7 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
     m_timeLabel->setMinimumWidth(110);
     row->addWidget(m_timeLabel);
 
-    m_slider = new QSlider(Qt::Horizontal, controls);
+    m_slider = new ClickableSlider(Qt::Horizontal, controls);
     m_slider->setObjectName(QString::fromUtf8("seekSlider"));
     m_slider->setRange(0, 1000);
     m_slider->setEnabled(false);

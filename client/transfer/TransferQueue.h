@@ -36,10 +36,12 @@ public:
     void setClock(std::function<qint64()> clock);
 
     int enqueueUpload(const QString& localPath, const QString& remoteName);
-    int enqueueDownload(quint64 ufId, const QString& remoteName, quint64 size);
+    // transient=true：播放用的临时下载，落系统临时目录（不污染用户「下载」文件夹）。
+    int enqueueDownload(quint64 ufId, const QString& remoteName, quint64 size,
+                        bool transient = false);
     // 分享下载：先 ShareOpenRq 拿 shareTicket，再走同一套下载链路（ufId=0）。
     int enqueueSharedDownload(const QString& shareTicket, const QString& fileName,
-                              quint64 size);
+                              quint64 size, bool transient = false);
     // 分享 + 边下边播：完成后保留 .part 供播放器继续读。
     int enqueueSharedPlayback(const QString& shareTicket, const QString& fileName,
                               quint64 size);
