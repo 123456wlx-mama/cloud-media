@@ -1119,6 +1119,50 @@ bool ListFileRs::decode(const std::string& payload) {
            reader.readU64(&nextId) && reader.readU64(&totalCount);
 }
 
+// ------------------------------------------------------------- add folder ----
+
+AddFolderRq::AddFolderRq() : parentId(0) {}
+
+bool AddFolderRq::encode(std::string* out) const {
+    if (out == nullptr || !isNameOk(name, false)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeU64(parentId) || !writer.writeString(name)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool AddFolderRq::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readU64(&parentId) && reader.readString(&name) &&
+           isNameOk(name, false);
+}
+
+AddFolderRs::AddFolderRs() : code(0), ufId(0) {}
+
+bool AddFolderRs::encode(std::string* out) const {
+    if (out == nullptr || (code == 0 && ufId == 0) ||
+        (!name.empty() && !isNameOk(name, false))) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeU32(code) || !writer.writeU64(ufId) ||
+        !writer.writeString(name)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool AddFolderRs::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readU32(&code) && reader.readU64(&ufId) &&
+           reader.readString(&name) && (name.empty() || isNameOk(name, false));
+}
+
 // ------------------------------------------------------------------ play ----
 
 PlayReportRq::PlayReportRq()

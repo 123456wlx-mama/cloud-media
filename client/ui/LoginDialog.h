@@ -27,7 +27,9 @@ public:
 
 private slots:
     void onLoginClicked();
+    void onRegisterClicked();
     void onLoginFinished(quint32 code, quint64 uid, const QString& name);
+    void onRegisterFinished(quint32 code, quint64 uid);
     void onRequestFailed(quint16 type, const QString& reason);
 
 private:

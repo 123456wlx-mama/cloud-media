@@ -210,5 +210,61 @@ ErrorCode FileService::list(std::uint64_t uid,
     return ErrorCode::Ok;
 }
 
+ErrorCode FileService::createFolder(std::uint64_t uid,
+                                    const cm::protocol::AddFolderRq& rq,
+                                    cm::protocol::AddFolderRs* out) {
+    if (out == nullptr) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::AddFolderRs();
+    if (uid == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+        return ErrorCode::PermissionDenied;
+    }
+    if (rq.name.empty()) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode code = dbPoolError(m_mysql);
+        out->code = static_cast<std::uint32_t>(code);
+        return code;
+    }
+
+    cm::db::FileDao fileDao(*conn);
+    // 只允许建在本人未删除的目录下（parentId=0 表示根）。
+    if (rq.parentId != 0) {
+        cm::db::UserFileRow parent;
+        const ErrorCode prc = fileDao.findUserFile(uid, rq.parentId, &parent);
+        if (prc != ErrorCode::Ok) {
+            conn.reset();
+            out->code = static_cast<std::uint32_t>(prc);
+            return prc;
+        }
+        if (!parent.isDir ||
+            parent.deletedAt != cm::db::FileDao::activeDeletedAt()) {
+            conn.reset();
+            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+    }
+
+    std::uint64_t ufId = 0;
+    std::string finalName;
+    const ErrorCode rc = fileDao.createUserFileAutoRename(
+        uid, rq.parentId, 0, true, rq.name, &ufId, &finalName);
+    conn.reset();
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(rc);
+        return rc;
+    }
+    out->code = 0;
+    out->ufId = ufId;
+    out->name = finalName;
+    return ErrorCode::Ok;
+}
+
 }  // namespace logic
 }  // namespace cm

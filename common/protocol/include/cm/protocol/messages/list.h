@@ -47,5 +47,26 @@ struct ListFileRs {
     bool decode(const std::string& payload);
 };
 
+// 10015 新建文件夹。
+struct AddFolderRq {
+    std::uint64_t parentId;
+    std::string name;
+
+    AddFolderRq();
+    bool encode(std::string* out) const;
+    bool decode(const std::string& payload);
+};
+
+// 10016：name 为服务端最终落库名（同目录重名时自动加 (2)…(99)）。
+struct AddFolderRs {
+    std::uint32_t code;
+    std::uint64_t ufId;
+    std::string name;
+
+    AddFolderRs();
+    bool encode(std::string* out) const;
+    bool decode(const std::string& payload);
+};
+
 }  // namespace protocol
 }  // namespace cm

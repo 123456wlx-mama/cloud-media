@@ -24,9 +24,12 @@ public:
     void shutdown();
 
     void login(const QString& tel, const QString& password);
+    void registerAccount(const QString& tel, const QString& password,
+                         const QString& name);
     // cursorKey/cursorId 传空/0 取首页；hasMore 时用返回的 nextKey/nextId 取下一页。
     void listFiles(quint64 parentId, quint32 limit,
                    const QString& cursorKey = QString(), quint64 cursorId = 0);
+    void addFolder(quint64 parentId, const QString& name);
 
     // 通用请求：返回本次分配的 seq，响应通过 frame(type, seq, payload) 回来。
     quint32 sendRequest(quint16 type, const QByteArray& payload);
@@ -39,8 +42,10 @@ public:
 signals:
     void linkState(int state, const QString& detail);
     void loginFinished(quint32 code, quint64 uid, const QString& name);
+    void registerFinished(quint32 code, quint64 uid);
     void listFinished(quint32 code, const QVariantList& rows, bool hasMore,
                       const QString& nextKey, quint64 nextId);
+    void addFolderFinished(quint32 code, quint64 ufId, const QString& name);
     void requestFailed(quint16 type, const QString& reason);
     void frame(quint16 type, quint32 seq, const QByteArray& payload);
     // 链路正常但 5s 无响应：由上层决定是否重试。
@@ -52,8 +57,11 @@ private slots:
     void onLinkState(int state, const QString& detail);
     void onFrame(quint16 type, quint32 seq, QByteArray payload);
     void onLoginFinished(quint32 seq, quint32 code, quint64 uid, const QString& name);
+    void onRegisterFinished(quint32 seq, quint32 code, quint64 uid);
     void onListFinished(quint32 seq, quint32 code, const QVariantList& rows,
                         bool hasMore, const QString& nextKey, quint64 nextId);
+    void onAddFolderFinished(quint32 seq, quint32 code, quint64 ufId,
+                             const QString& name);
     void onRequestTimeout(quint32 seq, quint16 type);
     void onRequestAborted(quint32 seq, quint16 type, const QString& reason);
     void onRequestFailed(quint32 seq, quint16 type, const QString& reason);

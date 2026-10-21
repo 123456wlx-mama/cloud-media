@@ -37,6 +37,12 @@ public:
                        const cm::protocol::ListFileRq& rq,
                        cm::protocol::ListFileRs* out);
 
+    // 10015：在 parentId 下建目录节点（t_user_file.uf_is_dir=1，f_id=NULL）。
+    // 同目录重名自动改名，rs.name 回最终名；parentId 不存在/不属于本人回 NotFound。
+    cm::ErrorCode createFolder(std::uint64_t uid,
+                               const cm::protocol::AddFolderRq& rq,
+                               cm::protocol::AddFolderRs* out);
+
 private:
     cm::db::MysqlPool& m_mysql;
     std::uint64_t m_maxTotalCount;

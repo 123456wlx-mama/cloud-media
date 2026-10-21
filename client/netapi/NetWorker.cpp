@@ -235,6 +235,35 @@ void NetWorker::listRequest(quint32 seq, quint64 parentId, quint32 limit,
     sendFrame(toType(protocol::MessageType::ListFileRq), seq, payload);
 }
 
+void NetWorker::registerRequest(quint32 seq, const QString& tel,
+                                const QString& password, const QString& name) {
+    protocol::RegisterRq rq;
+    rq.tel = tel.toStdString();
+    rq.password = password.toStdString();
+    rq.name = name.toStdString();
+    std::string payload;
+    if (!rq.encode(&payload)) {
+        emit requestFailed(seq, toType(protocol::MessageType::RegisterRq),
+                           QString::fromUtf8("手机号/密码/昵称格式不合法"));
+        return;
+    }
+    sendFrame(toType(protocol::MessageType::RegisterRq), seq, payload);
+}
+
+void NetWorker::addFolderRequest(quint32 seq, quint64 parentId,
+                                 const QString& name) {
+    protocol::AddFolderRq rq;
+    rq.parentId = parentId;
+    rq.name = name.toStdString();
+    std::string payload;
+    if (!rq.encode(&payload)) {
+        emit requestFailed(seq, toType(protocol::MessageType::AddFolderRq),
+                           QString::fromUtf8("文件夹名不合法"));
+        return;
+    }
+    sendFrame(toType(protocol::MessageType::AddFolderRq), seq, payload);
+}
+
 void NetWorker::sendRequest(quint16 type, quint32 seq, QByteArray payload) {
     sendFrame(type, seq, std::string(payload.constData(),
                                      static_cast<std::size_t>(payload.size())));
@@ -273,6 +302,14 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
         }
         if (pending.type == toType(protocol::MessageType::ListFileRq)) {
             emit listFinished(frame.seq, code, QVariantList(), false, QString(), 0);
+            return;
+        }
+        if (pending.type == toType(protocol::MessageType::RegisterRq)) {
+            emit registerFinished(frame.seq, code, 0);
+            return;
+        }
+        if (pending.type == toType(protocol::MessageType::AddFolderRq)) {
+            emit addFolderFinished(frame.seq, code, 0, QString());
             return;
         }
         // 传输层需要原始 code+文案（不能吞成"超时"），把 ErrorRs 帧原样抛给上层。
@@ -324,6 +361,37 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
         }
         emit listFinished(frame.seq, rs.code, rows, rs.hasMore != 0,
                           QString::fromStdString(rs.nextKey), rs.nextId);
+        return;
+    }
+
+    if (frame.type == toType(protocol::MessageType::RegisterRs)) {
+        Pending pending;
+        if (!takePending(frame.seq, &pending)) {
+            return;
+        }
+        protocol::RegisterRs rs;
+        if (!rs.decode(frame.payload)) {
+            emit requestFailed(frame.seq, frame.type,
+                               QString::fromUtf8("注册响应解析失败"));
+            return;
+        }
+        emit registerFinished(frame.seq, rs.code, rs.uid);
+        return;
+    }
+
+    if (frame.type == toType(protocol::MessageType::AddFolderRs)) {
+        Pending pending;
+        if (!takePending(frame.seq, &pending)) {
+            return;
+        }
+        protocol::AddFolderRs rs;
+        if (!rs.decode(frame.payload)) {
+            emit requestFailed(frame.seq, frame.type,
+                               QString::fromUtf8("新建文件夹响应解析失败"));
+            return;
+        }
+        emit addFolderFinished(frame.seq, rs.code, rs.ufId,
+                               QString::fromStdString(rs.name));
         return;
     }
 

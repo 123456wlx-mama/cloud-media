@@ -24,6 +24,11 @@ NetClient::NetClient(QObject* parent)
             SIGNAL(listFinished(quint32, quint32, QVariantList, bool, QString, quint64)),
             this,
             SLOT(onListFinished(quint32, quint32, QVariantList, bool, QString, quint64)));
+    connect(m_worker, SIGNAL(registerFinished(quint32, quint32, quint64)), this,
+            SLOT(onRegisterFinished(quint32, quint32, quint64)));
+    connect(m_worker,
+            SIGNAL(addFolderFinished(quint32, quint32, quint64, QString)), this,
+            SLOT(onAddFolderFinished(quint32, quint32, quint64, QString)));
     connect(m_worker, SIGNAL(requestTimeout(quint32, quint16)), this,
             SLOT(onRequestTimeout(quint32, quint16)));
     connect(m_worker, SIGNAL(requestAborted(quint32, quint16, QString)), this,
@@ -80,6 +85,20 @@ void NetClient::listFiles(quint64 parentId, quint32 limit,
                               Q_ARG(quint64, cursorId));
 }
 
+void NetClient::registerAccount(const QString& tel, const QString& password,
+                                const QString& name) {
+    QMetaObject::invokeMethod(m_worker, "registerRequest", Qt::QueuedConnection,
+                              Q_ARG(quint32, nextSeq()), Q_ARG(QString, tel),
+                              Q_ARG(QString, password), Q_ARG(QString, name));
+}
+
+void NetClient::addFolder(quint64 parentId, const QString& name) {
+    QMetaObject::invokeMethod(m_worker, "addFolderRequest", Qt::QueuedConnection,
+                              Q_ARG(quint32, nextSeq()),
+                              Q_ARG(quint64, static_cast<quint64>(parentId)),
+                              Q_ARG(QString, name));
+}
+
 quint32 NetClient::sendRequest(quint16 type, const QByteArray& payload) {
     const quint32 seq = nextSeq();
     QMetaObject::invokeMethod(m_worker, "sendRequest", Qt::QueuedConnection,
@@ -113,6 +132,17 @@ void NetClient::onListFinished(quint32 seq, quint32 code,
                                const QString& nextKey, quint64 nextId) {
     Q_UNUSED(seq);
     emit listFinished(code, rows, hasMore, nextKey, nextId);
+}
+
+void NetClient::onRegisterFinished(quint32 seq, quint32 code, quint64 uid) {
+    Q_UNUSED(seq);
+    emit registerFinished(code, uid);
+}
+
+void NetClient::onAddFolderFinished(quint32 seq, quint32 code, quint64 ufId,
+                                    const QString& name) {
+    Q_UNUSED(seq);
+    emit addFolderFinished(code, ufId, name);
 }
 
 void NetClient::onRequestTimeout(quint32 seq, quint16 type) {

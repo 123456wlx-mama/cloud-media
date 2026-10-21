@@ -6,6 +6,8 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QLabel>
 #include <QMenu>
 #include <QMimeData>
@@ -147,6 +149,8 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                 SLOT(onListFinished(quint32, QVariantList, bool, QString, quint64)));
         connect(m_net, SIGNAL(requestFailed(quint16, QString)), this,
                 SLOT(onRequestFailed(quint16, QString)));
+        connect(m_net, SIGNAL(addFolderFinished(quint32, quint64, QString)), this,
+                SLOT(onAddFolderFinished(quint32, quint64, QString)));
         if (m_net->uid() != 0) {
             refreshList();
         }
@@ -233,6 +237,9 @@ QWidget* MainWindow::buildFilePane() {
     QPushButton* recycle = new QPushButton(QString::fromUtf8("回收站"), bar);
     recycle->setObjectName(QString::fromUtf8("rowButton"));
     barLayout->addWidget(recycle);
+    QPushButton* addFolder = new QPushButton(QString::fromUtf8("新建文件夹"), bar);
+    addFolder->setObjectName(QString::fromUtf8("rowButton"));
+    barLayout->addWidget(addFolder);
     QPushButton* refresh = new QPushButton(QString::fromUtf8("刷新"), bar);
     refresh->setObjectName(QString::fromUtf8("rowButton"));
     barLayout->addWidget(refresh);
@@ -242,6 +249,8 @@ QWidget* MainWindow::buildFilePane() {
     connect(openShare, &QPushButton::clicked, this, &MainWindow::onOpenShare);
     connect(recycle, &QPushButton::clicked, this, &MainWindow::onOpenRecycle);
     connect(refresh, &QPushButton::clicked, this, &MainWindow::refreshList);
+    connect(addFolder, &QPushButton::clicked, this,
+            &MainWindow::onAddFolderClicked);
 
     m_model = new FileTableModel(this);
     m_table = new QTableView(pane);
@@ -604,6 +613,38 @@ void MainWindow::onUploadClicked() {
         statusBar()->showMessage(
             QString::fromUtf8("已加入 %1 个上传任务").arg(files.size()));
     }
+}
+
+void MainWindow::onAddFolderClicked() {
+    if (m_net == nullptr) {
+        return;
+    }
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this, QString::fromUtf8("新建文件夹"), QString::fromUtf8("文件夹名"),
+        QLineEdit::Normal, QString::fromUtf8("新建文件夹"), &ok);
+    if (!ok || name.trimmed().isEmpty()) {
+        return;
+    }
+    m_net->addFolder(currentParent(), name.trimmed());
+}
+
+void MainWindow::onAddFolderFinished(quint32 code, quint64 ufId,
+                                     const QString& name) {
+    Q_UNUSED(ufId);
+    if (m_toast == nullptr) {
+        return;
+    }
+    if (code == 0) {
+        m_toast->showText(QString::fromUtf8("已新建文件夹「%1」").arg(name));
+        refreshList();
+        return;
+    }
+    if (code == 1003) {
+        m_toast->showText(QString::fromUtf8("同名文件夹太多，换个名字"));
+        return;
+    }
+    m_toast->showText(QString::fromUtf8("新建文件夹失败(code=%1)").arg(code));
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {

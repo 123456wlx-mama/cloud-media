@@ -632,6 +632,36 @@ void handleListFile(const ConnectionPtr& conn,
     sendListFileRs(conn, frame.seq, rs);
 }
 
+// 10015：新建文件夹（只允许建在本人未删除的目录下）。
+void handleAddFolder(const ConnectionPtr& conn,
+                     const cm::protocol::Frame& frame,
+                     ConnStateTable& states,
+                     cm::logic::FileService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+
+    cm::protocol::AddFolderRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+    } else {
+        cm::protocol::AddFolderRq rq;
+        if (!rq.decode(frame.payload)) {
+            rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        } else {
+            const cm::ErrorCode rc = service.createFolder(uid, rq, &rs);
+            if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+                rs.code = cm::to_wire_code(rc);
+            }
+        }
+    }
+
+    std::string payload;
+    if (rs.encode(&payload)) {
+        sendFramePayload(conn, cm::protocol::MessageType::AddFolderRs, frame.seq,
+                         payload);
+    }
+}
+
 // 10032：播放进度上报；UID 未登录时直接回 1004。
 void handlePlayReport(const ConnectionPtr& conn,
                       const cm::protocol::Frame& frame,
@@ -883,6 +913,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleListFile(conn, frame, states, fileService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register ListFile failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::AddFolderRq),
+            [&states, &fileService](const ConnectionPtr& conn,
+                                    const cm::protocol::Frame& frame) {
+                handleAddFolder(conn, frame, states, fileService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register AddFolder failed\n");
         return 1;
     }
 

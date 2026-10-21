@@ -61,6 +61,8 @@ private slots:
 
     void onDownloadSelected();
     void onUploadClicked();
+    void onAddFolderClicked();
+    void onAddFolderFinished(quint32 code, quint64 ufId, const QString& name);
     void onShareSelected();
     void onDeleteSelected();
     void onEnterFolder();
