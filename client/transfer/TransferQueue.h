@@ -72,6 +72,9 @@ signals:
     void instantUploaded(const QString& remoteName);
 
 private slots:
+    // 后台线程算完整文件 MD5 后回到主线程继续（任务可能已被取消/暂停）
+    void onHashReady(int taskId, bool ok, const QString& hex);
+
     void onFrame(quint16 type, quint32 seq, const QByteArray& payload);
     // 链路正常但服务端 5s 未响应：失败（可重试）。
     void onTimeout(quint32 seq, quint16 type);
@@ -104,6 +107,8 @@ private:
     void finish(TransferTask* task);
 
     void startUpload(TransferTask* task);
+    // MD5 就绪后组 UploadInitRq 并发出
+    void sendUploadInit(TransferTask* task);
     void sendNextChunk(TransferTask* task);
     void startDownload(TransferTask* task);
     void requestDownloadOpen(TransferTask* task);

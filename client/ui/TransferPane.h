@@ -5,6 +5,7 @@
 class QListWidget;
 class QTabWidget;
 class QLabel;
+class QTimer;
 
 namespace cm {
 
@@ -27,11 +28,17 @@ public slots:
     void refresh();
     void setLinkText(const QString& text);
 
+private slots:
+    // 队列 changed() 很密集（每个分片一次）：合并成 150ms 一次重建，
+    // 否则十几个任务同时跑时每秒重建上百个控件，界面会卡死。
+    void onQueueChanged();
+
 private:
     QWidget* buildPage(bool upload);
     QWidget* buildRow(const transfer::TransferTask& task, bool upload);
 
     transfer::TransferQueue* m_queue;
+    QTimer* m_refreshTimer;
     QTabWidget* m_tabs;
     QListWidget* m_uploadList;
     QListWidget* m_downloadList;

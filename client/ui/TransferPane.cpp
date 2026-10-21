@@ -6,6 +6,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "transfer/TransferQueue.h"
@@ -39,8 +40,8 @@ QString formatEta(const transfer::TransferTask& task) {
 }  // namespace
 
 TransferPane::TransferPane(transfer::TransferQueue* queue, QWidget* parent)
-    : QWidget(parent), m_queue(queue), m_tabs(nullptr), m_uploadList(nullptr),
-      m_downloadList(nullptr), m_linkHint(nullptr) {
+    : QWidget(parent), m_queue(queue), m_refreshTimer(nullptr), m_tabs(nullptr),
+      m_uploadList(nullptr), m_downloadList(nullptr), m_linkHint(nullptr) {
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -65,8 +66,22 @@ TransferPane::TransferPane(transfer::TransferQueue* queue, QWidget* parent)
     m_tabs->addTab(buildPage(false), QString::fromUtf8("下载"));
     layout->addWidget(m_tabs, 1);
 
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(150);
+    connect(m_refreshTimer, &QTimer::timeout, this, &TransferPane::refresh);
+
     if (m_queue != nullptr) {
-        connect(m_queue, SIGNAL(changed()), this, SLOT(refresh()));
+        connect(m_queue, SIGNAL(changed()), this, SLOT(onQueueChanged()));
+    }
+    refresh();
+}
+
+void TransferPane::onQueueChanged() {
+    if (m_refreshTimer != nullptr) {
+        // 合并刷新：150ms 内的多次 changed 只重建一次
+        m_refreshTimer->start();
+        return;
     }
     refresh();
 }

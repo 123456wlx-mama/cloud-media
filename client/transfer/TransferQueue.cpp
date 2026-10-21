@@ -4,8 +4,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QMetaObject>
 #include <QMetaType>
+#include <QRunnable>
 #include <QStandardPaths>
+#include <QThreadPool>
 #include <QTextStream>
 
 #include <string>
@@ -72,6 +75,31 @@ bool fileMd5(const QString& path, QString* hex) {
     *hex = QString::fromStdString(md5.hex());
     return true;
 }
+
+// 后台算整文件 MD5：完成/失败都回主线程（onHashReady）。
+// 目的是把读盘+哈希从 GUI 线程挪走——否则上传大文件时窗口会"未响应"。
+class HashJob : public QRunnable {
+public:
+    HashJob(int taskId, const QString& path, TransferQueue* queue)
+        : m_taskId(taskId), m_path(path), m_queue(queue) {
+        setAutoDelete(true);
+    }
+
+    void run() override {
+        QString hex;
+        const bool ok = fileMd5(m_path, &hex);
+        if (m_queue != nullptr) {
+            QMetaObject::invokeMethod(m_queue, "onHashReady", Qt::QueuedConnection,
+                                      Q_ARG(int, m_taskId), Q_ARG(bool, ok),
+                                      Q_ARG(QString, hex));
+        }
+    }
+
+private:
+    int m_taskId;
+    QString m_path;
+    TransferQueue* m_queue;
+};
 
 }  // namespace
 
@@ -396,13 +424,34 @@ void TransferQueue::startUpload(TransferTask* task) {
         touch(task->id, false);
         return;
     }
-    QString md5;
-    if (!fileMd5(task->localPath, &md5)) {
+    // 整文件 MD5（可能几百 MB）必须放后台线程：在 GUI 线程读盘+哈希会让窗口"未响应"。
+    if (!task->fileMd5.isEmpty()) {
+        sendUploadInit(task);
+        return;
+    }
+    QThreadPool::globalInstance()->start(
+        new HashJob(task->id, task->localPath, this));
+    touch(task->id, false);
+}
+
+void TransferQueue::onHashReady(int taskId, bool ok, const QString& hex) {
+    TransferTask* task = find(taskId);
+    if (task == nullptr || task->state != TaskState::Running) {
+        return;  // 计算期间被取消/暂停
+    }
+    if (!ok) {
         fail(task, 0, QString::fromUtf8("读取本地文件失败"));
         return;
     }
-    task->fileMd5 = md5;
+    task->fileMd5 = hex;
+    sendUploadInit(task);
+}
 
+void TransferQueue::sendUploadInit(TransferTask* task) {
+    if (m_net == nullptr || task->state != TaskState::Running) {
+        return;
+    }
+    const QString& md5 = task->fileMd5;
     protocol::UploadInitRq rq;
     rq.parentId = task->parentId;
     rq.fileName = task->remoteName.toStdString();
