@@ -99,8 +99,13 @@ void GlVideoSurface::paintGL() {
     }
 
     const QRect box = letterboxRect(m_image.size(), size());
-    glViewport(box.x(), height() - box.y() - box.height(), box.width(),
-               box.height());
+    // glViewport 用设备像素，而 size() 是逻辑像素：开了高 DPI 缩放（devicePixelRatio>1）
+    // 后不乘系数，画面只会画在左下角 1/dpr 的区域（表现为"视频缩在角落里"）。
+    const qreal dpr = devicePixelRatioF();
+    glViewport(static_cast<int>(box.x() * dpr),
+               static_cast<int>((height() - box.y() - box.height()) * dpr),
+               static_cast<int>(box.width() * dpr),
+               static_cast<int>(box.height() * dpr));
 
     m_program->bind();
     m_vbo.bind();

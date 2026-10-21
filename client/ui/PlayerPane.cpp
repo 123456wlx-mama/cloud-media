@@ -18,6 +18,7 @@
 
 #include "player/PlayerCore.h"
 #include "transfer/TransferQueue.h"
+#include "ui/EmptyState.h"
 #include "ui/VideoSurface.h"
 
 namespace cm {
@@ -100,11 +101,12 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
     qInfo("player surface: %s", qPrintable(m_surface->backendName()));
     layout->addWidget(m_surface->widget(), 1);
 
-    m_emptyHint = new QLabel(
-        QString::fromUtf8("暂无播放内容\n在左侧双击音视频文件即可开始播放"), this);
+    // 空态做成画布上方的浮层（不进布局）：否则它和渲染控件各占 1 份 stretch，
+    // 播放时视频只拿到半屏、缩在一角。
+    m_emptyHint = new EmptyState(
+        QString::fromUtf8("暂无播放内容"),
+        QString::fromUtf8("在左侧双击音视频文件即可开始播放"), this);
     m_emptyHint->setObjectName(QString::fromUtf8("emptyHint"));
-    m_emptyHint->setAlignment(Qt::AlignCenter);
-    layout->addWidget(m_emptyHint, 1);
 
     // 控制条
     QWidget* controls = new QWidget(this);
@@ -478,6 +480,7 @@ void PlayerPane::layoutOverlays() {
         return;
     }
     const QRect area = m_surface->widget()->geometry();
+    m_emptyHint->setGeometry(area);
     const int overlayWidth = 180;
     const int overlayHeight = 56;
     m_overlay->setGeometry(area.center().x() - overlayWidth / 2,

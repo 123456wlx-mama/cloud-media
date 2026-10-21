@@ -17,10 +17,16 @@ bool openGlAvailable() {
 }
 
 VideoSurface* createVideoSurface(QWidget* parent, bool forcePainter) {
+    VideoSurface* surface = nullptr;
     if (!forcePainter && openGlAvailable()) {
-        return new GlVideoSurface(parent);
+        surface = new GlVideoSurface(parent);
+    } else {
+        surface = new PainterVideoSurface(parent);
     }
-    return new PainterVideoSurface(parent);
+    // 必须撑满播放区，否则按 sizeHint 缩在一角
+    surface->widget()->setSizePolicy(QSizePolicy::Expanding,
+                                     QSizePolicy::Expanding);
+    return surface;
 }
 
 }  // namespace ui

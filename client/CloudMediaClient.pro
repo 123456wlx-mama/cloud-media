@@ -44,6 +44,7 @@ SOURCES += \
     ui/GlVideoSurface.cpp \
     ui/PainterVideoSurface.cpp \
     ui/Toast.cpp \
+    ui/EmptyState.cpp \
     ui/ShareDialog.cpp \
     ui/RecycleDialog.cpp \
     ui/RegisterDialog.cpp \
@@ -72,6 +73,7 @@ HEADERS += \
     ui/PainterVideoSurface.h \
     ui/Letterbox.h \
     ui/Toast.h \
+    ui/EmptyState.h \
     ui/ShareDialog.h \
     ui/RecycleDialog.h \
     ui/RegisterDialog.h \

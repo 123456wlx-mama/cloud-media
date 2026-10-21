@@ -21,6 +21,7 @@ class TransferQueue;
 namespace ui {
 
 class VideoSurface;
+class EmptyState;
 
 // 播放区：渲染画布 + 控制条（播放/暂停、进度、音量、全屏）+ 缓冲/失败态。
 // 只调 PlayerCore 的 Qt 接口，不碰 FFmpeg/SDL（契约 §1.2、依赖红线）。
@@ -77,7 +78,7 @@ private:
     QLabel* m_timeLabel;
     QSlider* m_volume;
     QPushButton* m_fullButton;
-    QLabel* m_emptyHint;
+    EmptyState* m_emptyHint;
     QWidget* m_overlay;
     QLabel* m_overlayLabel;
     QWidget* m_errorPanel;

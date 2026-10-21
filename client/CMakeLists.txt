@@ -62,6 +62,8 @@ add_executable(cloud-media-client
     ui/Letterbox.h
     ui/Toast.cpp
     ui/Toast.h
+    ui/EmptyState.cpp
+    ui/EmptyState.h
     ui/ShareDialog.cpp
     ui/ShareDialog.h
     ui/RecycleDialog.cpp
