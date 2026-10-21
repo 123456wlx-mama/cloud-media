@@ -3,6 +3,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -23,6 +24,7 @@
 #include "netapi/NetClient.h"
 #include "recycleapi/RecycleFlow.h"
 #include "shareapi/ShareFlow.h"
+#include "transfer/FolderUploader.h"
 #include "transfer/TransferQueue.h"
 #include "ui/FileTableModel.h"
 #include "ui/PlayerPane.h"
@@ -53,7 +55,8 @@ bool isVideoFile(const QString& name) {
 MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                        QWidget* parent, bool forcePainter)
     : QMainWindow(parent), m_net(net), m_queue(queue), m_share(nullptr),
-      m_recycle(nullptr), m_transferPane(nullptr), m_playerPane(nullptr),
+      m_recycle(nullptr), m_folderUploader(nullptr), m_transferPane(nullptr),
+      m_playerPane(nullptr),
       m_splitter(nullptr),
       m_model(nullptr), m_table(nullptr), m_fileEmpty(nullptr),
       m_linkBadge(nullptr), m_listHint(nullptr), m_pathLabel(nullptr),
@@ -135,6 +138,25 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                 [this](const QString& name) {
                     m_toast->showText(
                         QString::fromUtf8("「%1」已秒传 · 0 字节").arg(name));
+                });
+    }
+
+    if (m_net != nullptr && m_queue != nullptr) {
+        m_folderUploader = new transfer::FolderUploader(m_net, m_queue, this);
+        connect(m_folderUploader, &transfer::FolderUploader::finished, this,
+                [this](int dirs, int files) {
+                    if (m_toast != nullptr) {
+                        m_toast->showText(
+                            QString::fromUtf8("文件夹已入队：%1 个目录 / %2 个文件")
+                                .arg(dirs)
+                                .arg(files));
+                    }
+                });
+        connect(m_folderUploader, &transfer::FolderUploader::failed, this,
+                [this](const QString& reason) {
+                    if (m_toast != nullptr) {
+                        m_toast->showText(reason);
+                    }
                 });
     }
 
@@ -295,12 +317,18 @@ QWidget* MainWindow::buildFilePane() {
     QPushButton* upload = new QPushButton(QString::fromUtf8("上传文件"), pane);
     upload->setObjectName(QString::fromUtf8("primaryButton"));
     upload->setMaximumWidth(120);
+    QPushButton* uploadFolder = new QPushButton(QString::fromUtf8("上传文件夹"), pane);
+    uploadFolder->setObjectName(QString::fromUtf8("rowButton"));
+    uploadFolder->setMaximumWidth(120);
     QHBoxLayout* emptyRow = new QHBoxLayout();
     emptyRow->addStretch(1);
     emptyRow->addWidget(upload);
+    emptyRow->addSpacing(8);
+    emptyRow->addWidget(uploadFolder);
     emptyRow->addStretch(1);
     layout->addLayout(emptyRow);
     connect(upload, SIGNAL(clicked()), this, SLOT(onUploadClicked()));
+    connect(uploadFolder, SIGNAL(clicked()), this, SLOT(onUploadFolderClicked()));
 
     connect(m_table, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         if (!index.isValid()) {
@@ -603,15 +631,39 @@ void MainWindow::onUploadClicked() {
     }
     const QStringList files = QFileDialog::getOpenFileNames(
         this, QString::fromUtf8("选择要上传的文件"), QString());
+    const quint64 parentId = currentParent();
     for (int i = 0; i < files.size(); ++i) {
         const QString path = files.at(i);
         if (!path.isEmpty()) {
-            m_queue->enqueueUpload(path, QFileInfo(path).fileName());
+            m_queue->enqueueUpload(path, QFileInfo(path).fileName(), parentId);
         }
     }
     if (!files.isEmpty()) {
         statusBar()->showMessage(
             QString::fromUtf8("已加入 %1 个上传任务").arg(files.size()));
+    }
+}
+
+void MainWindow::onUploadFolderClicked() {
+    if (m_folderUploader == nullptr) {
+        return;
+    }
+    if (m_folderUploader->busy()) {
+        if (m_toast != nullptr) {
+            m_toast->showText(QString::fromUtf8("上一个文件夹还没处理完"));
+        }
+        return;
+    }
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, QString::fromUtf8("选择要上传的文件夹"), QString());
+    if (dir.isEmpty()) {
+        return;
+    }
+    if (!m_folderUploader->start(dir, currentParent())) {
+        return;  // 失败原因已通过 failed 信号提示
+    }
+    if (m_toast != nullptr) {
+        m_toast->showText(QString::fromUtf8("正在创建目录并上传…"));
     }
 }
 
@@ -633,6 +685,10 @@ void MainWindow::onAddFolderFinished(quint32 code, quint64 ufId,
                                      const QString& name) {
     Q_UNUSED(ufId);
     if (m_toast == nullptr) {
+        return;
+    }
+    // 上传文件夹时由 FolderUploader 批量建目录，这里不逐条弹提示、不反复刷新。
+    if (m_folderUploader != nullptr && m_folderUploader->busy()) {
         return;
     }
     if (code == 0) {
@@ -660,8 +716,17 @@ void MainWindow::dropEvent(QDropEvent* event) {
     const QList<QUrl> urls = event->mimeData()->urls();
     for (int i = 0; i < urls.size(); ++i) {
         const QString path = urls.at(i).toLocalFile();
-        if (!path.isEmpty() && QFileInfo(path).isFile()) {
-            m_queue->enqueueUpload(path, QFileInfo(path).fileName());
+        if (path.isEmpty()) {
+            continue;
+        }
+        const QFileInfo info(path);
+        if (info.isDir()) {
+            // 拖文件夹进来 = 递归建目录后批量上传；一次只处理一个文件夹。
+            if (m_folderUploader != nullptr && !m_folderUploader->busy()) {
+                m_folderUploader->start(path, currentParent());
+            }
+        } else if (info.isFile()) {
+            m_queue->enqueueUpload(path, info.fileName(), currentParent());
         }
     }
     event->acceptProposedAction();

@@ -28,6 +28,7 @@ struct TransferTask {
     QString localPath;
     QString remoteName;
     quint64 size;
+    quint64 parentId;  // 上传目标目录（0 = 根）；下载不使用
     TaskState state;
     quint64 bytesDone;
     double speedBps;
@@ -61,7 +62,8 @@ struct TransferTask {
     qint64 lastTickMs;
 
     TransferTask()
-        : id(0), type(TaskType::Upload), size(0), state(TaskState::Queued),
+        : id(0), type(TaskType::Upload), size(0), parentId(0),
+          state(TaskState::Queued),
           bytesDone(0), speedBps(0.0), errCode(0), instant(false),
           playback(false), chunkSize(0),
           totalChunks(0), nextChunk(0), ufId(0), fId(0), blockSize(0),

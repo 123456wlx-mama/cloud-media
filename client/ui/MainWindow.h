@@ -19,6 +19,7 @@ class NetClient;
 
 namespace transfer {
 class TransferQueue;
+class FolderUploader;
 }
 
 namespace shareapi {
@@ -61,6 +62,7 @@ private slots:
 
     void onDownloadSelected();
     void onUploadClicked();
+    void onUploadFolderClicked();
     void onAddFolderClicked();
     void onAddFolderFinished(quint32 code, quint64 ufId, const QString& name);
     void onShareSelected();
@@ -97,6 +99,7 @@ private:
     transfer::TransferQueue* m_queue;
     shareapi::ShareFlow* m_share;
     recycleapi::RecycleFlow* m_recycle;
+    transfer::FolderUploader* m_folderUploader;
     TransferPane* m_transferPane;
     PlayerPane* m_playerPane;
     QSplitter* m_splitter;

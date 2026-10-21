@@ -21,6 +21,8 @@ set(CM_CLIENT_TRANSFER_SOURCES
     transfer/TransferTask.h
     transfer/TransferQueue.cpp
     transfer/TransferQueue.h
+    transfer/FolderUploader.cpp
+    transfer/FolderUploader.h
 )
 set(CM_CLIENT_SQLAPI_SOURCES
     sqlapi/TaskStore.cpp

@@ -31,6 +31,7 @@ SOURCES += \
     netapi/NetWorker.cpp \
     netapi/NetClient.cpp \
     transfer/TransferQueue.cpp \
+    transfer/FolderUploader.cpp \
     sqlapi/TaskStore.cpp \
     shareapi/ShareFlow.cpp \
     recycleapi/RecycleFlow.cpp \
@@ -57,6 +58,7 @@ HEADERS += \
     netapi/NetClient.h \
     transfer/TransferTask.h \
     transfer/TransferQueue.h \
+    transfer/FolderUploader.h \
     sqlapi/TaskStore.h \
     shareapi/ShareFlow.h \
     recycleapi/RecycleFlow.h \

@@ -213,10 +213,12 @@ void TransferQueue::finish(TransferTask* task) {
     pump();
 }
 
-int TransferQueue::enqueueUpload(const QString& localPath, const QString& remoteName) {
+int TransferQueue::enqueueUpload(const QString& localPath, const QString& remoteName,
+                                 quint64 parentId) {
     TransferTask task;
     task.id = nextTaskId();
     task.type = TaskType::Upload;
+    task.parentId = parentId;
     task.localPath = localPath;
     task.remoteName = remoteName.isEmpty() ? QFileInfo(localPath).fileName()
                                            : remoteName;
@@ -402,7 +404,7 @@ void TransferQueue::startUpload(TransferTask* task) {
     task->fileMd5 = md5;
 
     protocol::UploadInitRq rq;
-    rq.parentId = 0;
+    rq.parentId = task->parentId;
     rq.fileName = task->remoteName.toStdString();
     rq.totalSize = task->size;
     rq.fileMd5 = md5.toStdString();

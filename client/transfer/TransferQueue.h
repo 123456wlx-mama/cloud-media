@@ -35,7 +35,9 @@ public:
     // 单测用：替换时钟（默认 QDateTime::currentMSecsSinceEpoch）。
     void setClock(std::function<qint64()> clock);
 
-    int enqueueUpload(const QString& localPath, const QString& remoteName);
+    // parentId：上传目标目录（0 = 根）。上传文件夹时由 FolderUploader 解析出每级目录 ufId。
+    int enqueueUpload(const QString& localPath, const QString& remoteName,
+                      quint64 parentId = 0);
     // transient=true：播放用的临时下载，落系统临时目录（不污染用户「下载」文件夹）。
     int enqueueDownload(quint64 ufId, const QString& remoteName, quint64 size,
                         bool transient = false);
