@@ -114,22 +114,14 @@ QDialog#formDialog {
     border-color: #4A8FE0;
 }
 
-#primaryButton:pressed {
-    background-color: #1F4E8C;
-}
-
-#primaryButton:disabled {
-    background-color: #2A3542;
-    border-color: #333C4A;
-    color: #7A8794;
-}
-
+/* pressed / disabled 只保留一份定义（之前重复写了两次，后者覆盖前者且丢了 border-color） */
 #primaryButton:pressed {
     background-color: #2F73D9;
 }
 
 #primaryButton:disabled {
     background-color: #2C3542;
+    border-color: #333C4A;
     color: #5C6879;
 }
 
