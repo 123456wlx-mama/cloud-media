@@ -1037,7 +1037,8 @@ bool PurgeRs::decode(const std::string& payload) {
 // ------------------------------------------------------------------ list ----
 
 FileItem::FileItem()
-    : ufId(0), fId(0), isDir(0), size(0), createdAtMs(0), updatedAtMs(0) {}
+    : ufId(0), fId(0), isDir(0), size(0), createdAtMs(0), updatedAtMs(0),
+      childCount(0) {}
 
 ListFileRq::ListFileRq() : parentId(0), sort(0), limit(0), cursorId(0) {}
 
@@ -1083,7 +1084,8 @@ bool ListFileRs::encode(std::string* out) const {
             !writeU8Max(&writer, item.isDir, 1) ||
             !writer.writeU64(item.size) || !writer.writeString(item.md5) ||
             !writer.writeU64(item.createdAtMs) ||
-            !writer.writeU64(item.updatedAtMs)) {
+            !writer.writeU64(item.updatedAtMs) ||
+            !writer.writeU32(item.childCount)) {
             return false;
         }
     }
@@ -1110,7 +1112,8 @@ bool ListFileRs::decode(const std::string& payload) {
             !reader.readU64(&item.size) || !reader.readString(&item.md5) ||
             (!item.md5.empty() && !isValidMd5(item.md5)) ||
             !reader.readU64(&item.createdAtMs) ||
-            !reader.readU64(&item.updatedAtMs)) {
+            !reader.readU64(&item.updatedAtMs) ||
+            !reader.readU32(&item.childCount)) {
             return false;
         }
         items.push_back(item);

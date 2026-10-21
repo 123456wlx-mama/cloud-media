@@ -357,6 +357,8 @@ void NetWorker::dispatch(const protocol::Frame& frame) {
                        QVariant::fromValue<qulonglong>(item.size));
             row.insert(QString::fromUtf8("updatedAtMs"),
                        QVariant::fromValue<qulonglong>(item.updatedAtMs));
+            row.insert(QString::fromUtf8("childCount"),
+                       QVariant::fromValue<uint>(item.childCount));
             rows.append(row);
         }
         emit listFinished(frame.seq, rs.code, rows, rs.hasMore != 0,

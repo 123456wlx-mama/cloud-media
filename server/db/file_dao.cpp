@@ -387,6 +387,55 @@ ErrorCode FileDao::findActiveNodeByFid(std::uint64_t uid,
     return ErrorCode::Ok;
 }
 
+ErrorCode FileDao::summarizeChildren(
+    std::uint64_t uid, const std::vector<std::uint64_t>& parentIds,
+    std::map<std::uint64_t, ChildSummary>* out) {
+    if (out == nullptr) {
+        return ErrorCode::InvalidArgument;
+    }
+    out->clear();
+    if (uid == 0 || parentIds.empty()) {
+        return ErrorCode::Ok;
+    }
+
+    const std::string sql =
+        "SELECT c.uf_parent_id, COUNT(*), COALESCE(SUM(tf.f_size), 0) "
+        "FROM t_user_file c LEFT JOIN t_file tf ON c.f_id = tf.f_id "
+        "WHERE c.u_id = ? AND c.uf_deleted_at = ? AND c.uf_parent_id IN (" +
+        PreparedStatement::placeholders(parentIds.size()) +
+        ") GROUP BY c.uf_parent_id";
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(sql);
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, uid) ||
+        !stmt->bindString(1, FileDao::activeDeletedAt())) {
+        return stmt->lastError();
+    }
+    for (std::size_t i = 0; i < parentIds.size(); ++i) {
+        if (!stmt->bindUInt64(2 + i, parentIds[i])) {
+            return stmt->lastError();
+        }
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+    while (true) {
+        const PreparedStatement::FetchStatus status = stmt->fetchRow();
+        if (status == PreparedStatement::FetchStatus::End) {
+            break;
+        }
+        if (status == PreparedStatement::FetchStatus::Error) {
+            return stmt->lastError();
+        }
+        ChildSummary summary;
+        summary.childCount = static_cast<std::uint32_t>(stmt->getUInt64(1));
+        summary.size = stmt->getUInt64(2);
+        (*out)[stmt->getUInt64(0)] = summary;
+    }
+    return ErrorCode::Ok;
+}
+
 ErrorCode FileDao::hasVisibleFileByFid(std::uint64_t uid,
                                        std::uint64_t fid,
                                        bool* visible) {

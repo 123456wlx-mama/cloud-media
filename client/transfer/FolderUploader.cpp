@@ -43,19 +43,22 @@ bool FolderUploader::start(const QString& localDir, quint64 remoteParentId) {
     m_waiting = false;
 
     scan(root.absolutePath());
-    if (m_dirs.isEmpty() && m_files.isEmpty()) {
-        m_busy = false;
-        emit failed(QString::fromUtf8("文件夹是空的"));
-        return false;
-    }
     nextDir();
     return true;
 }
 
 void FolderUploader::scan(const QString& localDir) {
+    // 关键：被选中的文件夹本身也要在远端建出来（rel 用 "." 表示），
+    // 否则它的文件会直接落到当前目录，看起来就是"文件夹被拆成了文件"。
+    DirJob rootJob;
+    rootJob.rel = QString::fromUtf8(".");
+    rootJob.parent = QString();
+    rootJob.name = QFileInfo(localDir).fileName();
+    m_dirs.append(rootJob);
+
     // BFS：保证 m_dirs 里父目录一定排在子目录前面（串行建目录依赖这个顺序）。
     QVector<QPair<QString, QString> > queue;  // (绝对路径, 相对路径)
-    queue.append(qMakePair(localDir, QString()));
+    queue.append(qMakePair(localDir, rootJob.rel));
 
     int head = 0;
     while (head < queue.size()) {
@@ -68,8 +71,7 @@ void FolderUploader::scan(const QString& localDir) {
             QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
         for (int i = 0; i < entries.size(); ++i) {
             const QFileInfo& info = entries.at(i);
-            const QString childRel =
-                rel.isEmpty() ? info.fileName() : rel + QLatin1Char('/') + info.fileName();
+            const QString childRel = rel + QLatin1Char('/') + info.fileName();
             if (info.isDir()) {
                 DirJob job;
                 job.rel = childRel;

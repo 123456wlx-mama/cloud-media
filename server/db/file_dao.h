@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -124,6 +125,14 @@ struct PurgeBatchResult {
     PurgeBatchResult();
 };
 
+// 目录节点的直接子项统计（列表页一次查询覆盖所有目录行）。
+struct ChildSummary {
+    std::uint32_t childCount;
+    std::uint64_t size;  // 直接子文件字节和；子目录不计（MySQL 5.7 无 CTE，避免递归）
+
+    ChildSummary() : childCount(0), size(0) {}
+};
+
 // GC 候选：f_state=2、无活跃节点、无有效分享、超过宽限期的 blob。
 struct OrphanBlobRow {
     std::uint64_t fid;
@@ -216,6 +225,11 @@ public:
     ErrorCode listOrphanBlobs(std::uint64_t graceSeconds,
                               std::size_t limit,
                               std::vector<OrphanBlobRow>* out);
+
+    // 批量统计目录的直接子项数与字节和（一次 IN 查询，按上页号分组）。
+    ErrorCode summarizeChildren(std::uint64_t uid,
+                                const std::vector<std::uint64_t>& parentIds,
+                                std::map<std::uint64_t, ChildSummary>* out);
 
     // 首页 COUNT：200ms 上限 + LIMIT 10001 截断（最多返回 10001）。
     // 命中 max_execution_time（3024）时返回 Ok 且 *count = kUnknownCount，由调用方降级展示。

@@ -283,7 +283,7 @@ QWidget* MainWindow::buildFilePane() {
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(36);
+    m_table->verticalHeader()->setDefaultSectionSize(44);  // 字号调大后行高同步
     QHeaderView* tableHeader = m_table->horizontalHeader();
     tableHeader->setStretchLastSection(false);
     tableHeader->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);

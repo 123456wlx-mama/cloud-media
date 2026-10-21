@@ -58,10 +58,19 @@ QVariant FileTableModel::data(const QModelIndex& index, int role) const {
             case ColName:
                 return row.name;
             case ColSize:
-                return row.isDir ? QString::fromUtf8("—") : formatSize(row.size);
+                // 目录：直接子文件字节和（空目录显示 —）
+                if (row.isDir) {
+                    return row.size > 0 ? formatSize(row.size)
+                                        : QString::fromUtf8("—");
+                }
+                return formatSize(row.size);
             case ColKind:
-                return row.isDir ? QString::fromUtf8("文件夹")
-                                 : QString::fromUtf8("文件");
+                if (row.isDir) {
+                    return row.childCount > 0
+                               ? QString::fromUtf8("文件夹 · %1 项").arg(row.childCount)
+                               : QString::fromUtf8("文件夹");
+                }
+                return QString::fromUtf8("文件");
             case ColUpdatedAt:
                 return formatTime(row.updatedAtMs);
             default:
@@ -119,6 +128,7 @@ void FileTableModel::appendRows(const QVariantList& rows) {
         row.isDir = map.value(QString::fromUtf8("isDir")).toBool();
         row.size = map.value(QString::fromUtf8("size")).toULongLong();
         row.updatedAtMs = map.value(QString::fromUtf8("updatedAtMs")).toULongLong();
+        row.childCount = map.value(QString::fromUtf8("childCount")).toUInt();
         m_rows.append(row);
     }
     endInsertRows();

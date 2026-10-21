@@ -1,6 +1,7 @@
 #include "file_service.h"
 
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -186,6 +187,19 @@ ErrorCode FileService::list(std::uint64_t uid,
             total = counted > m_maxTotalCount ? m_maxTotalCount : counted;
         }
     }
+    // 目录行补"直接子项数 + 直接子文件字节和"（一次 IN 查询；失败只降级为 0）。
+    std::map<std::uint64_t, cm::db::ChildSummary> childSums;
+    {
+        std::vector<std::uint64_t> dirIds;
+        for (std::size_t i = 0; i < page.rows.size(); ++i) {
+            if (page.rows[i].isDir) {
+                dirIds.push_back(page.rows[i].ufId);
+            }
+        }
+        if (!dirIds.empty()) {
+            fileDao.summarizeChildren(uid, dirIds, &childSums);
+        }
+    }
     conn.reset();
 
     out->code = 0;
@@ -197,10 +211,20 @@ ErrorCode FileService::list(std::uint64_t uid,
         item.fId = row.fid;
         item.name = row.name;
         item.isDir = row.isDir ? 1 : 0;
-        item.size = row.isDir ? 0 : row.size;
+        item.size = row.size;
         item.md5 = row.isDir ? std::string() : row.md5;
         item.createdAtMs = datetimeToMs(row.createdAt);
         item.updatedAtMs = datetimeToMs(row.updatedAt);
+        if (row.isDir) {
+            const std::map<std::uint64_t, cm::db::ChildSummary>::const_iterator it =
+                childSums.find(row.ufId);
+            if (it != childSums.end()) {
+                item.size = it->second.size;
+                item.childCount = it->second.childCount;
+            } else {
+                item.size = 0;
+            }
+        }
         out->items.push_back(item);
     }
     out->hasMore = page.hasMore ? 1 : 0;

@@ -39,8 +39,9 @@ private:
         bool isDir;
         quint64 size;
         quint64 updatedAtMs;
+        quint32 childCount;  // 目录：直接子项数
 
-        Row() : ufId(0), isDir(false), size(0), updatedAtMs(0) {}
+        Row() : ufId(0), isDir(false), size(0), updatedAtMs(0), childCount(0) {}
     };
 
     QVector<Row> m_rows;

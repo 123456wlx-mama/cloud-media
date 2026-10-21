@@ -16,6 +16,8 @@ struct FileItem {
     std::string md5;  // 目录为空
     std::uint64_t createdAtMs;
     std::uint64_t updatedAtMs;
+    // 目录：直接子项数（文件为 0）。size 对目录表示直接子文件的字节和。
+    std::uint32_t childCount;
 
     FileItem();
 };
