@@ -362,7 +362,7 @@ QWidget* MainWindow::buildFilePane() {
     layout->addWidget(m_table, 1);
 
     m_fileEmpty = new QLabel(
-        QString::fromUtf8("这里还是空的\n把文件拖进窗口，或点下面的「上传文件」"), pane);
+        QString::fromUtf8("这里还是空的\n把文件拖进窗口，或点下面的「上传文件 / 上传文件夹」"), pane);
     m_fileEmpty->setObjectName(QString::fromUtf8("emptyHint"));
     m_fileEmpty->setAlignment(Qt::AlignCenter);
     layout->addWidget(m_fileEmpty, 1);
@@ -379,11 +379,15 @@ QWidget* MainWindow::buildFilePane() {
 
     QPushButton* upload = new QPushButton(QString::fromUtf8("上传文件"), pane);
     upload->setObjectName(QString::fromUtf8("primaryButton"));
-    upload->setMaximumWidth(120);
     QPushButton* uploadFolder = new QPushButton(QString::fromUtf8("上传文件夹"), pane);
     // 与「上传文件」同款主按钮：外观、hover/按下效果一致
     uploadFolder->setObjectName(QString::fromUtf8("primaryButton"));
-    uploadFolder->setMaximumWidth(120);
+    // 两枚按钮统一宽度：以「上传文件夹」（5 字，比「上传文件」宽）为基准，
+    // 且不用 setMaximumWidth，否则窄面板下会被裁成「上传文件刂」。
+    // 152 是 21px 字号 + 左右各 16px padding 的安全下限，字体变大时按 sizeHint 自动放宽。
+    const int uploadButtonWidth = qMax(152, uploadFolder->sizeHint().width());
+    upload->setMinimumWidth(uploadButtonWidth);
+    uploadFolder->setMinimumWidth(uploadButtonWidth);
     QHBoxLayout* emptyRow = new QHBoxLayout();
     emptyRow->addStretch(1);
     emptyRow->addWidget(upload);
