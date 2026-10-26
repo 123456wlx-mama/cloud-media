@@ -52,7 +52,8 @@ struct TransferTask {
     quint32 blockSize;
     quint32 blockCount;
     quint32 nextBlock;
-    quint32 blocksFetched;  // 本次启动后实际取回的块数（续传取证）
+    quint32 blocksFetched;   // 本次启动后实际取回的块数（续传取证）
+    quint32 writeFailCount;  // 同一块连续写盘失败次数，超过上限才判定任务失败
 
     // 已完成的块（下载）或已确认的分片（上传）；LSB-first，与 t_chunk.bitmap 同构。
     QByteArray bitmap;
@@ -67,8 +68,8 @@ struct TransferTask {
           bytesDone(0), speedBps(0.0), errCode(0), instant(false),
           playback(false), chunkSize(0),
           totalChunks(0), nextChunk(0), ufId(0), fId(0), blockSize(0),
-          blockCount(0), nextBlock(0), blocksFetched(0), lastBytes(0),
-          lastTickMs(0) {}
+          blockCount(0), nextBlock(0), blocksFetched(0), writeFailCount(0),
+          lastBytes(0), lastTickMs(0) {}
 
     bool isTerminal() const {
         return state == TaskState::Done || state == TaskState::Canceled;

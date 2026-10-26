@@ -2,9 +2,14 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QMetaObject>
 #include <QString>
 
+#include <string>
+
+#include "cm/protocol/messages/download.h"
 #include "netapi/NetClient.h"
 #include "transfer/TransferQueue.h"
 
@@ -117,6 +122,86 @@ TEST(TransferQueueTerminal, TimeoutWithHealthyLinkFails) {
         Q_ARG(quint16, 10008));
     ASSERT_TRUE(ok);
     EXPECT_EQ(cm::transfer::TaskState::Failed, queue.find(id)->state);
+}
+
+namespace {
+
+// 把 10012 响应塞回队列（模拟服务端），把任务推进到"开始取块"。
+bool deliverOpen(cm::transfer::TransferQueue* queue, cm::netapi::NetClient* net) {
+    cm::protocol::DownloadOpenRs rs;
+    rs.code = 0;
+    rs.fId = 1;
+    rs.size = 1024;
+    rs.fileMd5 = std::string(32, 'a');
+    rs.blockSize = 1024;
+    rs.blockCount = 1;
+    rs.ticket = std::string(32, 'b');
+    rs.ticketExpireMs = 0;
+    rs.startBlock = 0;
+    rs.zeroCopy = 0;
+    rs.hls = 0;
+    std::string payload;
+    if (!rs.encode(&payload)) {
+        return false;
+    }
+    return QMetaObject::invokeMethod(
+        queue, "onFrame", Qt::DirectConnection, Q_ARG(quint16, 10012),
+        Q_ARG(quint32, net->lastSeq()),
+        Q_ARG(QByteArray, QByteArray(payload.data(), static_cast<int>(payload.size()))));
+}
+
+// 把 10011 的数据块塞回队列；payload 就是裸块字节。
+bool deliverBlock(cm::transfer::TransferQueue* queue, cm::netapi::NetClient* net,
+                  const QByteArray& data) {
+    return QMetaObject::invokeMethod(queue, "onFrame", Qt::DirectConnection,
+                                     Q_ARG(quint16, 10011),
+                                     Q_ARG(quint32, net->lastSeq()),
+                                     Q_ARG(QByteArray, data));
+}
+
+}  // namespace
+
+// 回归：写盘失败绝不能把块标记为完成。
+// 修复前 writePart 的返回值没人看，open/write 失败照样 bitmapSet，
+// 续传时跳过这块，最终得到一个"大小正确、内容零填充"的损坏文件。
+TEST(TransferQueueWrite, WriteFailureDoesNotMarkBlockDone) {
+    cm::netapi::NetClient net;
+    cm::transfer::TransferQueue queue(&net, nullptr);
+
+    // 用同名目录占住 .part 路径：QFile::open 在任何平台上都会失败
+    const QString name =
+        QString::fromUtf8("cm_wf_%1.bin").arg(QCoreApplication::applicationPid());
+    const QString partPath =
+        QDir::tempPath() + QString::fromUtf8("/") + name + QString::fromUtf8(".part");
+    QFile::remove(partPath);
+    QDir(partPath).removeRecursively();
+    ASSERT_TRUE(QDir().mkpath(partPath));
+    // 清掉上次可能残留的 .part.state，否则任务会走 DownloadStat 分支而不是直接 open
+    QFile::remove(partPath + QString::fromUtf8(".state"));
+
+    const int id = queue.enqueueDownload(9001, name, 1024, true);
+    ASSERT_EQ(cm::transfer::TaskState::Running, queue.find(id)->state);
+
+    ASSERT_TRUE(deliverOpen(&queue, &net));
+
+    const QByteArray block(1024, 'x');
+    ASSERT_TRUE(deliverBlock(&queue, &net, block));
+
+    cm::transfer::TransferTask* task = queue.find(id);
+    ASSERT_NE(nullptr, task);
+    EXPECT_EQ(0u, cm::transfer::bitmapCount(task->bitmap, task->blockCount))
+        << "写盘失败的块被误标为已完成，续传会跳过它";
+    EXPECT_EQ(quint64(0), task->bytesDone);
+    EXPECT_EQ(0u, task->blocksFetched);
+    EXPECT_EQ(1u, task->writeFailCount);
+    EXPECT_EQ(cm::transfer::TaskState::Running, task->state);
+
+    // 连续失败达到上限后必须判失败，不能无限重取同一块把服务端刷爆
+    ASSERT_TRUE(deliverBlock(&queue, &net, block));
+    ASSERT_TRUE(deliverBlock(&queue, &net, block));
+    EXPECT_EQ(cm::transfer::TaskState::Failed, queue.find(id)->state);
+
+    QDir(partPath).removeRecursively();
 }
 
 TEST(TransferBitmap, SetTestCountAndFirstMissing) {

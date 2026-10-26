@@ -28,6 +28,8 @@ namespace {
 const quint32 kBlockSize = 4194304;   // 4MB，与服务端 kChunkSize 一致
 const int kMaxUploads = 2;            // 上传并发文件数
 const int kMaxDownloads = 2;          // 下载并发文件数
+// 同一块连续落盘失败的上限：超过就判定任务失败，避免磁盘满时无限重取把服务端刷爆。
+const quint32 kMaxWriteRetries = 3;
 
 quint16 t(protocol::MessageType type) { return static_cast<std::uint16_t>(type); }
 
@@ -652,7 +654,8 @@ bool TransferQueue::loadPartState(TransferTask* task) {
 
 void TransferQueue::startDownload(TransferTask* task) {
     setState(task, TaskState::Running);
-    task->blocksFetched = 0;  // 本次启动实际取回的块数（续传取证）
+    task->blocksFetched = 0;   // 本次启动实际取回的块数（续传取证）
+    task->writeFailCount = 0;  // 每轮启动重新给满重试额度
     if (m_net == nullptr) {
         touch(task->id, false);
         return;
@@ -790,20 +793,27 @@ void TransferQueue::sendNextBlock(TransferTask* task) {
     m_pending[seq] = pending;
 }
 
-void TransferQueue::writePart(TransferTask* task, quint32 blockIndex,
+bool TransferQueue::writePart(TransferTask* task, quint32 blockIndex,
                               const QByteArray& data) {
     const QString path = partPath(*task);
     QFile file(path);
     if (!file.open(QIODevice::ReadWrite)) {
-        return;
+        return false;
     }
     const qint64 offset = static_cast<qint64>(blockIndex) * task->blockSize;
-    if (file.size() < offset + data.size()) {
-        file.resize(offset + data.size());
+    const qint64 need = offset + data.size();
+    if (file.size() < need && !file.resize(need)) {
+        file.close();
+        return false;
     }
-    file.seek(offset);
-    file.write(data);
+    if (!file.seek(offset)) {
+        file.close();
+        return false;
+    }
+    const qint64 written = file.write(data);
     file.close();
+    // QFile::write 可能短写（磁盘满、文件被外部截断），必须按字节数核对
+    return written == data.size();
 }
 
 void TransferQueue::handleDownloadData(TransferTask* task, const QByteArray& payload) {
@@ -811,7 +821,26 @@ void TransferQueue::handleDownloadData(TransferTask* task, const QByteArray& pay
     if (index >= task->blockCount) {
         return;
     }
-    writePart(task, index, payload);
+    if (!writePart(task, index, payload)) {
+        // 落盘失败：绝不能置位图。位图一旦标完，续传会跳过这块，
+        // 最终拿到一个大小正确、内容却是零填充或半截的损坏文件。
+        ++task->writeFailCount;
+        if (task->writeFailCount >= kMaxWriteRetries) {
+            fail(task, 0, QString::fromUtf8("写入本地文件失败（磁盘空间或路径不可写）"));
+            return;
+        }
+        // 位图不变 → firstMissing 仍指向这一块，下一轮自动重取同一块
+        emit notice(QString::fromUtf8("%1 第 %2 块写入失败，重试中(%3/%4)")
+                        .arg(task->remoteName)
+                        .arg(index + 1)
+                        .arg(task->writeFailCount)
+                        .arg(kMaxWriteRetries),
+                    true);
+        sendNextBlock(task);
+        return;
+    }
+
+    task->writeFailCount = 0;
     bitmapSet(&task->bitmap, index);
     ++task->blocksFetched;
     task->bytesDone += static_cast<quint64>(payload.size());
@@ -828,6 +857,22 @@ void TransferQueue::handleDownloadDone(TransferTask* task, const QByteArray& pay
     protocol::DownloadDoneRs rs;
     if (!rs.decode(toStd(payload)) || rs.code != 0) {
         fail(task, rs.code, QString::fromUtf8("完成上报失败"));
+        return;
+    }
+    // 服务端确认完成 ≠ 本地文件完好：短写、位图错位都会让 .part 大小对不上。
+    // 这里兜底核对一次，避免把损坏文件重命名成正式文件、或让播放器读到半截。
+    const QString part = partPath(*task);
+    QFile check(part);
+    if (!check.open(QIODevice::ReadOnly)) {
+        fail(task, 0, QString::fromUtf8("本地文件缺失，无法完成下载"));
+        return;
+    }
+    const qint64 actual = check.size();
+    check.close();
+    if (static_cast<quint64>(actual) != task->size) {
+        fail(task, 0, QString::fromUtf8("本地文件大小不符(%1/%2)")
+                          .arg(static_cast<qlonglong>(actual))
+                          .arg(static_cast<qulonglong>(task->size)));
         return;
     }
     if (task->playback) {

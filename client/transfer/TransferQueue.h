@@ -113,7 +113,9 @@ private:
     void startDownload(TransferTask* task);
     void requestDownloadOpen(TransferTask* task);
     void sendNextBlock(TransferTask* task);
-    void writePart(TransferTask* task, quint32 blockIndex, const QByteArray& data);
+    // 返回 false 表示这一块没有真正落盘（打开/扩容/seek/短写失败）。
+    // 调用方绝不能在这种情况下置位图，否则续传会跳过坏块。
+    bool writePart(TransferTask* task, quint32 blockIndex, const QByteArray& data);
 
     void* taskPtr(int taskId);
     void handleUploadInit(TransferTask* task, const QByteArray& payload);
