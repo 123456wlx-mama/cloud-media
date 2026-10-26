@@ -843,7 +843,12 @@ int runServer(const cm::ServerConfig& cfg) {
             return app.ioPool().run(std::move(t));
         },
         cfg.dataDir);
-    cm::logic::DownloadHandlers downloadHandlers(downloadService, bufferedSender);
+    // 限速重试的定时器回调跑在 IO 线程：注入业务池，让重试重新排到 worker 执行。
+    cm::logic::DownloadHandlers downloadHandlers(
+        downloadService, bufferedSender,
+        [&workers](std::function<void()> task) {
+            return workers.run(std::move(task));
+        });
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
     cm::logic::SendfileBlockSender sendfileSender(
         *mysql, *redis,

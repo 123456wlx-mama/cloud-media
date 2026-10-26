@@ -75,7 +75,13 @@ public:
         std::function<void(std::int64_t ms, std::function<void()> task)> runAfter;
     };
 
-    DownloadHandlers(DownloadService& service, BlockSender& buffered);
+    // 把任务投回业务线程池；返回 false 表示池已拒绝（停机/队列满）。
+    // 必须注入：限速重试的定时器回调在 IO 线程，不能在那里做 Redis/MySQL/文件 IO。
+    using Poster = std::function<bool(std::function<void()>)>;
+
+    // post 为空时退化为就地执行（仅供单测；生产路径必须注入）。
+    DownloadHandlers(DownloadService& service, BlockSender& buffered,
+                     Poster post = Poster());
 
     DownloadHandlers(const DownloadHandlers&) = delete;
     DownloadHandlers& operator=(const DownloadHandlers&) = delete;
@@ -105,6 +111,7 @@ private:
 
     DownloadService& m_service;
     BlockSender& m_buffered;
+    Poster m_post;
     DownloadRateLimit m_rate;
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
     SendfileBlockSender* m_sendfile;

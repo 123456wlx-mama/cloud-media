@@ -89,8 +89,8 @@ cm::ErrorCode DownloadRateLimit::consume(const std::string& connKey,
 }
 
 DownloadHandlers::DownloadHandlers(DownloadService& service,
-                                   BlockSender& buffered)
-    : m_service(service), m_buffered(buffered)
+                                   BlockSender& buffered, Poster post)
+    : m_service(service), m_buffered(buffered), m_post(std::move(post))
 #if defined(CM_DOWNLOAD_ZEROCOPY) && (CM_DOWNLOAD_ZEROCOPY)
       ,
       m_sendfile(nullptr)
@@ -185,7 +185,20 @@ void DownloadHandlers::handleRange(std::uint64_t uid,
         const protocol::Frame retryFrame = frame;
         conn.runAfter(static_cast<std::int64_t>(waitMs),
                       [this, uid, retryFrame, delayed]() {
-                          handleRange(uid, retryFrame, delayed);
+                          // 定时器回调运行在 IO 线程：Redis 计费、MySQL 查票据、
+                          // 打开文件都会阻塞 Reactor。必须重新投回业务池，
+                          // 从 handleRange 入口再走一遍（保证令牌被重新计费）。
+                          if (!m_post) {
+                              handleRange(uid, retryFrame, delayed);
+                              return;
+                          }
+                          if (!m_post([this, uid, retryFrame, delayed]() {
+                                  handleRange(uid, retryFrame, delayed);
+                              })) {
+                              delayed.sendError(
+                                  retryFrame.seq,
+                                  to_wire_code(ErrorCode::Timeout), "busy");
+                          }
                       });
         return;
     }
