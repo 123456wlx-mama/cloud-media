@@ -139,7 +139,6 @@ void NetClient::onRegisterFinished(quint32 seq, quint32 code, quint64 uid) {
     Q_UNUSED(seq);
     emit registerFinished(code, uid);
 }
-
 void NetClient::onAddFolderFinished(quint32 seq, quint32 code, quint64 ufId,
                                     const QString& name) {
     Q_UNUSED(seq);
