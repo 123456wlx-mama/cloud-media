@@ -85,12 +85,13 @@ bool OrphanGcJob::purgeOne(cm::db::MysqlConn& conn,
         return false;
     }
 
-    // 第二道复核：锁行并重新确认三个条件（状态 / 引用 / 节点 / 分享）。
+    // 第二道复核：锁行并重新确认（状态 / 引用 / 节点 / 分享）。
+    // 节点条件必须与候选查询一致：只剩回收站节点时不允许回收，
+    // 必须等用户彻底删除（purge）后才真正释放物理空间。
     std::unique_ptr<cm::db::PreparedStatement> locked = conn.prepare(
         "SELECT 1 FROM t_file f "
         "WHERE f.f_id = ? AND f.f_state = 2 AND f.f_ref_count = 0 "
-        "AND NOT EXISTS (SELECT 1 FROM t_user_file uf "
-        "WHERE uf.f_id = f.f_id AND uf.uf_deleted_at = ?) "
+        "AND NOT EXISTS (SELECT 1 FROM t_user_file uf WHERE uf.f_id = f.f_id) "
         "AND NOT EXISTS (SELECT 1 FROM t_share s "
         "WHERE s.s_file_id = f.f_id AND s.s_status = 0 "
         "AND s.s_expire_at >= NOW(6)) "
@@ -98,9 +99,7 @@ bool OrphanGcJob::purgeOne(cm::db::MysqlConn& conn,
     if (!locked) {
         return false;
     }
-    const std::string activeDeletedAt = cm::db::FileDao::activeDeletedAt();
-    if (!locked->bindUInt64(0, row.fid) ||
-        !locked->bindString(1, activeDeletedAt) || !locked->execute()) {
+    if (!locked->bindUInt64(0, row.fid) || !locked->execute()) {
         return false;
     }
     const cm::db::PreparedStatement::FetchStatus status = locked->fetchRow();

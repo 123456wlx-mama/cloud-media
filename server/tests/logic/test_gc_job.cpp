@@ -136,6 +136,15 @@ protected:
         ASSERT_TRUE(stmt->execute());
     }
 
+    // 模拟用户「彻底删除」：回收站节点行消失，blob 才成为真正的孤儿。
+    void purgeNodeRow(std::uint64_t ufId) {
+        std::unique_ptr<cm::db::PreparedStatement> stmt =
+            m_conn->prepare("DELETE FROM t_user_file WHERE uf_id = ?");
+        ASSERT_TRUE(stmt);
+        ASSERT_TRUE(stmt->bindUInt64(0, ufId));
+        ASSERT_TRUE(stmt->execute()) << stmt->lastErrorMessage();
+    }
+
     void expireShare(const std::string& code) {
         std::unique_ptr<cm::db::PreparedStatement> stmt = m_conn->prepare(
             "UPDATE t_share SET s_expire_at = DATE_SUB(NOW(6), INTERVAL 1 HOUR) "
@@ -212,6 +221,49 @@ TEST_F(GcJobTest, GcSkipsActiveShare) {
     EXPECT_EQ(std::size_t(0), deleted);
     EXPECT_TRUE(blobExists(fid));
     EXPECT_EQ(0, shareStatus(code));
+}
+
+// 回归：回收站里的节点仍要能恢复，GC 不得物理回收它的 blob。
+// 修复前 SQL 只挡「活跃节点」（uf_deleted_at = 哨兵），回收站的节点不算引用，
+// 于是软删超过宽限期就删了 blob 和 t_file 行，回收站里留下悬空节点、恢复后打不开。
+TEST_F(GcJobTest, GcKeepsBlobWithRecycledNode) {
+    const std::uint64_t fid = createBlob(1024);
+    ASSERT_GT(fid, std::uint64_t(0));
+    const std::uint64_t ufId = createNode(m_uid, "recycled.bin", fid, nullptr);
+    ASSERT_GT(ufId, std::uint64_t(0));
+    const std::string path = makeBlobFiles(fid);
+    ASSERT_TRUE(exists(path));
+
+    softDeleteNodeDirect(ufId);   // 进回收站
+    makeOrphan(fid, 25 * 3600);   // 引用归零 + 超出 24h 宽限
+
+    std::size_t deleted = 99;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
+    EXPECT_EQ(std::size_t(0), deleted) << "回收站里的文件被 GC 误删了";
+    EXPECT_TRUE(blobExists(fid));
+    EXPECT_TRUE(exists(path));
+    EXPECT_TRUE(exists(path + ".crc"));
+}
+
+// 用户彻底删除（节点行消失）之后，blob 才允许被物理回收。
+TEST_F(GcJobTest, GcReclaimsAfterRecycledNodePurged) {
+    const std::uint64_t fid = createBlob(1024);
+    ASSERT_GT(fid, std::uint64_t(0));
+    const std::uint64_t ufId = createNode(m_uid, "purged.bin", fid, nullptr);
+    ASSERT_GT(ufId, std::uint64_t(0));
+    const std::string path = makeBlobFiles(fid);
+    ASSERT_TRUE(exists(path));
+
+    softDeleteNodeDirect(ufId);
+    makeOrphan(fid, 25 * 3600);
+    purgeNodeRow(ufId);           // 彻底删除
+
+    std::size_t deleted = 0;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_job->runOnce(&deleted, nullptr));
+    EXPECT_EQ(std::size_t(1), deleted);
+    EXPECT_FALSE(blobExists(fid));
+    EXPECT_FALSE(exists(path));
+    EXPECT_FALSE(exists(path + ".crc"));
 }
 
 TEST_F(GcJobTest, GcDeletesBlobAndSidecar) {

@@ -744,13 +744,15 @@ ErrorCode FileDao::listOrphanBlobs(std::uint64_t graceSeconds,
     // 基准列是 f_updated_at（ON UPDATE CURRENT_TIMESTAMP(6)）：引用数归零 /
     // 置 f_state=2 时自动刷新，即“成为孤儿的时刻”；用 f_created_at 会把
     // 刚变孤儿的旧 blob 当成已过宽限。
+    // 节点条件必须是「一个节点都不剩」，而不是「没有活跃节点」：回收站里的
+    // 节点（uf_deleted_at != 哨兵）仍要可恢复，物理回收只能发生在用户彻底
+    // 删除之后，否则回收站里的文件会凭空消失。
     // 有效分享 = 未取消且未过期；分享指向目录时 s_file_id 为 NULL，不参与。
     std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
         "SELECT f.f_id, f.f_md5, f.f_size, f.f_path FROM t_file f "
         "WHERE f.f_state = 2 AND f.f_ref_count = 0 "
         "AND f.f_updated_at < DATE_SUB(NOW(6), INTERVAL ? SECOND) "
-        "AND NOT EXISTS (SELECT 1 FROM t_user_file uf "
-        "WHERE uf.f_id = f.f_id AND uf.uf_deleted_at = ?) "
+        "AND NOT EXISTS (SELECT 1 FROM t_user_file uf WHERE uf.f_id = f.f_id) "
         "AND NOT EXISTS (SELECT 1 FROM t_share s "
         "WHERE s.s_file_id = f.f_id AND s.s_status = 0 "
         "AND s.s_expire_at >= NOW(6)) "
@@ -759,8 +761,7 @@ ErrorCode FileDao::listOrphanBlobs(std::uint64_t graceSeconds,
         return m_conn.lastError();
     }
     if (!stmt->bindUInt64(0, graceSeconds) ||
-        !stmt->bindString(1, kActiveDeletedAt) ||
-        !stmt->bindUInt64(2, static_cast<std::uint64_t>(limit))) {
+        !stmt->bindUInt64(1, static_cast<std::uint64_t>(limit))) {
         return stmt->lastError();
     }
     if (!stmt->execute()) {

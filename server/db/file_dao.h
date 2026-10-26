@@ -133,7 +133,7 @@ struct ChildSummary {
     ChildSummary() : childCount(0), size(0) {}
 };
 
-// GC 候选：f_state=2、无活跃节点、无有效分享、超过宽限期的 blob。
+// GC 候选：f_state=2、无任何用户节点（含回收站）、无有效分享、超过宽限期的 blob。
 struct OrphanBlobRow {
     std::uint64_t fid;
     std::string md5;
@@ -219,7 +219,8 @@ public:
     // LEFT JOIN t_file 回填 size / md5（目录 f_id 为 NULL，得 0 / 空串）。
     ErrorCode listByParent(const FileListQuery& query, FileListPage* page);
     // 孤儿 blob 扫描（GC 第一道筛选）：f_state=2、f_ref_count=0、
-    // 最后更新（孤儿时刻，f_updated_at）超过 graceSeconds、无活跃节点、
+    // 最后更新（孤儿时刻，f_updated_at）超过 graceSeconds、
+    // 不存在任何 t_user_file 节点（回收站里的也算，必须等彻底删除）、
     // 无未过期有效分享；按 f_id 升序 LIMIT ?。
     // 真正的删除前还会在事务内 FOR UPDATE 复核一次。
     ErrorCode listOrphanBlobs(std::uint64_t graceSeconds,
