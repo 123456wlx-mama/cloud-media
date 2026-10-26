@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -237,6 +238,47 @@ TEST(TcpConnectionSendFileTest, PreludeFirst) {
     sendAndRead(makeData(256 * 1024, 'b'), true);
 }
 
+// 回归：文件帧头还没发完时追加的响应，必须排在文件数据之后。
+// 修复前帧头与新响应共用 outputBuffer_，会一起先于文件数据发出，
+// 客户端按帧头的 LEN 切包时整条流错位（表现为把响应字节当成文件内容）。
+TEST(TcpConnectionSendFileTest, ResponseQueuedBehindFileData) {
+    ConnectionHarness harness;
+    ASSERT_NE(-1, harness.clientFd());
+
+    const std::string fileData = makeData(256 * 1024, 'q');
+    const int fileFd = createFileWithData(fileData);
+    ASSERT_GE(fileFd, 0);
+
+    // prelude 远大于 SO_SNDBUF(4096)，且客户端此刻不读，于是 outputBuffer_ 滞留，
+    // sendFile 停在 pending；紧接着的 send("TAIL") 正好落在文件发送期间。
+    const std::string prelude(1024 * 1024, 'P');
+    const std::string tail("TAIL");
+    std::shared_ptr<DoneState> done(new DoneState());
+
+    harness.loop().runInLoop([&harness, &prelude, fileFd, &fileData, &tail, done]() {
+        harness.conn()->send(prelude);
+        harness.conn()->sendFile(fileFd, 0, fileData.size(), makeDone(done));
+        harness.conn()->send(tail);
+    });
+
+    // 防止实现有缺陷时整个测试挂死
+    struct timeval tv;
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    ::setsockopt(harness.clientFd(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    std::string received(prelude.size() + fileData.size() + tail.size(), '\0');
+    ASSERT_TRUE(readExact(harness.clientFd(), &received[0], received.size()));
+
+    EXPECT_EQ(prelude, received.substr(0, prelude.size()));
+    EXPECT_EQ(fileData, received.substr(prelude.size(), fileData.size()));
+    EXPECT_EQ(tail, received.substr(prelude.size() + fileData.size()));
+
+    ASSERT_TRUE(waitDone(done, 5000));
+    EXPECT_EQ(1, done->count);
+    EXPECT_TRUE(done->ok);
+}
+
 TEST(TcpConnectionSendFileTest, PartialEagain) {
     const std::string data = makeData(1024 * 1024, 'c');
     ConnectionHarness harness;
@@ -438,6 +480,53 @@ TEST(TcpConnectionPauseReadTest, SurvivesRearm) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_EQ(0, reading.load());
+}
+
+// 背压路径回归：输出积压超水位后暂停读，写空后必须重新打开读事件。
+// rearm 一旦在背压时直接 return 而不恢复可写关注，ONESHOT 会把事件消费掉，
+// 剩下半截响应再也发不出去——连接静默挂死，不报错也不超时。
+TEST(TcpConnectionBackpressureTest, ResumesReadingAfterDrain) {
+    ConnectionHarness harness;
+    ASSERT_NE(-1, harness.clientFd());
+
+    // 12MB > highWaterMark(8MB)，且客户端暂不读 → 必然触发背压 + EAGAIN
+    const std::string data(12 * 1024 * 1024, 'p');
+    harness.conn()->send(data);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::atomic<int> readingDuring(-1);
+    harness.loop().runInLoop([&]() {
+        readingDuring.store(harness.conn()->isReading() ? 1 : 0);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (readingDuring.load() < 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(0, readingDuring.load()) << "背压期间不应继续读，否则内存会无上限增长";
+
+    // 防止写事件丢失时整个用例永久阻塞在 readExact 上
+    struct timeval tv;
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    ::setsockopt(harness.clientFd(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    std::string received(data.size(), '\0');
+    ASSERT_TRUE(readExact(harness.clientFd(), &received[0], received.size()));
+    EXPECT_EQ(data, received);
+
+    // 写空后必须恢复读（否则连接只能单向发，永远收不到下一个请求）
+    std::atomic<int> readingAfter(-1);
+    harness.loop().runInLoop([&]() {
+        readingAfter.store(harness.conn()->isReading() ? 1 : 0);
+    });
+    const auto afterDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (readingAfter.load() < 0 &&
+           std::chrono::steady_clock::now() < afterDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(1, readingAfter.load()) << "写空后读事件没有恢复，连接已失效";
 }
 
 #else  // !__linux__

@@ -38,7 +38,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   void send(const std::string& message);
   void send(const void* data, size_t len);
 
-  // 发送文件内容：连接接管 fd；先发完 outputBuffer（可放帧头），再 sendfile。
+  // 发送文件内容：连接接管 fd；先发完「文件帧头」，再 sendfile，最后才发期间新产生的响应。
   // done 只会被调用一次，且在本连接所属 loop 线程。
   bool sendFile(int fd, std::int64_t offset, std::size_t len,
                 const std::function<void(bool)>& done);
@@ -70,6 +70,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   void handleClose();
   void handleError();
   void sendInLoop(const std::string& message);
+  // 把 buf 里可读数据循环写到 socket，直到写空或 EAGAIN。
+  // 返回 false 表示连接已关闭（内部已走 handleError），调用方必须立即返回。
+  bool flushOutputBuffer(cm::Buffer& buf);
   void sendFileInLoop(int fd, std::int64_t offset, std::size_t len,
                       const std::function<void(bool)>& done);
   void startSendFileInLoop();
@@ -78,8 +81,14 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   void cancelSendFile();
   void shutdownInLoop();
   void forceCloseInLoop();
-  // ET + ONESHOT 的重新武装；不满足条件时什么都不做
+  // ET + ONESHOT 的重新武装：每次事件回调结束都必须把「仍需关注的事件」重新 MOD 回去。
+  // 待发数据优先恢复可写关注，背压只暂停读，不能连写一起停掉。
   void rearm();
+  // 还有没写完的东西（普通响应 / 文件帧头 / 文件本体）
+  bool hasPendingOutput() const;
+  // 输出积压超过高水位：暂停读，等 handleWrite 写空后恢复。
+  // 幂等；不要求当前正在读（readPaused 期间超水位同样要记下来）。
+  void applyBackpressure();
   void touchActive();
 
   EventLoop* loop_;
@@ -92,6 +101,10 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
   cm::Buffer inputBuffer_;
   cm::Buffer outputBuffer_;
+
+  // sendfile 的文件帧头单独存放：必须先于文件数据发出，且期间新到达的响应
+  // 只能排在文件数据之后，绝不能混进这个缓冲。
+  cm::Buffer sendFileHeader_;
 
   MessageCallback messageCallback_;
   std::function<void(const ConnectionPtr&)> connectionCallback_;

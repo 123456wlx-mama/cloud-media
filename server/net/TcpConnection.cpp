@@ -122,14 +122,22 @@ void TcpConnection::handleWrite() {
     return;
   }
 
-  // 先把 outputBuffer（含帧头）写空，再启动 sendfile，保证协议字节序。
-  if (sendFilePending_ && outputBuffer_.readableBytes() == 0) {
-    startSendFileInLoop();
-    if (state_.load() == kDisconnected) {
-      return;
+  // 严格顺序：文件帧头 -> 文件数据 -> 期间新产生的响应。
+  // 帧头单独存在 sendFileHeader_ 里；若与 outputBuffer_ 共用，pending 期间
+  // 追加的响应会跟帧头一起先于文件数据发出，客户端按 LEN 切包时整条流错位。
+  if (sendFilePending_) {
+    if (!flushOutputBuffer(sendFileHeader_)) {
+      return;  // 连接已关闭
+    }
+    if (sendFileHeader_.readableBytes() == 0) {
+      startSendFileInLoop();
+      if (state_.load() == kDisconnected) {
+        return;
+      }
     }
   }
 
+  // 文件还在发：本轮只推文件，排队中的响应不能插队。
   if (sendFileActive_) {
     if (!sendFileLoop()) {
       if (state_.load() == kDisconnected) {
@@ -144,29 +152,10 @@ void TcpConnection::handleWrite() {
     return;
   }
 
-  if (outputBuffer_.readableBytes() > 0) {
-    const ssize_t n = ::send(channel_->fd(), outputBuffer_.peek(),
-                             outputBuffer_.readableBytes(), MSG_NOSIGNAL);
-    if (n > 0) {
-      outputBuffer_.retrieve(static_cast<size_t>(n));
-    } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      handleError();
-      return;
-    }
-  }
-
-  // 帧头刚写完：同一轮继续启动 sendfile。
-  if (sendFilePending_ && outputBuffer_.readableBytes() == 0) {
-    startSendFileInLoop();
-    if (state_.load() == kDisconnected) {
-      return;
-    }
-    if (sendFileActive_ && !sendFileLoop()) {
-      if (state_.load() == kDisconnected) {
-        return;
-      }
-      rearm();
-      return;
+  // 文件发完（或本来就没有文件）之后，才轮到普通响应。
+  if (!sendFilePending_ && !sendFileActive_) {
+    if (!flushOutputBuffer(outputBuffer_)) {
+      return;  // 连接已关闭
     }
   }
 
@@ -174,8 +163,10 @@ void TcpConnection::handleWrite() {
     return;
   }
 
-  if (outputBuffer_.readableBytes() == 0 && !sendFileActive_ &&
-      !sendFilePending_) {
+  const bool allFlushed = sendFileHeader_.readableBytes() == 0 &&
+                          outputBuffer_.readableBytes() == 0 &&
+                          !sendFileActive_ && !sendFilePending_;
+  if (allFlushed) {
     // 写完立刻关掉 EPOLLOUT，避免空转把 CPU 打满
     channel_->disableWriting();
     if (backpressure_) {
@@ -186,8 +177,39 @@ void TcpConnection::handleWrite() {
       return;
     }
   }
+  // 没写完时不在本函数补注册：统一交给 rearm() 无条件 MOD，
+  // 避免「isWriting() 看着为真、内核其实已经摘掉监听」这个坑。
 #endif
   rearm();
+}
+
+bool TcpConnection::flushOutputBuffer(cm::Buffer& buf) {
+#if defined(__linux__)
+  while (buf.readableBytes() > 0) {
+    const ssize_t n =
+        ::send(channel_->fd(), buf.peek(), buf.readableBytes(), MSG_NOSIGNAL);
+    if (n > 0) {
+      buf.retrieve(static_cast<size_t>(n));
+      continue;
+    }
+    if (n == 0) {
+      // send 返回 0 只在对端已关闭时出现，按错误处理
+      handleError();
+      return false;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return true;  // 内核缓冲满，剩余留给下一次 EPOLLOUT
+    }
+    handleError();
+    return false;
+  }
+#else
+  (void)buf;
+#endif
+  return true;
 }
 
 void TcpConnection::handleClose() {
@@ -238,10 +260,16 @@ void TcpConnection::sendInLoop(const std::string& message) {
   // 大文件发送期间的新数据只能排到文件之后；不允许插到 payload 中间。
   if (sendFileActive_ || sendFilePending_) {
     if (!message.empty()) {
-      outputBuffer_.append(message.data(), message.size());
+      if (!outputBuffer_.append(message.data(), message.size())) {
+        handleError();
+        return;
+      }
       if (!channel_->isWriting()) {
         channel_->enableWriting();
       }
+      // 文件发送期间同样要限流：并发响应会一直往 outputBuffer_ 里堆，
+      // 不检查水位就等于没有背压。
+      applyBackpressure();
     }
     return;
   }
@@ -260,15 +288,15 @@ void TcpConnection::sendInLoop(const std::string& message) {
   }
 
   if (written < message.size()) {
-    outputBuffer_.append(message.data() + written, message.size() - written);
+    if (!outputBuffer_.append(message.data() + written, message.size() - written)) {
+      handleError();
+      return;
+    }
     if (!channel_->isWriting()) {
       channel_->enableWriting();
     }
     // 背压：发不出去就先别再收，等写空再恢复
-    if (outputBuffer_.readableBytes() > highWaterMark_ && channel_->isReading()) {
-      backpressure_ = true;
-      channel_->disableReading();
-    }
+    applyBackpressure();
   }
 #endif
 }
@@ -316,7 +344,20 @@ void TcpConnection::sendFileInLoop(int fd, std::int64_t offset,
   sendFileDone_ = done;
   sendFilePending_ = true;
 
-  if (outputBuffer_.readableBytes() == 0) {
+  // 关键：把此刻 outputBuffer_ 的内容整体摘成「文件帧头」。
+  // 之后新到的 send() 只会落在 outputBuffer_，必须等文件发完才允许写出；
+  // 否则帧头 + 新响应会先于文件数据发出去，客户端按 LEN 切包时整条流错位。
+  sendFileHeader_.retrieveAll();
+  if (outputBuffer_.readableBytes() > 0) {
+    if (!sendFileHeader_.append(outputBuffer_.peek(),
+                                outputBuffer_.readableBytes())) {
+      finishSendFile(false);
+      return;
+    }
+    outputBuffer_.retrieveAll();
+  }
+
+  if (sendFileHeader_.readableBytes() == 0) {
     startSendFileInLoop();
   } else if (!channel_->isWriting()) {
     channel_->enableWriting();
@@ -378,6 +419,7 @@ void TcpConnection::finishSendFile(bool ok) {
   sendFileRemaining_ = 0;
   sendFilePending_ = false;
   sendFileActive_ = false;
+  sendFileHeader_.retrieveAll();
 
   std::function<void(bool)> done = sendFileDone_;
   sendFileDone_ = std::function<void(bool)>();
@@ -399,6 +441,7 @@ void TcpConnection::cancelSendFile() {
   sendFileRemaining_ = 0;
   sendFilePending_ = false;
   sendFileActive_ = false;
+  sendFileHeader_.retrieveAll();
 
   std::function<void(bool)> done = sendFileDone_;
   sendFileDone_ = std::function<void(bool)>();
@@ -440,12 +483,36 @@ void TcpConnection::resumeRead() {
   });
 }
 
+bool TcpConnection::hasPendingOutput() const {
+  return outputBuffer_.readableBytes() > 0 ||
+         sendFileHeader_.readableBytes() > 0 ||
+         sendFilePending_ || sendFileActive_;
+}
+
+void TcpConnection::applyBackpressure() {
+  if (backpressure_) {
+    return;
+  }
+  if (outputBuffer_.readableBytes() <= highWaterMark_) {
+    return;
+  }
+  backpressure_ = true;
+  channel_->disableReading();
+}
+
 void TcpConnection::rearm() {
   if (state_.load() != kConnected) {
     return;
   }
+  // ET + ONESHOT：本次事件已被内核消费。即使 channel_->isWriting() 仍为 true
+  // （软件位没清），内核那边的监听也已经摘掉了，必须无条件重新 MOD 一遍。
+  // 曾经在这里用 !isWriting() 做判断，结果背压一次之后写事件再也不来：
+  // 剩下半截响应发不出去，连接静默挂死，不报错也不超时。
+  if (hasPendingOutput()) {
+    channel_->enableWriting();
+  }
   if (backpressure_) {
-    return;  // 输出积压期间不读，避免内存继续膨胀
+    return;  // 输出积压期间不读，避免内存继续膨胀（读会在写空后由 handleWrite 恢复）
   }
   if (readPaused_.load()) {
     return;  // 大帧校验未完成或业务显式暂停
@@ -463,7 +530,8 @@ void TcpConnection::shutdown() {
 
 void TcpConnection::shutdownInLoop() {
   channel_->disableReading();
-  if (outputBuffer_.readableBytes() == 0 && !sendFileActive_ &&
+  if (outputBuffer_.readableBytes() == 0 &&
+      sendFileHeader_.readableBytes() == 0 && !sendFileActive_ &&
       !sendFilePending_) {
     socket_->shutdownWrite();  // 发 FIN，等对端回 FIN 后走 handleClose
   }
