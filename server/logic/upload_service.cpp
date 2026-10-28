@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "cm/base/hex.h"
 #include "cm/base/md5.h"
 #include "cm/log/logger.h"
 
@@ -765,6 +766,10 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
     cm::db::FileDao fileDao(conn);
     cm::db::TransferDao transferDao(conn);
 
+    // 统一小写：blob 路径由 md5 前两位拼成、合并后又要与 Md5::hex()（小写）比对，
+    // 大写录入会让路径分裂并让整文件 MD5 校验必然失败。
+    const std::string fileMd5 = cm::toLowerHex(rq.fileMd5);
+
     // 1) parent 必须属于当前用户、未删除、且是目录。
     if (rq.parentId != 0) {
         cm::db::UserFileRow parent;
@@ -784,7 +789,7 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
     }
 
     // 2) 秒传：Redis 索引 → DB uk_f_md5；只认 f_state=1 且 size 一致。
-    const std::string md5Key = cm::cache::CacheKey::fileByMd5(rq.fileMd5);
+    const std::string md5Key = cm::cache::CacheKey::fileByMd5(fileMd5);
     std::uint64_t hitFid = 0;
 
     std::string cachedFid;
@@ -803,7 +808,7 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
 
     if (hitFid == 0) {
         cm::db::BlobRow blob;
-        if (fileDao.findBlobByMd5(rq.fileMd5, &blob) == ErrorCode::Ok &&
+        if (fileDao.findBlobByMd5(fileMd5, &blob) == ErrorCode::Ok &&
             blob.state == 1 && blob.size == rq.totalSize) {
             hitFid = blob.fid;
             // 回填缓存；失败只影响下一次命中率，不影响本次结果。
@@ -817,7 +822,7 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
         std::string finalName;
         bool reused = false;
         const ErrorCode rc = fileDao.materializeInstantUpload(
-            uid, rq.parentId, rq.fileMd5, rq.totalSize, rq.fileName,
+            uid, rq.parentId, fileMd5, rq.totalSize, rq.fileName,
             &fileId, &ufId, &finalName, &reused);
         if (rc == ErrorCode::Ok) {
             out->result = 1;
@@ -841,7 +846,7 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
     task.taskId = makeTaskId();
     task.userId = uid;
     task.type = 1;
-    task.fileMd5 = rq.fileMd5;
+    task.fileMd5 = fileMd5;
     task.fileName = rq.fileName;
     task.totalSize = rq.totalSize;
     task.chunkSize = kChunkSize;

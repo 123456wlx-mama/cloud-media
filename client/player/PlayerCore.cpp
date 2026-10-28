@@ -890,7 +890,21 @@ int PlayerCore::Impl::decodeAudio(std::uint8_t* out, int maxBytes) {
             av_packet_free(&packet);
             return -1;
         }
-        if (avcodec_send_packet(actx, packet) < 0) {
+        int audioSendRc = avcodec_send_packet(actx, packet);
+        if (audioSendRc == AVERROR(EAGAIN)) {
+            // 与视频侧同源：EAGAIN 表示输入队列满、包未被消费，先取空再重发。
+            // 这里取到的帧只能丢弃（本函数每轮只返回一段样本），但丢包会让
+            // 解码器状态断掉，后果比丢一帧更重。
+            for (;;) {
+                const int drainRc = avcodec_receive_frame(actx, aFrame);
+                if (drainRc < 0) {
+                    break;
+                }
+                av_frame_unref(aFrame);
+            }
+            audioSendRc = avcodec_send_packet(actx, packet);
+        }
+        if (audioSendRc < 0) {
             av_packet_free(&packet);
             continue;
         }

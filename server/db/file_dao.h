@@ -162,6 +162,10 @@ public:
     ErrorCode findBlobByMd5(const std::string& md5, BlobRow* out);
     ErrorCode getBlobById(std::uint64_t fid, BlobRow* out);
 
+    // 元数据说"就绪"但物理文件已经不在时调用：把 f_state 置 3（缺失）。
+    // 之后秒传不再命中它，只有真实上传会把它改回 1；用于把"假就绪"暴露成状态。
+    ErrorCode markBlobMissing(std::uint64_t fid);
+
     // INSERT ... ON DUPLICATE KEY UPDATE：命中 uk_f_md5 时只把 f_ref_count +1，不覆盖路径与状态。
     ErrorCode insertBlobOnDuplicateIncrement(const std::string& md5,
                                              std::uint64_t size,

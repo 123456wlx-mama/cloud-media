@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 
+#include "cm/base/hex.h"
 #include "db/mysql_pool.h"
 #include "db/transfer_dao.h"
 
@@ -295,6 +296,9 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
     if (rq.chunkMd5.size() != 32) {
         return fail(out, ErrorCode::InvalidArgument);
     }
+    // 统一小写：合并阶段用 Md5::hex()（恒为小写）与库里的值比对，
+    // 大写录入会让该片永远判为坏片，客户端怎么重传都修不好。
+    const std::string chunkMd5 = cm::toLowerHex(rq.chunkMd5);
 
     // 已确认且内容不同：先拒绝，避免把好分片覆盖成坏内容；
     // 数字层面的三分支判定仍由 DAO 事务负责。
@@ -302,7 +306,7 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
     cm::db::ChunkRow existing;
     rc = dao.findChunk(rq.taskId, rq.chunkIndex, &existing);
     if (rc == ErrorCode::Ok && existing.state == 1) {
-        if (existing.md5 != rq.chunkMd5) {
+        if (existing.md5 != chunkMd5) {
             return fail(out, ErrorCode::Md5Mismatch);
         }
         alreadyConfirmed = true;
@@ -323,7 +327,7 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
     chunk.index = rq.chunkIndex;
     chunk.offset = rq.offset;
     chunk.size = static_cast<std::uint32_t>(rq.data.size());
-    chunk.md5 = rq.chunkMd5;
+    chunk.md5 = chunkMd5;
     chunk.path = relPath;
 
     cm::db::ChunkUpsertResult result;

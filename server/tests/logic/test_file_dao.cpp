@@ -391,3 +391,23 @@ TEST_F(FileDaoTest, InstantUploadRejectsMissingBlobRow) {
     cm::db::BlobRow blob;
     EXPECT_EQ(cm::ErrorCode::NotFound, m_dao->findBlobByMd5(md5, &blob));
 }
+
+// 回归 C-3：物理文件丢失时把 f_state 置 3（缺失），让"假就绪"暴露成状态，
+// 之后秒传不再命中、下载立即失败，只有真实上传能改回 1。
+TEST_F(FileDaoTest, MarkBlobMissingFlipsState) {
+    const std::uint64_t fid = createBlob(4096);
+    ASSERT_GT(fid, std::uint64_t(0));
+
+    cm::db::BlobRow before;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_dao->getBlobById(fid, &before));
+    ASSERT_EQ(std::uint8_t(1), before.state);
+
+    EXPECT_EQ(cm::ErrorCode::Ok, m_dao->markBlobMissing(fid));
+
+    cm::db::BlobRow after;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_dao->getBlobById(fid, &after));
+    EXPECT_EQ(std::uint8_t(3), after.state);
+
+    // 幂等：已经是 3 时再调仍返回 Ok，不报错。
+    EXPECT_EQ(cm::ErrorCode::Ok, m_dao->markBlobMissing(fid));
+}

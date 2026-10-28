@@ -176,6 +176,20 @@ ErrorCode DownloadService::openDownload(
         return ErrorCode::FileGone;
     }
 
+    // 元数据说"就绪"，物理文件却可能已被磁盘故障/误删带走。这里只做标记、不改
+    // 本次请求的结果：open 仍照常发票据，真正读块时由 block_sender 回 3001。
+    // 标记之后秒传不再命中它（只有 f_state=1 才可秒传），真实上传能把它改回 1。
+    {
+        const std::string blobPath = m_dataDir + "/blobs/" + blob.path;
+        if (::access(blobPath.c_str(), F_OK) != 0) {
+            fileDao.markBlobMissing(blob.fid);
+            Logger::instance().log(
+                LogLevel::Warn, __FILE__, __LINE__,
+                "blob file missing on disk, mark f_state=3 (fid=" +
+                    std::to_string(blob.fid) + ", path=" + blob.path + ")");
+        }
+    }
+
     const std::uint64_t blockCount =
         (blob.size + kChunkSize - 1) / kChunkSize;
     if (blockCount == 0 || blockCount > 0xFFFFFFFFULL ||

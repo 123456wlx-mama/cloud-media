@@ -486,23 +486,33 @@ qint64 GrowingFileIO::availableBytes() {
 | 靶点 | 范围 | P0 | P1 | P2 | P3 | 已修复 |
 |---|---|---|---|---|---|---|
 | A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 3 |
-| B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 2 |
-| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 2 |
-| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 0 |
+| B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 3 |
+| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 3 |
+| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 1 |
 | E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 1 |
-| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 1 |
+| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 2 |
 | G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
-| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **19** |
+| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **23** |
 
-P0/P1 已全部修复（8/8）。
+P0/P1 已全部修复（8/8）；P2 已修 14/21，P3 已修 1/6。
 
-### 仍未处理的高优先级
+### 仍未处理的项
 
-1. **C-3【P2】`f_state` 四态只实现两态**——"缺失"态从不写入，blob 丢失后秒传会一直假命中。
-2. **F-2【P2】音频侧 `send_packet` 的 EAGAIN 同样丢包**（视频侧已修，改法一致）。
-3. **B-3【P2】业务池投递失败时在 `onData` 栈内重入 `fail/forceClose`**。
-4. **D-2【P3】分片/文件 MD5 未做大小写归一**——大写 hex 会陷入永久重传。
-5. **明文口令过网**——需 TLS 或挑战应答，属架构级改动。
+1. **明文口令过网**——需 TLS 或挑战应答，属架构级改动。
+2. **E-1 的自动化覆盖**——`.part` 截断仍只有代码推理，补一条本地用例即可（不需要网络）。
+3. **C-6【P3】** 孤儿 GC 不删 `.meta`，磁盘垃圾。
+4. 其余 P3：`decodeBulk` 硬编码类型、`nextHint` 语义、`availableBytes` 名不副实、锁 token 非随机。
+
+### 本轮补完的四项（F-2 / D-2 / B-3 / C-3）
+
+| 条目 | 改法 |
+|---|---|
+| F-2 | 音频 `avcodec_send_packet` 遇 `EAGAIN` 先 drain 再重发同一包，不再丢包 |
+| D-2 | 新增 `cm/base/hex.h::toLowerHex`；收片时归一 `chunkMd5`，`doInit` 归一 `fileMd5`（都影响 blob 路径与逐片比对） |
+| B-3 | 业务池投递失败改为 `queueInLoop` 回调，不在 `onData` 栈内重入 `fail/forceClose` |
+| C-3 | 新增 `FileDao::markBlobMissing`（`f_state 1 → 3`）；`download open` 发现物理文件不存在时标记但**不改变本次请求结果**（读块时仍由 block_sender 回 3001）；`materializeInstantUpload` 增加"非就绪态一律拒绝"兜底 |
+
+C-3 的取舍：open 阶段若直接失败会破坏现有测试构造（只建元数据不建文件），也会让"文件暂时不在但稍后恢复"的场景提前失败。因此选择**只标记不改结果**——秒传立刻停止命中，真实上传即可自愈。
 
 ### 审查方法上的经验
 

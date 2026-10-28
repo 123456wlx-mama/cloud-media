@@ -1166,7 +1166,11 @@ int runServer(const cm::ServerConfig& cfg) {
                     done(true);
                 };
                 if (!workers.run(task)) {
-                    done(false);
+                    // 投递失败也要先回到 loop 队列再回调：done 内部走 runInLoop，
+                    // 在 loop 线程里是原地执行，会于 onData 尚未返回时重入
+                    // fail/forceClose，让 onData 返回的 BulkDispatched 描述一个
+                    // 已经关闭的连接。queueInLoop 保证落到下一轮事件循环。
+                    conn->getLoop()->queueInLoop([done]() { done(false); });
                 }
             },
             [conn]() { conn->pauseRead(); },

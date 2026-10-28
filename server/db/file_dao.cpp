@@ -260,6 +260,26 @@ ErrorCode FileDao::getBlobById(std::uint64_t fid, BlobRow* out) {
     return ErrorCode::Ok;
 }
 
+ErrorCode FileDao::markBlobMissing(std::uint64_t fid) {
+    if (fid == 0) {
+        return ErrorCode::InvalidArgument;
+    }
+    std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
+        "UPDATE t_file SET f_state = 3, f_updated_at = NOW(6) "
+        "WHERE f_id = ? AND f_state = 1");
+    if (!stmt) {
+        return m_conn.lastError();
+    }
+    if (!stmt->bindUInt64(0, fid)) {
+        return stmt->lastError();
+    }
+    if (!stmt->execute()) {
+        return stmt->lastError();
+    }
+    // 已经是 3 或已变成 2（并发 GC）都算成功：目标状态已达成或不该再改。
+    return ErrorCode::Ok;
+}
+
 ErrorCode FileDao::insertBlobOnDuplicateIncrement(const std::string& md5,
                                                   std::uint64_t size,
                                                   const std::string& path,
@@ -538,6 +558,11 @@ ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
     // 1) 同目录同名同 blob 的活跃节点已存在：复用，不重复加计数（客户端重试幂等）。
     BlobRow blob;
     if (findBlobByMd5(md5, &blob) == ErrorCode::Ok) {
+        // 非"就绪"态（缺失/孤儿/上传中）一律不materialize：秒传的前提是
+        // 物理文件确实可用，否则又会造出一个指向空文件的节点。
+        if (blob.state != 1) {
+            return ErrorCode::NotFound;
+        }
         std::unique_ptr<PreparedStatement> stmt = m_conn.prepare(
             "SELECT uf_id FROM t_user_file WHERE u_id = ? AND uf_parent_id = ? "
             "AND f_id = ? AND uf_name = ? AND uf_deleted_at = ?");
