@@ -5,6 +5,7 @@
 #include <string>
 
 #include "cm/base/md5.h"
+#include "cm/base/sha256.h"
 #include "cm/protocol/messages/auth.h"
 #include "dao_fixture.h"
 #include "db/user_dao.h"
@@ -66,16 +67,16 @@ TEST_F(AuthServiceTest, RegisterThenLogin) {
     const std::uint64_t uid = registerOk(tel, "secret123", "alice");
     ASSERT_GT(uid, std::uint64_t(0));
 
-    // 存储格式：algo=1、salt 32 hex、hash = md5Hex(salt + password)。
+    // 存储格式：algo=2、salt 32 hex、hash = sha256Hex(salt + password)。
     cm::db::UserRow row;
     ASSERT_EQ(cm::ErrorCode::Ok,
               cm::db::UserDao(*m_conn).findByTel(tel, &row));
     EXPECT_EQ(uid, row.uid);
     EXPECT_EQ(std::string("alice"), row.name);
-    EXPECT_EQ(std::uint8_t(1), row.pwdAlgo);
+    EXPECT_EQ(std::uint8_t(2), row.pwdAlgo);
     EXPECT_EQ(std::size_t(32), row.salt.size());
-    EXPECT_EQ(std::size_t(32), row.passwordHash.size());
-    EXPECT_EQ(cm::md5Hex(row.salt + "secret123"), row.passwordHash);
+    EXPECT_EQ(std::size_t(64), row.passwordHash.size());
+    EXPECT_EQ(cm::sha256Hex(row.salt + "secret123"), row.passwordHash);
     EXPECT_NE(std::string("secret123"), row.passwordHash);
 
     cm::protocol::LoginRs rs;
@@ -84,6 +85,31 @@ TEST_F(AuthServiceTest, RegisterThenLogin) {
     EXPECT_EQ(std::uint32_t(0), rs.code);
     EXPECT_EQ(uid, rs.uid);
     EXPECT_EQ(std::string("alice"), rs.name);
+}
+
+// 历史数据是 algo=1（MD5）时，登录必须放行，并在成功后自动升级为 algo=2。
+TEST_F(AuthServiceTest, LegacyMd5UpgradedOnLogin) {
+    const std::string tel = nextTel();
+    const std::string salt(32, 'a');
+    const std::string password = "legacy123";
+
+    cm::db::UserDao dao(*m_conn);
+    std::uint64_t uid = 0;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              dao.insert(tel, cm::md5Hex(salt + password), salt, 1, "legacy", &uid));
+    ASSERT_GT(uid, std::uint64_t(0));
+    trackUser(uid);
+
+    cm::protocol::LoginRs rs;
+    ASSERT_EQ(cm::ErrorCode::Ok, m_auth->login(makeLoginRq(tel, password), &rs));
+    EXPECT_EQ(std::uint32_t(0), rs.code);
+    EXPECT_EQ(uid, rs.uid);
+
+    cm::db::UserRow after;
+    ASSERT_EQ(cm::ErrorCode::Ok, dao.findByTel(tel, &after));
+    EXPECT_EQ(std::uint8_t(2), after.pwdAlgo);
+    EXPECT_EQ(salt, after.salt);  // 升级沿用原盐
+    EXPECT_EQ(cm::sha256Hex(salt + password), after.passwordHash);
 }
 
 TEST_F(AuthServiceTest, DuplicateTelAlreadyExists) {

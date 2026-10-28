@@ -25,6 +25,15 @@ add_test(NAME md5 COMMAND test_md5)
 add_executable(test_crc32_combine
     test_crc32_combine.cpp
 )
+
+add_executable(test_sha256
+    test_sha256.cpp
+)
+target_link_libraries(test_sha256 PRIVATE cm_common GTest::gtest GTest::gtest_main)
+set_target_properties(test_sha256 PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+add_test(NAME sha256 COMMAND test_sha256)
 target_link_libraries(test_crc32_combine PRIVATE cm_common GTest::gtest GTest::gtest_main)
 set_target_properties(test_crc32_combine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
@@ -61,7 +70,7 @@ set_target_properties(cm_fuzz_driver PROPERTIES
 # 仅 Windows：Linux CI 上无条件替换 PATH 会污染测试环境（common/tests 双平台构建）。
 if(WIN32)
     get_filename_component(_cm_common_mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    set_tests_properties(cm_common_tests md5 crc32_combine upload_messages
+    set_tests_properties(cm_common_tests md5 crc32_combine sha256 upload_messages
         PROPERTIES ENVIRONMENT "PATH=${_cm_common_mingw_bin}"
     )
 endif()

@@ -200,7 +200,23 @@ Ubuntu 22.04 容器内 `cmake -DBUILD_SERVER=ON -DBUILD_TESTS=ON` 构建成功�
 - 注册与登录都只走 MD5 分支，`kPwdAlgoMd5` 硬编码写入；而 `t_user.u_pwd_algo` 的 schema 注释与默认值是 `2=SHA-256`。也就是说**迁移路径只有定义没有实现**，新用户一律落 MD5。
 - 登录时服务端用 `md5Hex(row.salt + rq.password)` 计算，说明客户端提交的是**明文口令**，协议层没有 TLS 或挑战应答。
 
-**最小改法**（不引入新依赖即可）：注册改用 `sha256(salt + pwd)` 并写 `u_pwd_algo=2`；登录按 `u_pwd_algo` 分支校验，成功后顺手把 MD5 行升级为 SHA-256。传输侧至少在文档里明确"明文口令是内网 demo 的已知限制"。
+**已修复**：
+- 新增 `common/base/sha256.cpp` + `cm/base/sha256.h`（流式 FIPS 180-4，`hex()` 不消费状态，零外部依赖，与项目自研 MD5/CRC32 的风格一致），并加入 `cm_common`
+- 注册改为 `sha256Hex(salt + pwd)` + `u_pwd_algo=2`
+- 登录按 `u_pwd_algo` 分支校验（1=MD5 兼容、2=SHA-256、其他 fail-closed 不回退弱校验）
+- MD5 旧行在**登录成功后自动升级**为 SHA-256，沿用原盐避免并发登录互踩；升级失败只记 WARN，不影响本次登录
+- 测试：新增 `common/tests/test_sha256.cpp`（空串/abc/跨块/56 字节补齐边界/分片等价/`hex()` 幂等 共 6 条），`server/tests/logic/test_auth_service.cpp` 增加 `LegacyMd5UpgradedOnLogin`
+
+**明文口令过网仍未解决**——这需要 TLS 或挑战应答，超出本次审查范围；至少应在 README 里写明"内网 demo 的已知限制"。
+
+### C-2 验证（本次唯一做了真实 DB 集成验证的修复）
+
+```
+CM_TEST_MYSQL=1 CM_TEST_MYSQL_HOST=mysql cm_logic_tests --gtest_filter='AuthServiceTest.*'
+6 tests PASSED   # 含 LegacyMd5UpgradedOnLogin：algo=1 行登录后变 algo=2、盐不变、hash=sha256
+```
+
+全量服务端测试连真实 MySQL 后 **42/42 通过**（此前一直是 `DB_INTEGRATION=OFF` 的跳过态）。
 
 ### C-3 【P2】`f_state` 四态只实现了两态，"缺失"永远不会被标记
 
@@ -463,25 +479,28 @@ qint64 GrowingFileIO::availableBytes() {
 |---|---|---|---|---|---|---|
 | A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 3 |
 | B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 2 |
-| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 1 |
+| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 2 |
 | D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 0 |
 | E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 1 |
 | F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 1 |
 | G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
-| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **18** |
+| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **19** |
 
-### 仍未处理的最高优先级
+P0/P1 已全部修复（8/8）。
 
-1. **C-2【P1】密码为加盐 MD5 + 明文过网**——唯一未修的 P1。改注册用 SHA-256 并按 `u_pwd_algo` 分支校验即可，不动协议。
-2. **C-3【P2】`f_state` 四态只实现两态**——"缺失"态从不写入，blob 丢失后秒传会一直假命中。
-3. **D-2【P3】分片/文件 MD5 未做大小写归一**——大写 hex 会陷入永久重传。
-4. **F-2【P2】音频侧 `send_packet` 的 EAGAIN 同样丢包**。
-5. **B-3【P2】业务池投递失败时在 `onData` 栈内重入 `fail/forceClose`**。
+### 仍未处理的高优先级
+
+1. **C-3【P2】`f_state` 四态只实现两态**——"缺失"态从不写入，blob 丢失后秒传会一直假命中。
+2. **F-2【P2】音频侧 `send_packet` 的 EAGAIN 同样丢包**（视频侧已修，改法一致）。
+3. **B-3【P2】业务池投递失败时在 `onData` 栈内重入 `fail/forceClose`**。
+4. **D-2【P3】分片/文件 MD5 未做大小写归一**——大写 hex 会陷入永久重传。
+5. **明文口令过网**——需 TLS 或挑战应答，属架构级改动。
 
 ### 审查方法上的经验
 
 - 提交频次 + 危险写法分布能有效圈定高危文件，本次命中的 4 个 P1 有 3 个落在这些文件里。
 - **必须读完一条链路再下结论**。E-2 差一点被误报成"并发额度泄漏"，实际 `isActive()` 不含 `Queued`，逻辑是对的。
 - 先搜短名 `verifyCrc` 会漏掉 `verifyFrameCrc`，差点误报"分片 CRC 校验整体缺失"。关键词要先宽后窄。
-- 41 个服务端测试 + 9 个客户端测试对本次修复基本无覆盖（都不连库、不碰网络），修复的正确性靠代码推理，这是当前测试体系最大的缺口。
+- 测试缺口：服务端 42 个用例在**连真实 MySQL 后全绿**（`CM_TEST_MYSQL=1`，本次已验证），但**没有一条用例覆盖本次修的竞态/并发缺陷**（A-1 悬垂引用、C-1 秒传与 GC 竞态、E-1 .part 不截断、F-1 EAGAIN 丢包）。这些修复目前只有代码推理，没有回归防线——这是项目下一步最该补的东西。
+- 验证建议：C-1 可写成"插入 t_file → 手工 DELETE 行 → 调秒传 → 断言 NotFound"的集成用例；E-1 可纯本地用临时目录构造"旧 .part 更大"的场景，不需要网络。
 

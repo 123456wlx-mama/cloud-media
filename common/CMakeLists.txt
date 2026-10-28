@@ -7,6 +7,7 @@ add_library(cm_common STATIC
     base/buffer.cpp
     base/crc32.cpp
     base/md5.cpp
+    base/sha256.cpp
     base/thread_pool.cpp
     config/ini_config.cpp
     config/server_config.cpp

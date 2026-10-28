@@ -8,6 +8,8 @@
 #include <string>
 
 #include "cm/base/md5.h"
+#include "cm/base/sha256.h"
+#include "cm/log/logger.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
 #include "db/user_dao.h"
@@ -82,6 +84,7 @@ bool constantTimeEquals(const std::string& a, const std::string& b) {
 }  // namespace
 
 const std::uint8_t AuthService::kPwdAlgoMd5;
+const std::uint8_t AuthService::kPwdAlgoSha256;
 
 AuthService::AuthService(cm::db::MysqlPool& mysql) : m_mysql(mysql) {
 }
@@ -104,7 +107,8 @@ ErrorCode AuthService::registerUser(const cm::protocol::RegisterRq& rq,
         out->code = static_cast<std::uint32_t>(ErrorCode::InternalError);
         return ErrorCode::InternalError;
     }
-    const std::string hash = cm::md5Hex(salt + rq.password);
+    // 新注册一律 SHA-256（schema 的 u_pwd_algo 默认值就是 2）。
+    const std::string hash = cm::sha256Hex(salt + rq.password);
 
     std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
     if (!conn) {
@@ -116,7 +120,7 @@ ErrorCode AuthService::registerUser(const cm::protocol::RegisterRq& rq,
     cm::db::UserDao dao(*conn);
     std::uint64_t uid = 0;
     const ErrorCode rc =
-        dao.insert(rq.tel, hash, salt, kPwdAlgoMd5, rq.name, &uid);
+        dao.insert(rq.tel, hash, salt, kPwdAlgoSha256, rq.name, &uid);
     conn.reset();
     if (rc != ErrorCode::Ok) {
         out->code = static_cast<std::uint32_t>(cm::to_wire_code(rc));
@@ -165,16 +169,40 @@ ErrorCode AuthService::login(const cm::protocol::LoginRq& rq,
         out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
         return ErrorCode::PermissionDenied;
     }
-    // 本阶段只实现 algo=1；遇到未实现的算法 fail-closed。
-    if (row.pwdAlgo != kPwdAlgoMd5 || row.salt.empty()) {
+    // algo=1(MD5) 兼容历史数据，algo=2(SHA-256) 为当前算法；
+    // 其它值 fail-closed，绝不回退到弱校验。
+    if (row.salt.empty() ||
+        (row.pwdAlgo != kPwdAlgoMd5 && row.pwdAlgo != kPwdAlgoSha256)) {
         out->code = static_cast<std::uint32_t>(ErrorCode::AuthUnavailable);
         return ErrorCode::AuthUnavailable;
     }
 
-    const std::string expected = cm::md5Hex(row.salt + rq.password);
+    const std::string expected =
+        (row.pwdAlgo == kPwdAlgoSha256)
+            ? cm::sha256Hex(row.salt + rq.password)
+            : cm::md5Hex(row.salt + rq.password);
     if (!constantTimeEquals(expected, row.passwordHash)) {
         out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
         return ErrorCode::NotFound;
+    }
+
+    // 旧 MD5 行在登录成功后就地升级为 SHA-256：此时已经验证过口令，
+    // 沿用原盐避免并发登录互踩；升级失败只 WARN，不影响本次登录。
+    if (row.pwdAlgo == kPwdAlgoMd5) {
+        std::unique_ptr<cm::db::MysqlConn> upgradeConn = m_mysql.acquire();
+        if (upgradeConn) {
+            cm::db::UserDao upgradeDao(*upgradeConn);
+            const ErrorCode upgradeRc = upgradeDao.updatePassword(
+                row.uid, cm::sha256Hex(row.salt + rq.password),
+                kPwdAlgoSha256, row.salt);
+            if (upgradeRc != ErrorCode::Ok) {
+                Logger::instance().log(
+                    LogLevel::Warn, __FILE__, __LINE__,
+                    "upgrade pwd algo 1->2 failed (uid=" +
+                        std::to_string(row.uid) + "), will retry on next login");
+            }
+            upgradeConn.reset();
+        }
     }
 
     out->uid = row.uid;
