@@ -580,6 +580,8 @@ ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
     // 被孤儿 GC 物理回收了。此刻新建的行指向一个不存在的文件，必须回滚，
     // 让上层回退到真实上传；否则用户看到「秒传成功」却下到一个 404。
     if (kind == BlobWriteKind::Inserted) {
+        // 失败路径不能留下半截输出：*fileId 已被 insert 写成新行的自增值。
+        *fileId = 0;
         return ErrorCode::NotFound;
     }
 

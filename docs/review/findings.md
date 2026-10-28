@@ -186,7 +186,9 @@ Ubuntu 22.04 容器内 `cmake -DBUILD_SERVER=ON -DBUILD_TESTS=ON` 构建成功�
 **竞态**：秒传在"命中判定"与"落库"之间，GC 恰好完成 unlink + DELETE。此时秒传的 `INSERT` 不再命中唯一键，于是**新建一行** `f_state=1`（就绪）指向一个刚被删掉的物理文件，事务正常提交。
 **后果**：用户看到"秒传成功"，文件列表里有条目，下载 `3001`；且不会自愈（见 C-3，缺失态从未被写入）。
 **已修复**：
-- `file_dao.cpp::materializeInstantUpload` —— 秒传不写盘，因此 `kind == BlobWriteKind::Inserted` 只可能意味着"原行已消失"，直接返回 `NotFound`，事务析构回滚。
+- `file_dao.cpp::materializeInstantUpload` —— 秒传不写盘，因此 `kind == BlobWriteKind::Inserted` 只可能意味着"原行已消失"，直接返回 `NotFound`，事务析构回滚；同时把已被写脏的 `*fileId` 清回 0。
+
+**回归用例**：`FileDaoTest.InstantUploadRejectsMissingBlobRow`（`server/tests/logic/test_file_dao.cpp`）——对不存在的 md5 调 `materializeInstantUpload`，断言返回 `NotFound`、`fileId/ufId` 均为 0、且 `t_file` 不留行。写这条用例时立刻发现修复本身的一个瑕疵（失败路径没清 `*fileId`），已一并修掉。
 - `upload_service.cpp` —— 收到 `NotFound` 不再当失败，而是**继续走真实上传流程**，用户无感知自愈。
 
 ### C-2 【P1】密码仍是加盐 MD5，且明文过网
@@ -241,6 +243,12 @@ schema 定义 `0上传中 1就绪 2孤儿 3缺失`，但全项目：
 ### C-5 【P3】分布式锁 token 用时间戳+序号，非随机
 
 `makeToken()` = `steady_clock` 纳秒 + 进程内自增序号。它不是 CSPRNG，但只用于 Redis 锁的 `SET NX PX` + Lua 比对释放，外部无输入可用，实际风险低。若将来复用为会话/票据 token，必须换成 `std::random_device` 填充的 128 位随机。
+
+### C-6 【P3】孤儿 GC 只删 blob 与 `.crc`，`.meta` 会永久残留
+
+`orphan_gc_job.cpp::purgeOne` 只 unlink `blobPath` 与 `blobPath + ".crc"`，而上传落盘时还会写 `blobPath + ".meta"`。回归时实测验证：手工删除 `t_file` 行与 blob 后，目录里仍剩 `4b2ee48a...meta`。
+同 MD5 内容必然同大小，所以残留 `.meta` 不会导致读到错误的 size，**只是磁盘垃圾**；长期跑下去每个被回收的 blob 都会留下 14 字节级的孤儿文件。
+**最小改法**：在 `purgeOne` 里补一次 `m_unlinker(blobPath + ".meta")`（ENOENT 视为成功，与 `.crc` 同处理）。
 
 ### 已排除的疑点
 
@@ -502,5 +510,5 @@ P0/P1 已全部修复（8/8）。
 - **必须读完一条链路再下结论**。E-2 差一点被误报成"并发额度泄漏"，实际 `isActive()` 不含 `Queued`，逻辑是对的。
 - 先搜短名 `verifyCrc` 会漏掉 `verifyFrameCrc`，差点误报"分片 CRC 校验整体缺失"。关键词要先宽后窄。
 - 测试缺口：服务端 42 个用例在**连真实 MySQL 后全绿**（`CM_TEST_MYSQL=1`，本次已验证），但**没有一条用例覆盖本次修的竞态/并发缺陷**（A-1 悬垂引用、C-1 秒传与 GC 竞态、E-1 .part 不截断、F-1 EAGAIN 丢包）。这些修复目前只有代码推理，没有回归防线——这是项目下一步最该补的东西。
-- 验证建议：C-1 可写成"插入 t_file → 手工 DELETE 行 → 调秒传 → 断言 NotFound"的集成用例；E-1 可纯本地用临时目录构造"旧 .part 更大"的场景，不需要网络。
+- 验证进展：C-1 已补集成用例并通过（见上）。E-1 仍未覆盖，可用临时目录构造"旧 .part 更大"的场景，不需要网络。
 

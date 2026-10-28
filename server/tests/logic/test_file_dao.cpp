@@ -367,3 +367,27 @@ TEST(FileDaoStaticTest, FileDaoNoOffsetSql) {
     EXPECT_NE(std::string::npos, text.find("(uf_updated_at, uf_id) < (?, ?)"));
 #endif
 }
+
+// 回归 C-1：秒传候选行在「命中判定」与「落库」之间被孤儿 GC 物理回收后，
+// materializeInstantUpload 必须返回 NotFound 并回滚，而不是靠
+// INSERT ... ON DUPLICATE KEY 新建一个指向不存在文件的 t_file 行。
+// 修复前这里会返回 Ok，并留下 f_state=1 但物理文件已删的悬空记录。
+TEST_F(FileDaoTest, InstantUploadRejectsMissingBlobRow) {
+    const std::string md5 = nextMd5();
+
+    std::uint64_t fileId = 0;
+    std::uint64_t ufId = 0;
+    std::string finalName;
+    bool reused = false;
+    const cm::ErrorCode rc = m_dao->materializeInstantUpload(
+        m_uid, 0, md5, 4096, "instant.bin", &fileId, &ufId, &finalName, &reused);
+
+    EXPECT_EQ(cm::ErrorCode::NotFound, rc);
+    EXPECT_EQ(std::uint64_t(0), fileId);
+    EXPECT_EQ(std::uint64_t(0), ufId);
+    EXPECT_FALSE(reused);
+
+    // 事务已回滚：t_file 不能留下行，否则就是那个"悬空指向"。
+    cm::db::BlobRow blob;
+    EXPECT_EQ(cm::ErrorCode::NotFound, m_dao->findBlobByMd5(md5, &blob));
+}
