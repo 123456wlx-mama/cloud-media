@@ -364,3 +364,77 @@ std::uint32_t nextHint(std::uint32_t index, std::uint32_t doneChunks, std::uint3
 - 断线时在途请求：`onLinkLost` 清 `m_pending`、计数归零、所有活跃任务转 Paused。
 - 重试导致重复分块：上传侧 `nextChunk` 单调递增，失败即整任务 `fail()`，不会并发重复投递同一片。
 
+## 靶点 F：播放器内存与 AVIO（PlayerCore / GrowingFileIO）
+
+审查文件：`client/player/PlayerCore.cpp`(1034+) · `client/player/GrowingFileIO.cpp`(263)
+
+### F-1 【P1】`avcodec_send_packet` 的 `EAGAIN` 被当成错误，直接丢包
+
+```717:724:client/player/PlayerCore.cpp（修复前）
+        if (avcodec_send_packet(vctx, packet) < 0) {
+            // 不再静默丢弃：丢一个包就可能让后面整段 P/B 帧参考失效
+            if (++sendFailures == 1) {
+                qWarning("player: avcodec_send_packet failed (seekGen=%d)", packetGen);
+            }
+            av_packet_unref(packet);
+            continue;
+        }
+```
+
+注释本身写得对（丢包会让后续 P/B 帧参考失效），但代码把 `AVERROR(EAGAIN)` 一起算进 `< 0` 丢掉。
+`EAGAIN` 的真实语义是**输出队列满、这个包并没有被消费**，正确做法是先把已解出的帧取走，再重发同一个包。丢一个参考帧的代价是后面整段花屏，比少显示一帧严重得多。
+**触发条件**：解码器内部排队（多线程解码 `thread_count=2`）+ 渲染侧消费慢，两者叠加时 send 返回 EAGAIN。
+**已修复**：`EAGAIN` 时先 drain 到 EAGAIN（丢帧），再重发同一包；只有真正失败才计入 `sendFailures` 并丢弃。
+
+### F-2 【P2】音频侧存在同一形态的问题（本次未改）
+
+```879:882:client/player/PlayerCore.cpp
+        if (avcodec_send_packet(actx, packet) < 0) {
+            av_packet_free(&packet);
+            continue;
+        }
+```
+
+同样是 `EAGAIN` 被当失败丢包。音频帧独立性强、丢一包只是短暂静音或咔哒声，危害远小于视频，所以本轮先不动——但**改法应一致**：`EAGAIN` 时先 `receive_frame` 腾出位置再重发。注意音频这个函数需要返回样本，重构时要保持"先 drain 后返回"的语义。
+
+### F-3 【P2】`availableBytes()` 返回的是磁盘长度，不是可读边界
+
+```122:130:client/player/GrowingFileIO.cpp
+qint64 GrowingFileIO::availableBytes() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_file == nullptr || !m_file->isOpen()) {
+        return QFileInfo(m_path).size();
+    }
+    return m_file->size();
+}
+```
+
+`PlayerCore::availableBytes()` 对外暴露这个值。而 Windows 上 `QFile::write(4MB)` 会先把文件长度撑到目标大小、数据再逐页落盘——也就是说这个数字会**超前于真正可读的数据量**，缓冲进度条会显示得比实际更"满"。
+同一个类里已经有语义正确的 `readableBytes()`（取 `min(磁盘长度, committedBytes, 总大小)`），只是 `availableBytes` 没用它。
+**最小改法**：`availableBytes()` 直接 `return readableBytes();`，或明确改名为 `diskBytes()` 并让调用方改用可读边界。
+
+### F-4 【P3】`open()` 失败路径把 `closeMedia()` 调了两次
+
+```983:992:client/player/PlayerCore.cpp
+    if (!m_impl->openMedia(path, progressive, &err)) {
+        m_impl->errorText = err;
+        m_impl->closeMedia();
+        emit errorChanged(err);
+        m_impl->setState(Error);
+        m_impl->closeMedia();
+        return;
+    }
+```
+
+第二次是冗余（字段已置空，`joinThreads` 也不可 join），功能无害，但会让人误以为第一次没清干净。删掉一处即可。
+
+### 已排除的疑点
+
+- 自定义 AVIO 的双重释放：`openMedia` 里 `fmt->pb = io->context()` 之后**正确设置了 `AVFMT_FLAG_CUSTOM_IO`**（`PlayerCore.cpp:203-204`），所以 `avformat_close_input` 不会顺手 `avio_close` 掉我们的上下文；`delete io` 里 `av_freep(&m_avio->buffer)` + `avio_context_free` 顺序正确。这一条如果漏了就是必崩的 double free，是本靶点最该先查的。
+- 线程退出：`closeMedia` 先 `quit=true` + 各队列 `abort()` + `io->abort()`，再 `joinThreads()`，之后才释放解码器/帧/IO，**不存在 join 自己**（`demuxLoop`/`videoLoop` 都跑在独立线程）。
+- 换片残留：`closeMedia` 显式 `audioQ.flush()` + `videoQ.flush()`，与 `PacketQueue::reset` 的 flush 互补。
+- seek 与解码器 flush 的竞态：`avcodec_flush_buffers` 只在视频线程内调用（`packetGen != flushedGen`），不跨线程。
+- AVIO 回调约定：`seek` 对 `AVSEEK_SIZE` 返回 `sizeHint()`，`SEEK_CUR` 用 `m_pos`、`SEEK_END` 用 `sizeHint()`，返回值是绝对位置，符合 FFmpeg 约定；`readPacket` 对 `read<=0` 返回 `AVERROR(EIO)` 而非 0，避免被当成 EOF。
+- 读越过未落盘区域：`readableLocked()` 取三方最小值，且 `sizeHint()` 刻意不返回远端总大小（注释解释了会让 demuxer seek 到未下载区并卡死 GUI）。
+- GUI 线程阻塞：`open` 虽然是同步的，但 `readPacket` 有 5 秒停滞上限并返回 `AVERROR_EXIT`，`interruptCb` 也会在 `quit`/`abort` 时中断 FFmpeg 的探测。
+

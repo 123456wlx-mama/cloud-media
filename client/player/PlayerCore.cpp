@@ -714,7 +714,21 @@ void PlayerCore::Impl::videoLoop() {
             flushedGen = packetGen;
             lastPts = -1.0;
         }
-        if (avcodec_send_packet(vctx, packet) < 0) {
+        int sendRc = avcodec_send_packet(vctx, packet);
+        if (sendRc == AVERROR(EAGAIN)) {
+            // EAGAIN 不是错误：输出队列满，包并未被消费。必须先取走已解出的帧
+            // 再重发同一个包。原实现把 EAGAIN 当失败直接丢包 —— 丢一个参考帧
+            // 会让后面整段 P/B 帧解不出来（花屏），比少显示一帧严重得多。
+            for (;;) {
+                const int drainRc = avcodec_receive_frame(vctx, frame);
+                if (drainRc < 0) {
+                    break;
+                }
+                av_frame_unref(frame);
+            }
+            sendRc = avcodec_send_packet(vctx, packet);
+        }
+        if (sendRc < 0) {
             // 不再静默丢弃：丢一个包就可能让后面整段 P/B 帧参考失效
             if (++sendFailures == 1) {
                 qWarning("player: avcodec_send_packet failed (seekGen=%d)", packetGen);
