@@ -15,6 +15,10 @@
 
 namespace {
 
+QByteArray fromStd(const std::string& data) {
+    return QByteArray(data.data(), static_cast<int>(data.size()));
+}
+
 class TransferQueueTest : public ::testing::Test {
 protected:
     void SetUp() override { now = 1000; }
@@ -231,6 +235,76 @@ TEST(TransferBitmap, AllDoneMeansNoMissing) {
         cm::transfer::bitmapSet(&bitmap, i);
     }
     EXPECT_EQ(8u, cm::transfer::firstMissing(bitmap, 8));
+}
+
+// 回归 E-1：服务端同名文件被换成更小的新版本后，旧 .part 比新文件长。
+// 所有块写完后必须把多余尾部截掉并正常完成，而不是报「本地文件大小不符」
+// 然后永远重试（writePart 只 seek+write，从不 resize）。
+TEST(TransferQueueDownloadDone, TruncatesStalePartTail) {
+    const QString name =
+        QString::fromUtf8("cm_e1_part_%1.bin")
+            .arg(static_cast<qulonglong>(QCoreApplication::applicationPid()));
+    const QString part = QDir::tempPath() + "/" + name + ".part";
+    const QString finalPath = QDir::tempPath() + "/" + name;
+    const QString statePath = part + ".state";
+    QFile::remove(part);
+    QFile::remove(finalPath);
+    QFile::remove(statePath);
+
+    // 上一版本留下的 .part：8192 字节；新文件只有 4096 字节
+    {
+        QFile stale(part);
+        ASSERT_TRUE(stale.open(QIODevice::WriteOnly));
+        ASSERT_EQ(8192, stale.write(QByteArray(8192, 'x')));
+    }
+
+    cm::netapi::NetClient net;
+    cm::transfer::TransferQueue queue(&net, nullptr);
+    const int id = queue.enqueueDownload(66, name, 4096, true);
+    ASSERT_EQ(cm::transfer::TaskState::Running, queue.find(id)->state);
+
+    // 1) 打开下载：单块、块大小 4096
+    cm::protocol::DownloadOpenRs openRs;
+    openRs.code = 0;
+    openRs.fId = 66;
+    openRs.size = 4096;
+    openRs.fileMd5 = std::string(32, 'a');
+    openRs.blockSize = 4096;
+    openRs.blockCount = 1;
+    openRs.ticket = std::string(32, 'b');  // 协议要求 32 位 hex 形式的票据
+    std::string openBody;
+    ASSERT_TRUE(openRs.encode(&openBody));
+    ASSERT_TRUE(QMetaObject::invokeMethod(
+        &queue, "onFrame", Qt::DirectConnection, Q_ARG(quint16, 10012),
+        Q_ARG(quint32, net.lastSeq()), Q_ARG(QByteArray, fromStd(openBody))));
+    ASSERT_EQ(cm::transfer::TaskState::Running, queue.find(id)->state);
+
+    // 2) 取回第 0 块：4KB raw 数据（写入偏移 0，不会缩短文件）
+    const quint32 rangeSeq = net.lastSeq();
+    ASSERT_NE(0u, rangeSeq);
+    ASSERT_TRUE(QMetaObject::invokeMethod(
+        &queue, "onFrame", Qt::DirectConnection, Q_ARG(quint16, 10011),
+        Q_ARG(quint32, rangeSeq), Q_ARG(QByteArray, QByteArray(4096, 'n'))));
+    EXPECT_EQ(cm::transfer::TaskState::Running, queue.find(id)->state);
+
+    // 3) 完成上报：此时 .part 仍是 8192 字节，必须截到 4096 才算完成
+    cm::protocol::DownloadDoneRs doneRs;
+    doneRs.code = 0;
+    doneRs.accepted = 1;
+    std::string doneBody;
+    ASSERT_TRUE(doneRs.encode(&doneBody));
+    ASSERT_TRUE(QMetaObject::invokeMethod(
+        &queue, "onFrame", Qt::DirectConnection, Q_ARG(quint16, 10041),
+        Q_ARG(quint32, net.lastSeq()), Q_ARG(QByteArray, fromStd(doneBody))));
+
+    EXPECT_EQ(cm::transfer::TaskState::Done, queue.find(id)->state);
+
+    QFile out(finalPath);
+    ASSERT_TRUE(out.open(QIODevice::ReadOnly));
+    EXPECT_EQ(4096, out.size());  // 旧尾部已截掉
+    out.close();
+    EXPECT_FALSE(QFile::exists(part));  // 已重命名为正式文件
+    QFile::remove(finalPath);
 }
 
 int main(int argc, char** argv) {
