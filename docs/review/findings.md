@@ -239,3 +239,76 @@ schema 定义 `0上传中 1就绪 2孤儿 3缺失`，但全项目：
 
 `materializeInstantUpload` 的 C-1 分支**没有测试覆盖**（`DB_INTEGRATION=OFF`，现有 41 个测试都不连库）。建议后续补一条 DB 集成用例：手动 `DELETE FROM t_file` 后再调秒传，断言返回 `NotFound` 且 `t_user_file` 无新行。
 
+## 靶点 D：上传回滚与续传（upload_service / upload_chunk_handler / block_crc）
+
+审查文件：`server/logic/upload_service.cpp`(752) · `server/logic/upload_chunk_handler.cpp`(304) · `server/logic/block_crc.cpp`(383)
+
+### D-1 分块写一半会不会返回成功 —— 不会（前次提交已修，本次复核确认）
+
+```96:109:server/logic/upload_chunk_handler.cpp
+    bool ok = writeAll(fd, data.data(), data.size());
+    if (ok && ::fsync(fd) != 0) {
+        ok = false;
+    }
+    if (::close(fd) != 0) {
+        ok = false;
+    }
+    if (ok && ::rename(tmpPath.c_str(), target.c_str()) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        ::unlink(tmpPath.c_str());
+```
+
+`writeAll` 处理了 `EINTR` 与 `n == 0`，`fsync`/`close`/`rename` 逐个检查，失败统一 unlink 临时文件并返回 `FileGone`。**唯一缺点是这三步的 errno 没有带进错误码**，磁盘满与权限错都表现为 `FileGone`，排查全靠猜。
+
+### D-2 【P3】分片 MD5 未做大小写归一，大写会陷入永久重传
+
+- 收片只校验长度：`rq.chunkMd5.size() != 32`，不校验也不归一大小写
+- 合并时逐片比对：`chunkMd5.hex() != it->second.md5`（`hex()` 恒为小写）
+
+若客户端某次发来**大写 hex**，该片每次合并都判坏片，`badIndexes` 回给客户端重传 → 永远修不好，而错误信息只说“参数非法”。
+**最小改法**：收片与 init 入口把 `chunkMd5` / `fileMd5` 统一 `toLower` 后再落库与拼路径。文件 MD5 若为大写，连 blob 目录都会按大写建，`wholeMd5 != task.fileMd5` 直接失败。
+
+### D-3 【P2】分块先落盘后写库，DB 失败会留下孤儿分片且无日志
+
+`writeChunkFile` 成功后 `upsertChunkIfAbsent` 失败即返回错误，文件留在 `tmp/<task>/`。`upsertChunkIfAbsent` 返回 `Duplicate`（并发同片）时同样留文件。
+有 `expiry_job` 兜底清理，功能上可接受，但**失败时没有任何日志**，磁盘上出现异常文件只能靠人工猜。
+
+### D-4 【P2】13 处 `TODO(log)`：失败路径静默（本靶点命中 5 处）
+
+集中在 `upload_service.cpp`(492/591/710/720/726) 与 `block_crc.cpp`(403/410/419)。它们的共同形态是：
+
+```588:593:server/logic/upload_service.cpp
+    std::function<void()> returnToUploading = [&]() {
+        std::vector<std::uint8_t> from(1, 7);
+        bool changed = false;
+        // TODO(log): markStatus 失败时记 WARN（任务会停在 7，重启回 2）。
+        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+    };
+```
+
+`markStatus` 返回值被直接丢弃——失败时任务卡在 status=7，只能等进程重启后的恢复流程 7→2。这一类不需要设计，接上 Logger 记 WARN 即可。
+
+### D-5 【P2】`nextHint` 是"下一片序号"而不是"下一个缺失片"
+
+```151:159:server/logic/upload_chunk_handler.cpp
+std::uint32_t nextHint(std::uint32_t index, std::uint32_t doneChunks, std::uint32_t totalChunks) {
+    ...
+    const std::uint32_t next = index + 1;
+    return next < totalChunks ? next : totalChunks - 1;
+}
+```
+
+并发多连接乱序上传时，客户端若按 `nextHint` 顺序补片会低效（它只是"我刚传的那片的下一片"）。语义上没错，但字段名容易被客户端误解为"建议下一片"。
+**最小改法**：注释明确"这是顺序提示，不是缺口提示"，或改用 `doneChunks==totalChunks ? DONE : 由位图推导"。
+
+### 已排除的疑点
+
+- 续传 offset 与已落盘字节不一致：`doContinue` 把 `t_chunk` 当唯一事实源，`listDoneIndexes` + `sumDoneBytes` 重算后与 `t_trd.done_chunks/offset` 比对，漂移即在同一事务内 `syncDoneCounters` 修正，并用 `lockTaskForUpdate` 行锁串行化。
+- 收片 offset/长度校验：`rq.offset == index * chunkSize`、`rq.data.size() == expectedChunkSize()` 双重强校验，越界片直接拒绝。
+- 重复 complete 造成双倍引用计数：`electMerge` 用 status 1→7 抢占，落败方直接回 3004，不会二次合并。
+- 合并期间继续收片：status=7 不在 `{0,1,2}` 白名单内，收片被拒。
+- 坏片/整文件 MD5 不符：`mergeChunks` 逐片校验 size + md5、失败即 unlink 半成品，任务回 1 允许重传。
+- sidecar 写入的原子性：`writeBlockCrc` 走 `tmp + fsync + rename`，长度按 `14 + 4n` 严格校验，不完整即 unlink。
+
