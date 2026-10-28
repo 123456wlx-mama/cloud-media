@@ -438,3 +438,50 @@ qint64 GrowingFileIO::availableBytes() {
 - 读越过未落盘区域：`readableLocked()` 取三方最小值，且 `sizeHint()` 刻意不返回远端总大小（注释解释了会让 demuxer seek 到未下载区并卡死 GUI）。
 - GUI 线程阻塞：`open` 虽然是同步的，但 `readPacket` 有 5 秒停滞上限并返回 `AVERROR_EXIT`，`interruptCb` 也会在 `quit`/`abort` 时中断 FFmpeg 的探测。
 
+## 靶点 G：静默失败专项（10 处 TODO(log)）
+
+`Logger` 早已可用（`server/app/main.cpp:783` 初始化、异步落盘），只是这 10 处失败路径一直没接上。已全部替换为 `Logger::instance().log(LogLevel::Warn, ...)`，并在消息里带上定位所需的字段：
+
+| 位置 | 原状态 | 补的日志内容 |
+|---|---|---|
+| `server_app.cpp` cleanStaleTmp | 失败无痕 | 提示 tmp 未清理 |
+| `block_crc.cpp` ensureSidecarShell | 失败无痕 | path + size |
+| `block_crc.cpp` open sidecar | 失败无痕 | path + errno |
+| `block_crc.cpp` pwrite 块 CRC | 失败无痕 | path + block + errno |
+| `download_service.cpp` verify_ok=0 | 失败无痕 | uid + fid + size |
+| `expiry_job.cpp` deleteChunks | 失败无痕 | taskId + err（残留分片需对账） |
+| `upload_service.cpp` 计数漂移 | 静默修正 | 漂移前后 doneChunks/offset |
+| `upload_service.cpp` markStatus 7→1 | 返回值被丢弃 | taskId（任务会卡在 7） |
+| `upload_service.cpp` 提交失败留孤儿 blob | 失败无痕 | md5 + relPath + err |
+| `upload_service.cpp` writeBlobMeta | 失败无痕 | path + size |
+
+`git grep "TODO(log)"` 已归零。服务端 41/41 测试通过，无新增编译警告。
+
+## 总览
+
+| 靶点 | 范围 | P0 | P1 | P2 | P3 | 已修复 |
+|---|---|---|---|---|---|---|
+| A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 3 |
+| B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 2 |
+| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 1 |
+| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 0 |
+| E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 1 |
+| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 1 |
+| G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
+| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **18** |
+
+### 仍未处理的最高优先级
+
+1. **C-2【P1】密码为加盐 MD5 + 明文过网**——唯一未修的 P1。改注册用 SHA-256 并按 `u_pwd_algo` 分支校验即可，不动协议。
+2. **C-3【P2】`f_state` 四态只实现两态**——"缺失"态从不写入，blob 丢失后秒传会一直假命中。
+3. **D-2【P3】分片/文件 MD5 未做大小写归一**——大写 hex 会陷入永久重传。
+4. **F-2【P2】音频侧 `send_packet` 的 EAGAIN 同样丢包**。
+5. **B-3【P2】业务池投递失败时在 `onData` 栈内重入 `fail/forceClose`**。
+
+### 审查方法上的经验
+
+- 提交频次 + 危险写法分布能有效圈定高危文件，本次命中的 4 个 P1 有 3 个落在这些文件里。
+- **必须读完一条链路再下结论**。E-2 差一点被误报成"并发额度泄漏"，实际 `isActive()` 不含 `Queued`，逻辑是对的。
+- 先搜短名 `verifyCrc` 会漏掉 `verifyFrameCrc`，差点误报"分片 CRC 校验整体缺失"。关键词要先宽后窄。
+- 41 个服务端测试 + 9 个客户端测试对本次修复基本无覆盖（都不连库、不碰网络），修复的正确性靠代码推理，这是当前测试体系最大的缺口。
+

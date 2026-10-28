@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "cm/base/md5.h"
+#include "cm/log/logger.h"
 
 #include "cache/cache_store.h"
 #include "logic/block_crc.h"
@@ -489,7 +490,14 @@ ErrorCode UploadService::doContinue(cm::db::MysqlConn& conn,
 
     // t_chunk 是唯一事实源，计数缓存漂移时以重算值为准，并在同一事务内修正。
     if (task.doneChunks != doneChunks || task.offset != doneBytes) {
-        // TODO(log): Logger 就绪后在此记 WARN（计数缓存漂移，已按 t_chunk 重算修正）。
+        // 计数缓存漂移：已按 t_chunk 重算修正，但漂移本身说明有写入路径漏了同步。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "upload counters drift (task=" + rq.taskId +
+                ", doneChunks " + std::to_string(task.doneChunks) + "->" +
+                std::to_string(doneChunks) + ", offset " +
+                std::to_string(task.offset) + "->" +
+                std::to_string(doneBytes) + "), recalculated from t_chunk");
         rc = transferDao.syncDoneCounters(rq.taskId, doneChunks, doneBytes);
         if (rc != ErrorCode::Ok) {
             return rc;
@@ -588,8 +596,14 @@ ErrorCode UploadService::completeUpload(
     std::function<void()> returnToUploading = [&]() {
         std::vector<std::uint8_t> from(1, 7);
         bool changed = false;
-        // TODO(log): markStatus 失败时记 WARN（任务会停在 7，重启回 2）。
-        transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed);
+        if (transferDao.markStatus(uid, rq.taskId, from, 1, 0, &changed) !=
+            ErrorCode::Ok) {
+            // 停留在 7 的任务只能靠进程重启后的 7->2 恢复，必须留痕。
+            Logger::instance().log(
+                LogLevel::Warn, __FILE__, __LINE__,
+                "markStatus 7->1 failed, task stuck in merging (task=" +
+                    rq.taskId + ")");
+        }
     };
 
     std::vector<cm::db::ChunkRow> chunkRows;
@@ -707,7 +721,11 @@ ErrorCode UploadService::completeUpload(
 
     if (rc != ErrorCode::Ok) {
         // 已 rename 的 blob 不删（避免误删他人数据），留给孤儿 GC 对账。
-        // TODO(log): 记 WARN「孤儿 blob 待 GC」+ md5 + f_path。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "upload commit failed, blob left for orphan GC (md5=" +
+                task.fileMd5 + ", path=" + relPath +
+                ", err=" + std::to_string(static_cast<int>(rc)) + ")");
         returnToUploading();
         out->code = (rc == ErrorCode::TaskNotFound)
                         ? static_cast<std::uint32_t>(ErrorCode::TaskNotFound)
@@ -717,7 +735,10 @@ ErrorCode UploadService::completeUpload(
 
     // sidecar 失败只 WARN，不影响上传结果。
     if (!writeBlobMeta(blobPath, task.totalSize, wholeMd5)) {
-        // TODO(log): Logger 就绪后记 WARN（.meta 写入失败）。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "writeBlobMeta failed (path=" + blobPath + ", size=" +
+                std::to_string(task.totalSize) + ")");
     }
     // 块 CRC sidecar 改为懒生成（O7-c）：上传只落 blob + .meta，
     // 首个下载请求由 ensureBlockCrc（sendfile_block_sender）按块补算并写回。

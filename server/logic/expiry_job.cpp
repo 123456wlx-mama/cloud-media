@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "cm/log/logger.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
 #include "db/transfer_dao.h"
@@ -102,7 +103,12 @@ ErrorCode ExpiryJob::runOnce(std::size_t* expiredCount) {
             std::size_t deleted = 0;
             rc = dao.deleteChunks(task.taskId, kChunkDeleteBatch, &deleted);
             if (rc != ErrorCode::Ok) {
-                // TODO(log): 记 WARN，任务已置 6，残留分片行待人工/对账处理。
+                // 任务已置 6，残留分片行只能靠人工/对账清理，必须留痕。
+                Logger::instance().log(
+                    LogLevel::Warn, __FILE__, __LINE__,
+                    "deleteChunks failed (task=" + task.taskId +
+                        ", err=" + std::to_string(static_cast<int>(rc)) +
+                        "), orphan chunk rows need manual reconciliation");
                 break;
             }
             if (deleted < kChunkDeleteBatch) {

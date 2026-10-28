@@ -131,7 +131,9 @@ bool ServerApp::start(std::string* error) {
     // 清理失败不阻断启动：只是多留一点临时文件。
     if (m_expiry->cleanStaleTmp(kStaleTmpAgeSeconds, &removed) !=
         cm::ErrorCode::Ok) {
-        // TODO(log): 记 WARN（清理过期 tmp 失败）。
+        // 清理失败不阻断启动，但必须留痕：否则 tmp 目录会无声无息地涨。
+        cm::Logger::instance().log(cm::LogLevel::Warn, __FILE__, __LINE__,
+                                   "cleanStaleTmp failed, stale tmp kept");
     } else if (removed > 0) {
         cm::Logger::instance().log(
             cm::LogLevel::Info, __FILE__, __LINE__,

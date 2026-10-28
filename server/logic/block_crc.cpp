@@ -13,6 +13,7 @@
 
 #include "cm/base/byte_order.h"
 #include "cm/base/crc32.h"
+#include "cm/log/logger.h"
 
 namespace cm {
 namespace logic {
@@ -400,14 +401,21 @@ ErrorCode ensureBlockCrc(const std::string& blobPath, std::uint64_t size,
     if (missing || crcs.empty()) {
         // 失败不阻断下载：值已经算出来了。
         if (!ensureSidecarShell(path, size, true)) {
-            // TODO(log): 记 WARN（sidecar 空壳创建失败，下次仍走懒填充）。
+            // 失败不阻断下载（值已算出来），但下次仍会走懒填充，必须留痕。
+            Logger::instance().log(
+                LogLevel::Warn, __FILE__, __LINE__,
+                "ensureSidecarShell failed (path=" + path + ", size=" +
+                    std::to_string(size) + ")");
             return ErrorCode::Ok;
         }
     }
 
     const int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
-        // TODO(log): 记 WARN。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "open sidecar failed (path=" + path +
+                ", errno=" + std::to_string(errno) + ")");
         return ErrorCode::Ok;
     }
     std::uint8_t encoded[4];
@@ -416,7 +424,11 @@ ErrorCode ensureBlockCrc(const std::string& blobPath, std::uint64_t size,
         static_cast<off_t>(kBlockCrcHeaderSize) +
         static_cast<off_t>(blockIndex) * 4;
     if (!pwriteAll(fd, encoded, sizeof(encoded), slot)) {
-        // TODO(log): 记 WARN（懒填充写盘失败）。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "pwrite sidecar failed (path=" + path +
+                ", block=" + std::to_string(blockIndex) +
+                ", errno=" + std::to_string(errno) + ")");
     }
     ::fsync(fd);
     ::close(fd);

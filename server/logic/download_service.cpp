@@ -8,6 +8,7 @@
 
 #include "cache/cache_store.h"
 #include "cache/redis_pool.h"
+#include "cm/log/logger.h"
 #include "db/file_dao.h"
 #include "db/mysql_conn.h"
 #include "db/mysql_pool.h"
@@ -343,7 +344,13 @@ ErrorCode DownloadService::done(
 
     // 3. 校验结果：verify_ok=0 仅告警，不阻断（下载正确性由客户端整文件 MD5 保证）。
     if (rq.verifyOk == 0) {
-        // TODO(log): 记 WARN（客户端整文件 MD5 与 10012 返回不符）。
+        // 客户端自报 MD5 与 open 返回的不符：说明传输过程中数据被改坏，
+        // 不阻断（客户端会重下），但必须留痕才能定位是网络还是磁盘问题。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "download verify_ok=0 (uid=" + std::to_string(uid) +
+                ", fid=" + std::to_string(rq.fId) +
+                ", size=" + std::to_string(rq.size) + ")");
         out->code = static_cast<std::uint32_t>(ErrorCode::Md5Mismatch);
         out->accepted = 0;
         return ErrorCode::Md5Mismatch;
