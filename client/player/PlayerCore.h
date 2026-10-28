@@ -27,8 +27,14 @@ public:
     ~PlayerCore() override;
 
     // progressive=true：边下边播，读到文件末尾会等新块（直到 setSourceComplete(true)）。
-    void open(const QString& path, bool progressive);
+    // totalBytes>0：远端文件真实总大小，作为可读字节的硬上限（防止读到比文件更长的垃圾）。
+    void open(const QString& path, bool progressive, qint64 totalBytes = 0);
     void close();
+
+    // 边下边播：把「从文件开头起、连续且已写完」的字节数告诉播放器。
+    // 必须在 open 之后持续调用（每写完一块调一次）：播放器只读到这里，
+    // 否则会读到「文件已扩容、数据还没落盘」的零区（花屏/无画面）。
+    void setReadableBytes(qint64 bytes);
 
     void play();
     void pause();

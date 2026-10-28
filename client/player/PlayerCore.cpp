@@ -45,6 +45,8 @@ const double kSyncSlopMs = 8.0;
 const double kVideoDropMs = 120.0;
 const double kSeekDropSlopMs = 20.0;
 const double kAudioSampleRate = 44100.0;
+// 视频包队列上限（字节）：约 2~3 秒缓冲，防止完整文件被一次性读进内存
+const int kMaxQueuedVideoBytes = 8 * 1024 * 1024;
 
 std::string avErrorText(int code) {
     char buf[256];
@@ -61,13 +63,15 @@ qint64 nowMs() {
 
 struct PlayerCore::Impl {
     explicit Impl(PlayerCore* owner)
-        : q(owner), progressive(false), io(nullptr), fmt(nullptr),
+        : q(owner), progressive(false), expectedSize(0), io(nullptr),
+          fmt(nullptr),
           videoIndex(-1), audioIndex(-1), vctx(nullptr), actx(nullptr),
           vstream(nullptr), astream(nullptr), sws(nullptr), swr(nullptr),
-          swsW(0), swsH(0),
+          swsW(0), swsH(0), swsFmt(AV_PIX_FMT_NONE),
           quit(false), paused(false), seekReq(false), seekTargetMs(0),
           positionMs(0), durationMs(0), audioClockMs(0.0), audioClockValid(false),
           audioFramePts(0.0), audioFrameConsumed(0), seekDropMs(0), seekGen(0),
+          audioFlushedGen(0), pktLogs(0),
           droppedFrames(0),
           wallStarted(false), wallStartMs(0.0), wallStartPts(0.0), volume(80),
           firstFrame(false), readFinished(false), videoDone(false),
@@ -77,6 +81,7 @@ struct PlayerCore::Impl {
     PlayerCore* q;
     QString path;
     bool progressive;
+    qint64 expectedSize;  // 远端真实总大小；0=未知（本地文件）
 
     GrowingFileIO* io;
     AVFormatContext* fmt;
@@ -90,6 +95,7 @@ struct PlayerCore::Impl {
     SwrContext* swr;
     int swsW;
     int swsH;
+    AVPixelFormat swsFmt;  // sws 当前适配的源格式（可能按帧变化）
 
     PacketQueue videoQ;
     PacketQueue audioQ;
@@ -111,6 +117,9 @@ struct PlayerCore::Impl {
     std::atomic<qint64> seekDropMs;
     // seek 代数：seek 时自增；解码线程发现"包的代数"变了就丢弃手上海帧（防回跳）
     std::atomic<int> seekGen;
+    // 音频解码线程自己记住"已 flush 到哪一代"（只在 SDL 回调线程读写）
+    int audioFlushedGen;
+    int pktLogs;  // 诊断：已打印过几个视频包
     std::atomic<int> droppedFrames;
     std::atomic<bool> wallStarted;
     std::atomic<double> wallStartMs;
@@ -162,10 +171,16 @@ struct PlayerCore::Impl {
 
 bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* err) {
     closeMedia();
+    // closeMedia() 会把 quit 置 true 用来叫停上一次的线程。这里必须立刻复位：
+    // open / find_stream_info 期间 interrupt_callback 会读这个标志，留在 true
+    // 会让 FFmpeg 认为"用户要中止"，find_stream_info 直接被截断——
+    // 典型症状是控制台刷 "Could not find codec parameters ... unspecified pixel format"，
+    // codecpar->format 停在 -1，等于拿半套参数去开解码器。
+    quit = false;
     path = filePath;
     progressive = prog;
 
-    io = new GrowingFileIO(filePath, prog);
+    io = new GrowingFileIO(filePath, prog, expectedSize);
     if (!io->init(err)) {
         delete io;
         io = nullptr;
@@ -176,6 +191,9 @@ bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* er
             q->bufferingChanged(stalled);
         }
     });
+    qWarning("player: io ready readable=%lld total=%lld",
+             static_cast<long long>(io->readableBytes()),
+             static_cast<long long>(expectedSize));
 
     fmt = avformat_alloc_context();
     if (fmt == nullptr) {
@@ -193,14 +211,31 @@ bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* er
     const QByteArray utf8Path = filePath.toUtf8();
     int rc = avformat_open_input(&fmt, utf8Path.constData(), nullptr, nullptr);
     if (rc < 0) {
-        *err = QString::fromUtf8("打开失败：%1").arg(QString::fromStdString(avErrorText(rc)));
+        // AVERROR_EXIT 来自 GrowingFileIO 的停滞保护：下载卡住时主动放弃，
+        // 而不是让 GUI 线程无限等待（表现为窗口未响应）。
+        *err = (rc == AVERROR_EXIT)
+                   ? QString::fromUtf8("下载停滞，无法打开（已下载的数据不够定位文件头）")
+                   : QString::fromUtf8("打开失败：%1")
+                         .arg(QString::fromStdString(avErrorText(rc)));
         return false;
     }
     rc = avformat_find_stream_info(fmt, nullptr);
     if (rc < 0) {
-        *err = QString::fromUtf8("读取流信息失败：%1")
-                   .arg(QString::fromStdString(avErrorText(rc)));
+        *err = (rc == AVERROR_EXIT)
+                   ? QString::fromUtf8("下载停滞，读取流信息超时")
+                   : QString::fromUtf8("读取流信息失败：%1")
+                         .arg(QString::fromStdString(avErrorText(rc)));
         return false;
+    }
+    // 探测会把 pb 往前推（probesize 512KB）。对「moov 里带完整 stco」的普通 MP4
+    // 无所谓，demuxer 每个 sample 都按绝对偏移读；但对**分片 MP4（moof+mdat，
+    // HEVC 转码常见）**是致命的：moov 里没有索引，demuxer 只能从 pb 当前位置
+    // 往后顺序扫 moof —— 开头那个分片被跳过，第一个包直接落到几 MB 之后，
+    // 而且不是关键帧，于是满屏 "Invalid NAL unit 4" / "Invalid NAL unit 50"。
+    // 所以探测完必须显式复位到文件开头。
+    if (av_seek_frame(fmt, -1, 0, AVSEEK_FLAG_BACKWARD) < 0) {
+        // 复位失败不致命：普通 MP4 仍能靠 stco 正常播
+        qWarning("player: seek to start failed after probing");
     }
 
     AVCodec* vcodec = nullptr;
@@ -266,6 +301,24 @@ bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* er
     }
 
     positionMs = 0;
+    // 这几项必须归零：它们记录的是「上一部片子」的 seek 状态。
+    // seekDropMs 是 seek 后的丢帧屏障（丢弃 pts 早于它的帧）——
+    // 若沿用上一次拖到的 12 秒，新片子前 12 秒会被整段丢掉，
+    // 表现就是「刚打开就显示 00:12」并且开头卡一下。
+    // 注意：durationMs 不能在这里清零 —— 它在上面已经由 fmt->duration 算好了，
+    // 清零会让进度条拿到 0 时长而变灰、拖不动。closeMedia() 里已负责重置。
+    seekTargetMs = 0;
+    seekDropMs = 0;
+    seekGen = 0;
+    audioFlushedGen = 0;
+    droppedFrames = 0;
+    // 音频主时钟必须归零。它是「上一部片子」播到哪的绝对值：
+    // 新片子音频从 pts=0 开始，而 decodeAudio 里「时钟单调不回退」会让它停在旧值
+    // （0 > 52000 不成立），于是视频帧 0~52s 全被判成「落后音频」丢掉，
+    // 画面卡在旧位置的最后一帧不动，声音却是从头播的。
+    audioClockMs = 0.0;
+    audioFramePts = 0.0;
+    audioFrameConsumed = 0;
     firstFrame = false;
     readFinished = false;
     videoDone = false;
@@ -283,6 +336,11 @@ bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* er
     if (audioDev != 0) {
         SDL_PauseAudioDevice(audioDev, 0);
     }
+    // 诊断：duration 为 0 会让进度条变灰拖不动，一行日志就能定位
+    qWarning("player: ready duration=%lldms %dx%d progressive=%d",
+             static_cast<long long>(durationMs.load()),
+             vctx != nullptr ? vctx->width : 0, vctx != nullptr ? vctx->height : 0,
+             progressive ? 1 : 0);
     q->opened(durationMs.load(), vctx != nullptr ? vctx->width : 0,
               vctx != nullptr ? vctx->height : 0);
     return true;
@@ -302,6 +360,15 @@ int PlayerCore::Impl::openCodec(int streamIndex, AVCodecContext** ctxOut, bool v
         avcodec_free_context(&ctx);
         return 0;
     }
+    // 注意：codecpar->format 是 find_stream_info 探测出来的，边下边播时
+    // 数据不足就可能是 -1，不代表解码器不可用。真正要看的是 avcodec_open2
+    // 之后 ctx->pix_fmt 是否被 SPS 填上。
+    qWarning("player: codec=%s codecpar(pix_fmt=%d extradata=%d) %dx%d",
+             avcodec_get_name(stream->codecpar->codec_id),
+             static_cast<int>(stream->codecpar->format),
+             stream->codecpar->extradata_size, stream->codecpar->width,
+             stream->codecpar->height);
+
     ctx->pkt_timebase = stream->time_base;
     if (video) {
         ctx->thread_count = 2;  // 32 位进程别开太多解码线程
@@ -310,6 +377,9 @@ int PlayerCore::Impl::openCodec(int streamIndex, AVCodecContext** ctxOut, bool v
         avcodec_free_context(&ctx);
         return 0;
     }
+    // 解码器初始化后的真实状态：pix_fmt 有效说明 SPS 解析成功。
+    qWarning("player: opened(%s) ctx_pix_fmt=%d extradata=%d", video ? "video" : "audio",
+             ctx->pix_fmt, ctx->extradata_size);
     *ctxOut = ctx;
     return 1;
 }
@@ -329,10 +399,18 @@ void PlayerCore::Impl::joinThreads() {
 }
 
 void PlayerCore::Impl::closeMedia() {
+    if (fmt != nullptr) {
+        qWarning("player: closeMedia(%p)", static_cast<void*>(q));
+    }
     quit = true;
     paused = false;
     audioQ.abort();
     videoQ.abort();
+    // abort 只唤醒阻塞者并把后续 get 挡掉，队列里的包必须显式清：
+    // 不清就会带着上一部片子的残留包进入下一次 open，
+    // 新解码器（编码格式甚至不同）消费旧包 → Invalid NAL / 上一部的声音。
+    audioQ.flush();
+    videoQ.flush();
     if (io != nullptr) {
         io->abort();
     }
@@ -356,6 +434,10 @@ void PlayerCore::Impl::closeMedia() {
         sws_freeContext(sws);
         sws = nullptr;
     }
+    swsFmt = AV_PIX_FMT_NONE;
+    swsW = 0;
+    swsH = 0;
+    pktLogs = 0;
     if (vctx != nullptr) {
         avcodec_free_context(&vctx);
     }
@@ -410,15 +492,13 @@ void PlayerCore::Impl::doSeek() {
     audioQ.flush();
     {
         std::lock_guard<std::mutex> lock(audioMutex);
-        if (vctx != nullptr) {
-            avcodec_flush_buffers(vctx);
-        }
-        if (actx != nullptr) {
-            avcodec_flush_buffers(actx);
-        }
         audioBufSize = 0;
         audioBufIndex = 0;
     }
+    // 这里绝不能调 avcodec_flush_buffers：vctx 归视频解码线程、actx 归 SDL 音频回调线程，
+    // 在 demux 线程去 flush 就是和 send_packet / receive_frame 并发的数据竞争，
+    // 会把参考帧队列搅乱（大面积 "reference picture missing" / "Reference N >= M"）。
+    // 只递增代数，由各自线程在下次取包前自行 flush。
     ++seekGen;  // 与 flush 同一时刻生效：此后解码出的旧包帧全部作废
     positionMs = targetMs;
     audioClockMs = static_cast<double>(targetMs);
@@ -436,6 +516,10 @@ void PlayerCore::Impl::demuxLoop() {
     if (packet == nullptr) {
         return;
     }
+    // 连续读失败上限：progressive 下每次失败等 50ms，2s 还读不出来就不是"数据还没到"
+    // （那种情况 GrowingFileIO 是阻塞等待，不会返回错误），而是数据已经损坏。
+    const int kMaxReadFail = 40;
+    int readFailCount = 0;
     while (!quit) {
         if (seekReq.exchange(false)) {
             doSeek();
@@ -462,7 +546,14 @@ void PlayerCore::Impl::demuxLoop() {
                 continue;
             }
             if (progressive) {
-                // 文件还没写完时可能出现短暂的读失败，等下一块
+                // 文件还没写完时可能出现短暂的读失败，等下一块；
+                // 但持续失败必须放弃，否则坏了会无限重试：日志刷屏 + CPU 空转。
+                if (++readFailCount >= kMaxReadFail) {
+                    fail(QString::fromUtf8("读取失败（连续 %1 次）：%2")
+                             .arg(readFailCount)
+                             .arg(QString::fromStdString(avErrorText(rc))));
+                    break;
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
@@ -470,7 +561,29 @@ void PlayerCore::Impl::demuxLoop() {
                      .arg(QString::fromStdString(avErrorText(rc))));
             break;
         }
+        readFailCount = 0;
         if (packet->stream_index == videoIndex) {
+            // 队列必须有上限：完整文件下 demux 会在几百毫秒内把整片读进内存
+            // （20MB 片子 = 18000 个包），既浪费内存，也让「开关字幕/切集」
+            // 这类操作突然要等一大堆积压。限到约 2~3 秒的缓冲量。
+            // 等待期间必须能响应 seek：否则暂停时队列一直满，
+            // 用户拖进度条会像「拖不动」一样毫无反应。
+            bool seekWhileFull = false;
+            while (!quit && videoQ.bytes() > kMaxQueuedVideoBytes) {
+                if (seekReq.load()) {
+                    seekWhileFull = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (quit) {
+                av_packet_unref(packet);
+                break;
+            }
+            if (seekWhileFull) {
+                av_packet_unref(packet);
+                continue;  // 回主循环，先处理 seekReq
+            }
             videoQ.put(packet);
         } else if (packet->stream_index == audioIndex) {
             audioQ.put(packet);
@@ -524,15 +637,26 @@ bool PlayerCore::Impl::deliverFrame(AVFrame* frame) {
     }
     const int w = frame->width;
     const int h = frame->height;
-    if (sws == nullptr || swsW != w || swsH != h) {
+    // 源格式一律取「这一帧自己的 format」。
+    // vctx->pix_fmt 在 find_stream_info 没探测出参数时是 -1（AV_PIX_FMT_NONE），
+    // 拿它去 sws_getContext 会直接失败——表现就是有声音、一帧画面都不出。
+    const AVPixelFormat srcFmt = static_cast<AVPixelFormat>(frame->format);
+    if (srcFmt == AV_PIX_FMT_NONE) {
+        qWarning("player: frame has no pixel format, skip");
+        return false;
+    }
+    if (sws == nullptr || swsW != w || swsH != h || swsFmt != srcFmt) {
         if (sws != nullptr) {
             sws_freeContext(sws);
         }
-        sws = sws_getContext(w, h, vctx->pix_fmt, w, h, AV_PIX_FMT_RGBA,
+        sws = sws_getContext(w, h, srcFmt, w, h, AV_PIX_FMT_RGBA,
                              SWS_BILINEAR, nullptr, nullptr, nullptr);
         swsW = w;
         swsH = h;
+        swsFmt = srcFmt;
         if (sws == nullptr) {
+            qWarning("player: sws_getContext failed(%dx%d fmt=%d)", w, h,
+                     static_cast<int>(srcFmt));
             return false;
         }
     }
@@ -561,6 +685,8 @@ void PlayerCore::Impl::videoLoop() {
     }
     double lastPts = -1.0;
     double frameDuration = 40.0;
+    int flushedGen = seekGen.load();
+    int sendFailures = 0;
     while (!quit) {
         if (paused.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -572,11 +698,31 @@ void PlayerCore::Impl::videoLoop() {
             }
             continue;
         }
+        // 诊断：前几个视频包的位置/大小/是否关键帧。
+        // 与 ffprobe -show_packets 的 pos 对照，能直接判定 demux 拿到的码流对不对。
+        if (pktLogs < 3) {
+            ++pktLogs;
+            qWarning("player: vpkt pos=%lld size=%d key=%d",
+                     static_cast<long long>(packet->pos), packet->size,
+                     (packet->flags & AV_PKT_FLAG_KEY) ? 1 : 0);
+        }
         const int packetGen = seekGen.load();
+        // seek 后的第一次取包：flush 只能在本线程做（vctx 只归这里）。
+        // 在 demux 线程跨线程 flush 会和 send/receive 并发，直接把参考帧状态搅乱。
+        if (packetGen != flushedGen) {
+            avcodec_flush_buffers(vctx);
+            flushedGen = packetGen;
+            lastPts = -1.0;
+        }
         if (avcodec_send_packet(vctx, packet) < 0) {
+            // 不再静默丢弃：丢一个包就可能让后面整段 P/B 帧参考失效
+            if (++sendFailures == 1) {
+                qWarning("player: avcodec_send_packet failed (seekGen=%d)", packetGen);
+            }
             av_packet_unref(packet);
             continue;
         }
+        sendFailures = 0;
         av_packet_unref(packet);
         while (!quit) {
             const int rc = avcodec_receive_frame(vctx, frame);
@@ -676,6 +822,12 @@ int PlayerCore::Impl::decodeAudio(std::uint8_t* out, int maxBytes) {
         if (quit.load()) {
             return -1;
         }
+        // 音频解码器同样只在本线程（SDL 回调）flush，避免和 receive 并发
+        const int gen = seekGen.load();
+        if (gen != audioFlushedGen) {
+            avcodec_flush_buffers(actx);
+            audioFlushedGen = gen;
+        }
         const int rc = avcodec_receive_frame(actx, aFrame);
         if (rc == 0) {
             const std::int64_t pts = aFrame->best_effort_timestamp;
@@ -693,8 +845,10 @@ int PlayerCore::Impl::decodeAudio(std::uint8_t* out, int maxBytes) {
             }
             audioFramePts = framePts;
             audioFrameConsumed = 0;
-            if (framePts > audioClockMs.load()) {
-                audioClockMs = framePts;  // 单调不回退
+            // 新会话的第一帧（时钟还没生效）直接覆盖时钟：残留的旧位置会让
+            // 时钟卡在高位，视频帧被判成「落后」整段丢弃，画面停住不动。
+            if (!audioClockValid.load() || framePts > audioClockMs.load()) {
+                audioClockMs = framePts;  // 同一会话内保持单调不回退
             }
             audioClockValid = true;
             const int maxSamples = maxBytes / 4;  // S16 立体声
@@ -817,12 +971,20 @@ PlayerCore::~PlayerCore() {
     delete m_impl;
 }
 
-void PlayerCore::open(const QString& path, bool progressive) {
+void PlayerCore::open(const QString& path, bool progressive, qint64 totalBytes) {
+    // 实例级追踪：日志里的两个 h264 上下文要么来自两次 open，要么来自两个 PlayerCore。
+    qWarning("player: open(%p) progressive=%d size=%lld %s",
+             static_cast<void*>(this), progressive ? 1 : 0,
+             static_cast<long long>(totalBytes), qPrintable(path));
     close();
+    m_impl->expectedSize = totalBytes > 0 ? totalBytes : 0;
     m_impl->setState(Opening);
     QString err;
     if (!m_impl->openMedia(path, progressive, &err)) {
         m_impl->errorText = err;
+        // openMedia 中途失败时 fmt/io/vctx 可能已经分配了一半，必须回收：
+        // 否则下次 open 面对的是「半初始化」的上下文，切换文件时行为不可预期。
+        m_impl->closeMedia();
         emit errorChanged(err);
         m_impl->setState(Error);
         m_impl->closeMedia();
@@ -831,6 +993,12 @@ void PlayerCore::open(const QString& path, bool progressive) {
     m_impl->setState(Buffering);
     emit bufferingChanged(true);
     m_impl->tick->start();
+}
+
+void PlayerCore::setReadableBytes(qint64 bytes) {
+    if (m_impl != nullptr && m_impl->io != nullptr) {
+        m_impl->io->commitReadable(bytes);
+    }
 }
 
 void PlayerCore::close() {

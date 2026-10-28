@@ -33,6 +33,18 @@ const quint32 kMaxWriteRetries = 3;
 
 quint16 t(protocol::MessageType type) { return static_cast<std::uint16_t>(type); }
 
+// 从文件开头起「连续且已写完」的字节数：边下边播的播放器只允许读到这里。
+// bytesDone 是"累计完成量"，续传时 bitmap 可能有洞，拿它当读边界会让 demuxer
+// 读进空洞（零字节），H.264 会当成 NAL 解析 → 花屏/无画面。
+quint64 contiguousReadable(const TransferTask& task) {
+    const quint32 done = firstMissing(task.bitmap, task.blockCount);
+    quint64 bytes = static_cast<quint64>(done) * static_cast<quint64>(task.blockSize);
+    if (bytes > task.size) {
+        bytes = task.size;
+    }
+    return bytes;
+}
+
 // 显式下载的落点：用户「下载」文件夹（Windows 为 %USERPROFILE%\Downloads）。
 // 之前落在 QDir::tempPath()，用户在资源管理器里根本找不到；播放用的临时 .part
 // 也走这里，播完由 PlayerPane 清理，不会残留。
@@ -218,7 +230,7 @@ void TransferQueue::pauseForLink(TransferTask* task, const QString& message) {
     }
 }
 
-void TransferQueue::finish(TransferTask* task) {
+void TransferQueue::finish(TransferTask* task, bool notify) {
     if (!task->instant) {
         task->bytesDone = task->size;  // 秒传没有真实字节流动，保持 0（契约 §3）
     }
@@ -233,9 +245,11 @@ void TransferQueue::finish(TransferTask* task) {
         m_store->saveTask(*task);
         m_store->deleteBitmap(task->id);
     }
-    emit notice(task->instant ? QString::fromUtf8("%1 已秒传").arg(task->remoteName)
-                              : QString::fromUtf8("%1 已完成").arg(task->remoteName),
-                false);
+    if (notify) {
+        emit notice(task->instant ? QString::fromUtf8("%1 已秒传").arg(task->remoteName)
+                                  : QString::fromUtf8("%1 已完成").arg(task->remoteName),
+                    false);
+    }
     if (task->instant) {
         emit instantUploaded(task->remoteName);
     }
@@ -656,6 +670,19 @@ void TransferQueue::startDownload(TransferTask* task) {
     setState(task, TaskState::Running);
     task->blocksFetched = 0;   // 本次启动实际取回的块数（续传取证）
     task->writeFailCount = 0;  // 每轮启动重新给满重试额度
+    // 播放任务：上次留下的 .part 已经是完整文件（播完/切走时会保留），
+    // 直接判完成、不触网重下。
+    // 少了这条，切回来会走「无 .part.state → 从第 0 块重下」的路径，
+    // 20MB 的片子要重新缓冲好几秒，表现就是「切回来很卡」。
+    if (task->playback && task->size > 0) {
+        const QFileInfo info(partPath(*task));
+        if (info.exists() && static_cast<quint64>(info.size()) == task->size) {
+            task->readableBytes = task->size;
+            // 静默完成：这是「缓存命中」，不该弹「已完成」打扰用户
+            finish(task, false);
+            return;
+        }
+    }
     if (m_net == nullptr) {
         touch(task->id, false);
         return;
@@ -730,6 +757,7 @@ void TransferQueue::handleDownloadOpen(TransferTask* task, const QByteArray& pay
     if (task->bytesDone > task->size) {
         task->bytesDone = task->size;
     }
+    task->readableBytes = contiguousReadable(*task);
     savePartState(*task);
     if (have > 0) {
         // 续传取证：告诉用户这次到底取几块，而不是只报"完成"。
@@ -801,8 +829,15 @@ bool TransferQueue::writePart(TransferTask* task, quint32 blockIndex,
         return false;
     }
     const qint64 offset = static_cast<qint64>(blockIndex) * task->blockSize;
-    const qint64 need = offset + data.size();
-    if (file.size() < need && !file.resize(need)) {
+    // 绝不调用 file.resize：显式扩容会立刻把文件撑到目标大小、中间填零，
+    // 而播放器此刻正在读同一个文件，会把那一片零当成码流解析
+    // （HEVC 表现为 Invalid NAL unit 4/50，H.264 表现为 data partitioning）。
+    // 直接 seek 到超出末尾的位置再 write，文件大小随写入一起增长，
+    // 读取方永远看不到「已扩容但还没写」的中间态。
+    // 空块直接判失败：write("") 返回 0、data.size() 也是 0，
+    // 若按"写入字节数相等"判定就会把这一块标成已完成，之后永远不再重取，
+    // 文件里留下整块空洞（开头 4MB 全零 → demuxer 报 Invalid data）。
+    if (data.isEmpty()) {
         file.close();
         return false;
     }
@@ -817,6 +852,11 @@ bool TransferQueue::writePart(TransferTask* task, quint32 blockIndex,
 }
 
 void TransferQueue::handleDownloadData(TransferTask* task, const QByteArray& payload) {
+    // 取消/暂停后仍在途的响应必须丢弃：否则会把刚清理掉的 .part 又写回来
+    // （甚至写到新任务的同名文件里），让播放器读到半新半旧的数据。
+    if (task == nullptr || !task->isActive()) {
+        return;
+    }
     const quint32 index = task->nextBlock;
     if (index >= task->blockCount) {
         return;
@@ -847,6 +887,9 @@ void TransferQueue::handleDownloadData(TransferTask* task, const QByteArray& pay
     if (task->bytesDone > task->size) {
         task->bytesDone = task->size;
     }
+    // 只有「从 0 起连续」的块才允许播放器读：写盘这一刻文件长度可能已经
+    // 提前变大（Windows 先扩 EOF 再落盘），必须用写完的块边界兜住。
+    task->readableBytes = contiguousReadable(*task);
     markSpeed(task);
     savePartState(*task);
     touch(task->id, true);
@@ -876,8 +919,9 @@ void TransferQueue::handleDownloadDone(TransferTask* task, const QByteArray& pay
         return;
     }
     if (task->playback) {
-        // 播放器正开着 .part：不能改名，保留文件让播放自然播到结尾
-        QFile::remove(partStatePath(*task));
+        // 播放器正开着 .part：不能改名，保留文件让播放自然播到结尾。
+        // 断点文件（.part.state，位图全 1）也留着：下次打开能直接被识别成
+        // 「本地已完整」，不用再走一遍网络校验。
         task->bitmap.clear();
         finish(task);
         return;

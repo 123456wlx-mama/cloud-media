@@ -70,6 +70,11 @@ void PacketQueue::abort() {
 }
 
 void PacketQueue::reset() {
+    // 重新打开时必须把上一部片子的残留包清干净：
+    // 只清 abort 标志会让旧包排在队头，新解码器（可能换了编码格式）
+    // 拿 H.264 的包去按 HEVC 解，直接满屏 "Invalid NAL unit"；
+    // 音频队列残留则表现为「换了影片还在放上一部的声音」。
+    flush();
     std::lock_guard<std::mutex> lock(m_mutex);
     m_abort = false;
 }

@@ -242,7 +242,7 @@ void PlayerPane::shutdown() {
             m_queue->cancel(m_taskId);  // 此刻兄弟控件还活着，changed 是安全的
         }
     }
-    stop();
+    stop(false);  // 程序退出才真正清缓存
     if (m_queue != nullptr) {
         disconnect(m_queue, nullptr, this, nullptr);
     }
@@ -258,11 +258,11 @@ PlayerPane::~PlayerPane() {
     }
     blockSignals(true);
     m_taskId = 0;  // 让 stop() 里的 cleanupSource 直接返回
-    stop();
+    stop(false);
 }
 
 void PlayerPane::playLocalFile(const QString& path) {
-    stop();
+    stop(true);
     m_taskId = 0;
     m_displayName = QFileInfo(path).fileName();
     m_buffering = true;
@@ -275,7 +275,7 @@ void PlayerPane::playRemoteFile(quint64 ufId, const QString& name, quint64 size)
     if (m_queue == nullptr) {
         return;
     }
-    stop();
+    stop(true);  // 切走保留缓存：切回来走断点续传，不重新下载
     m_displayName = name;
     m_taskId = m_queue->enqueuePlaybackDownload(ufId, name, size);
     m_opened = false;
@@ -285,16 +285,24 @@ void PlayerPane::playRemoteFile(quint64 ufId, const QString& name, quint64 size)
     emit notice(QString::fromUtf8("正在缓冲「%1」").arg(name));
 }
 
-void PlayerPane::openPath(const QString& path, bool progressive) {
+void PlayerPane::openPath(const QString& path, bool progressive,
+                          qint64 totalBytes) {
     m_localPath = path;
+    m_player->open(path, progressive, totalBytes);
+    if (!m_player->isOpen()) {
+        // 数据还不够（典型：moov 在尾部、刚下到第一块）：保持缓冲态，
+        // 等下一块落盘后 onQueueChanged 会再次尝试，而不是直接判死。
+        m_opened = false;
+        return;
+    }
     m_opened = true;
-    m_player->open(path, progressive);
+    hideOverlays();
     m_player->play();
     m_playButton->setEnabled(true);
     m_playButton->setText(QString::fromUtf8("⏸"));
 }
 
-void PlayerPane::stop() {
+void PlayerPane::stop(bool keepCache) {
     m_player->close();
     m_bufferTimer->stop();
     m_spinTimer->stop();
@@ -307,12 +315,12 @@ void PlayerPane::stop() {
     m_playButton->setText(QString::fromUtf8("▶"));
     m_duration = 0;
     m_timeLabel->setText(QString::fromUtf8("00:00 / 00:00"));
-    cleanupSource();
+    cleanupSource(keepCache);
     m_opened = false;
     m_localPath.clear();
 }
 
-void PlayerPane::cleanupSource() {
+void PlayerPane::cleanupSource(bool keepCache) {
     if (m_queue == nullptr || m_taskId == 0) {
         return;
     }
@@ -322,10 +330,12 @@ void PlayerPane::cleanupSource() {
             m_queue->cancel(m_taskId);
             task = m_queue->find(m_taskId);
         }
-        if (task != nullptr && task->playback &&
+        // keepCache：切换影片时保留 .part / .part.state。
+        // 不保留的话，切走再切回来必须从第 0 块重新下载（几 MB 起步），
+        // 表现就是「切回来很卡」；保留后走断点续传，已下完的直接秒开。
+        if (!keepCache && task != nullptr && task->playback &&
             (task->state == transfer::TaskState::Done ||
              task->state == transfer::TaskState::Canceled)) {
-            // 播放结束/取消：清掉临时 .part 与断点状态，避免临时目录堆积
             QFile::remove(task->localPath + QString::fromUtf8(".part"));
             QFile::remove(task->localPath + QString::fromUtf8(".part.state"));
         }
@@ -354,6 +364,11 @@ void PlayerPane::onSliderReleased() {
 }
 
 void PlayerPane::onPosition(qint64 ms) {
+    // close() 之后事件队列里可能还压着上一部片子的 positionChanged，
+    // 直接拿来更新会让新影片一打开就显示旧影片的秒数。
+    if (!m_player->isOpen()) {
+        return;
+    }
     if (!m_sliderHeld && m_duration > 0) {
         m_slider->setValue(static_cast<int>(ms * 1000 / m_duration));
     }
@@ -438,13 +453,26 @@ void PlayerPane::onQueueChanged() {
     if (task == nullptr) {
         return;
     }
+    // 先告诉播放器可安全读到哪：写盘时文件长度会先于数据变长（Windows 先扩 EOF
+    // 再落盘），那段是零，demuxer 读进去会当成 NAL 解析 → 花屏/无画面。
+    // 只用「从 0 起连续写完」的边界，不能用 bytesDone（续传时可能虚高）。
+    m_player->setReadableBytes(static_cast<qint64>(task->readableBytes));
     // 首块落盘后再 open：避免 GUI 线程里等数据（下载响应也要走 GUI 事件循环）
-    if (!m_opened && task->bytesDone > 0 &&
-        task->state == transfer::TaskState::Running) {
+    // Done 也要 open：切回来的影片若缓存已完整，直接按本地文件播（秒开，不再等下载）。
+    // 失败/取消也要 open：已经下到的那部分仍然能看，不能让用户对着空白等。
+    const bool running = (task->state == transfer::TaskState::Running);
+    const bool done = (task->state == transfer::TaskState::Done);
+    const bool stopped = (task->state == transfer::TaskState::Failed ||
+                          task->state == transfer::TaskState::Canceled);
+    if (!m_opened && task->readableBytes > 0 && (running || done || stopped)) {
         const QString part = task->localPath + QString::fromUtf8(".part");
-        openPath(part, true);
+        // 必须带上远端总大小：可读字节的硬上限，也是 demuxer 定位尾部索引的依据。
+        // 已全部下完时按本地完整文件播（progressive=false），不需要再等新块。
+        openPath(part, !done, static_cast<qint64>(task->size));
     }
     if (task->state == transfer::TaskState::Done) {
+        // 全部块已落盘：把边界推到文件末尾，最后一帧/最后一段才读得到
+        m_player->setReadableBytes(static_cast<qint64>(task->size));
         m_player->setSourceComplete(true);
     } else if (task->state == transfer::TaskState::Failed ||
                task->state == transfer::TaskState::Canceled) {

@@ -54,6 +54,10 @@ struct TransferTask {
     quint32 nextBlock;
     quint32 blocksFetched;   // 本次启动后实际取回的块数（续传取证）
     quint32 writeFailCount;  // 同一块连续写盘失败次数，超过上限才判定任务失败
+    // 从文件开头起、「连续且已写完」的字节数（播放器只能读到这里）。
+    // 与 bytesDone 的区别：续传时 bitmap 可能中间有洞，bytesDone 会虚高，
+    // 而播放器必须看到一条连续的字节流，否则会把空洞当码流解析。
+    quint64 readableBytes;
 
     // 已完成的块（下载）或已确认的分片（上传）；LSB-first，与 t_chunk.bitmap 同构。
     QByteArray bitmap;
@@ -69,7 +73,7 @@ struct TransferTask {
           playback(false), chunkSize(0),
           totalChunks(0), nextChunk(0), ufId(0), fId(0), blockSize(0),
           blockCount(0), nextBlock(0), blocksFetched(0), writeFailCount(0),
-          lastBytes(0), lastTickMs(0) {}
+          readableBytes(0), lastBytes(0), lastTickMs(0) {}
 
     bool isTerminal() const {
         return state == TaskState::Done || state == TaskState::Canceled;

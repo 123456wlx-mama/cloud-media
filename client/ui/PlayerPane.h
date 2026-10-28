@@ -39,7 +39,9 @@ public slots:
     void playLocalFile(const QString& path);
     // 里程碑 B：边下边播（下载写 .part，播放器读这个增长中的文件）
     void playRemoteFile(quint64 ufId, const QString& name, quint64 size);
-    void stop();
+    // keepCache=true：切换影片时保留 .part 断点，切回来能续传/秒开；
+    // false：真正清理（程序退出时才用）。
+    void stop(bool keepCache = false);
     // 主窗口析构前调用：此时兄弟控件都还活着，取消任务/发 changed 是安全的
     void shutdown();
     void toggleFullscreen();
@@ -63,12 +65,13 @@ private slots:
     void onBufferTick();
 
 private:
-    void openPath(const QString& path, bool progressive);
+    // totalBytes：远端真实总大小，边下边播必须传（demuxer 要靠它定位尾部索引）
+    void openPath(const QString& path, bool progressive, qint64 totalBytes = 0);
     void showError(const QString& text);
     void hideOverlays();
     void updateTimeLabel();
     void layoutOverlays();
-    void cleanupSource();
+    void cleanupSource(bool keepCache);
 
     transfer::TransferQueue* m_queue;
     player::PlayerCore* m_player;

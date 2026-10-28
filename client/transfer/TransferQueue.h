@@ -104,7 +104,8 @@ private:
     void markSpeed(TransferTask* task);
     void fail(TransferTask* task, quint32 code, const QString& message);
     void pauseForLink(TransferTask* task, const QString& message);
-    void finish(TransferTask* task);
+    // notify=false：命中本地完整缓存时静默完成，不弹「已完成」提示
+    void finish(TransferTask* task, bool notify = true);
 
     void startUpload(TransferTask* task);
     // MD5 就绪后组 UploadInitRq 并发出
