@@ -181,7 +181,12 @@ ssize_t Buffer::readFd(int fd, int* savedErrno) {
         writerIndex_ += static_cast<std::size_t>(n);
     } else {
         writerIndex_ = storage_.size();
-        append(extrabuf, static_cast<std::size_t>(n) - writable);
+        // 溢出到 extra 的字节若写不进来（超过 kMaxBytes），必须按错误返回：
+        // readv 已把这些字节从内核取走，静默丢弃会让后续帧彻底错位。
+        if (!append(extrabuf, static_cast<std::size_t>(n) - writable)) {
+            *savedErrno = ENOBUFS;
+            return -1;
+        }
     }
     return n;
 }

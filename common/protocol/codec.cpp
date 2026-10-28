@@ -96,6 +96,9 @@ ErrorCode Codec::decode(Buffer& in, Frame* out, DecodeStatus* status) {
     out->type = type;
     out->seq = seq;
     out->payload = in.retrieveAsString(len);
+    // 与 decodeBulk 一致：大 payload（单帧上限 8MB）消费完立刻释放读缓冲容量，
+    // 否则连接会长期滞留十几 MB，既浪费内存也把 readFd 的溢出路径推近上限。
+    in.shrinkTo(64 * 1024);
     *status = DecodeStatus::Ok;
     return ErrorCode::Ok;
 }

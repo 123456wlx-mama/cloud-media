@@ -32,6 +32,10 @@ class Reader {
 public:
     explicit Reader(const std::string& data);
 
+    // Reader 只保存引用、不拷贝数据。绑定到临时对象会立刻悬垂
+    // （如 Reader r(toStd(payload))），这里直接编译期禁止。
+    explicit Reader(std::string&& data) = delete;
+
     bool readU8(std::uint8_t* value);
     bool readU16(std::uint16_t* value);
     bool readU32(std::uint32_t* value);

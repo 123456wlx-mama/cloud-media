@@ -272,7 +272,8 @@ void RecycleFlow::onFrame(quint16 type, quint32 seq, const QByteArray& payload) 
         return;
     }
     if (type == t(protocol::MessageType::ErrorRs)) {
-        protocol::Reader reader(toStd(payload));
+        const std::string body = toStd(payload);
+        protocol::Reader reader(body);
         std::uint32_t code = 0;
         std::string message;
         if (!reader.readU32(&code) || !reader.readString(&message)) {

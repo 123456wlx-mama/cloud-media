@@ -275,3 +275,21 @@ TEST(CodecBulkTest, RejectsOversizeLength) {
               cm::protocol::Codec::decodeBulk(buffer, &raw, &status));
     EXPECT_EQ(cm::protocol::DecodeStatus::BadLength, status);
 }
+
+// 回归：普通 decode 取出大 payload 后必须立刻缩容，
+// 否则连接会长期滞留十几 MB，并让 readFd 的溢出路径逼近上限。
+TEST(CodecTest, ReleasesReadBufferAfterLargeFrame) {
+    const std::string payload(1024 * 1024, 'x');
+    const std::string encoded = Encode(10002, 1, payload);
+
+    cm::Buffer buffer;
+    AppendAll(buffer, encoded);
+    ASSERT_GT(buffer.capacity(), 512 * 1024);
+
+    cm::protocol::Frame frame;
+    cm::protocol::DecodeStatus status = cm::protocol::DecodeStatus::NeedMore;
+    ASSERT_EQ(cm::ErrorCode::Ok, cm::protocol::Codec::decode(buffer, &frame, &status));
+    ASSERT_EQ(payload.size(), frame.payload.size());
+    EXPECT_EQ(0u, buffer.readableBytes());
+    EXPECT_LE(buffer.capacity(), 64 * 1024);
+}
