@@ -106,3 +106,72 @@
 
 回归用例：`common/protocol/tests/test_codec.cpp::CodecTest.ReleasesReadBufferAfterLargeFrame`（1MB 帧解码后断言 `capacity <= 64KB` 且 `readableBytes == 0`）。
 验证：`cmake --build build-client` 无警告通过；`ctest` 全绿（含 `cm_common_tests` 新增用例）。
+
+## 靶点 B：组包与接入（connection_decoder / Acceptor）
+
+审查文件：`server/logic/connection_decoder.cpp`(140) · `server/net/Acceptor.cpp`(116) · 接线 `server/app/main.cpp:1119-1196` · `server/net/Socket.cpp:54`
+
+### B-1 【P1】`Acceptor` 在 EMFILE 且无预留 fd 时死循环，能卡死整个 Reactor
+
+```113:124:server/net/Acceptor.cpp
+    if (errno == EMFILE || errno == ENFILE) {
+      if (idleFd_ >= 0) {
+        ::close(idleFd_);
+        const int accepted = ::accept(acceptSocket_->fd(), nullptr, nullptr);
+        if (accepted >= 0) {
+          ::close(accepted);
+        }
+        idleFd_ = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+      }
+      continue;
+    }
+```
+
+`idleFd_ < 0` 时仍然 `continue`，下一轮 `accept4` 依旧 `EMFILE`，`handleRead` 永不返回——而 `handleRead` 跑在**唯一的 Reactor 线程**上，整个服务（所有连接）随之停摆。
+`idleFd_` 为负是可达的：`listen()` 里 `::open("/dev/null")` 的返回值未校验；重开也可能失败。
+**最小改法**（已实施）：`idleFd_ < 0` 直接 `break`，宁可少 accept 一次也不能自旋。重开失败自然落到下一轮的 `break`。
+
+### B-2 【P2】`stop()` 之后 `handleRead` 仍会重新武装已关闭的 fd
+
+```129:130:server/net/Acceptor.cpp
+  // ET + EPOLLONESHOT：处理完必须重新武装，否则再也收不到新连接
+  acceptChannel_->enableReading();
+```
+
+进入 `handleRead` 时的判空只保护了函数开头。若 `newConnectionCallback_` 内部触发 `stop()`（优雅停机路径），本函数结尾仍会对 `acceptSocket_` 已 close 的 fd 做 `epoll_ctl`，得到 EBADF。不会崩溃，但会产生无意义错误日志，且掩盖真正的停机原因。
+**已修复**：结尾改为 `if (listening_ && acceptChannel_) { acceptChannel_->enableReading(); }`。
+
+### B-3 【P2】业务池投递失败时，`done(false)` 会在 `onData` 栈内重入 `fail/forceClose`
+
+`main.cpp:1168` 处 `workers.run(task)` 失败会同步调用 `done(false)`；`done` 走 `post` → `conn->getLoop()->runInLoop(fn)`，而 `runInLoop` 在 loop 线程时是**原地执行**：
+
+```87:92:server/net/EventLoop.cpp
+void EventLoop::runInLoop(Functor cb) {
+  if (isInLoopThread()) {
+    cb();
+  } else {
+    queueInLoop(std::move(cb));
+  }
+}
+```
+
+于是 `onBulkVerified(false)` → `fail()` → `forceClose()` 发生在 `onData` 尚未返回时。当前不会悬垂（lambda 按值捕获 `conn` 的 `shared_ptr`），但语义上 `onData` 返回的 `BulkDispatched` 描述的是一个已被关闭的连接。
+**最小改法**：投递失败分支改用 `post([done]{ done(false); })`，统一从 loop 队列回到下一轮。
+
+### B-4 【P3】`frameSeq` 在极窄路径上可能回显下一帧的 SEQ
+
+`decodeBulk` 的 `payload.size() != len` 分支在 `retrieve(kHeaderSize)` **之后**才失败，此时 `in` 已消费，`frameSeq(in)` 取到的是后续字节。理论上不可达（前面已校验 `readableBytes >= kHeaderSize + len`），仅作记录。
+
+### 已排除的疑点
+
+- 帧头跨多次 read 累积越界：不存在，`onData` 每轮先判 `readableBytes() < kHeaderSize` 再取头，未消费就返回 `NeedMore`。
+- ET 下漏事件：处理了。`onBulkVerified` 显式 `drain_()` 继续吃掉 Buffer 里粘着的下一帧（`connection_decoder.cpp:129-132`）。
+- bulk 挂起期间新数据丢失：`bulkPending_` 直接返回 `Deferred`，数据留在 Buffer 等 drain。
+- `accept` 阻塞：`accept4` 带 `SOCK_NONBLOCK | SOCK_CLOEXEC`，EAGAIN 作为 ET 正常终止。
+- 4MB 帧 CRC 在 IO 线程算：不在，`main.cpp:1157` 在业务线程 `verifyFrameCrc`，失败回 9005 并断连。
+- `Acceptor::stop()` 提前释放 Channel 导致野指针：已按注释规避，只摘事件不释放对象。
+
+### 阶段 0 服务端基线（本次一并跑通）
+
+Ubuntu 22.04 容器内 `cmake -DBUILD_SERVER=ON -DBUILD_TESTS=ON` 构建成功，`ctest` **41/41 通过**，含新加的 `Acceptor` 改动。
+

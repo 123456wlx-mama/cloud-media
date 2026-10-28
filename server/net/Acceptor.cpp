@@ -111,23 +111,29 @@ void Acceptor::handleRead() {
       continue;
     }
     if (errno == EMFILE || errno == ENFILE) {
+      // 没有预留 fd 可借时不能再 continue：accept 会一直 EMFILE，
+      // 单线程 Reactor 会在这里空转，整个服务失去响应。
+      if (idleFd_ < 0) {
+        break;
+      }
       // fd 耗尽：借用预留 fd 的空位把这条连接 accept 出来再立即关掉，
       // 这样既清退了 backlog，又不会让监听 fd 一直可读导致 CPU 空转。
-      if (idleFd_ >= 0) {
-        ::close(idleFd_);
-        const int accepted = ::accept(acceptSocket_->fd(), nullptr, nullptr);
-        if (accepted >= 0) {
-          ::close(accepted);
-        }
-        idleFd_ = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+      ::close(idleFd_);
+      const int accepted = ::accept(acceptSocket_->fd(), nullptr, nullptr);
+      if (accepted >= 0) {
+        ::close(accepted);
       }
+      idleFd_ = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
       continue;
     }
     // EAGAIN：ET 的正常终止
     break;
   }
-  // ET + EPOLLONESHOT：处理完必须重新武装，否则再也收不到新连接
-  acceptChannel_->enableReading();
+  // ET + EPOLLONESHOT：处理完必须重新武装，否则再也收不到新连接。
+  // 若本轮回调里触发了 stop()（优雅停机），此时 fd 已关闭，不能再挂事件。
+  if (listening_ && acceptChannel_) {
+    acceptChannel_->enableReading();
+  }
 #endif
 }
 
