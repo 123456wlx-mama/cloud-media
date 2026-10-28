@@ -798,18 +798,21 @@ ErrorCode UploadService::doInit(cm::db::MysqlConn& conn,
         const ErrorCode rc = fileDao.materializeInstantUpload(
             uid, rq.parentId, rq.fileMd5, rq.totalSize, rq.fileName,
             &fileId, &ufId, &finalName, &reused);
-        if (rc != ErrorCode::Ok) {
+        if (rc == ErrorCode::Ok) {
+            out->result = 1;
+            out->fileId = fileId;
+            out->ufId = ufId;
+            out->fileName = finalName;
+            out->chunkSize = kChunkSize;
+            out->totalChunks = totalChunks;
+            out->expireAtMs = 0;
+            return ErrorCode::Ok;
+        }
+        // NotFound：候选 blob 在「命中判定」与「落库」之间被孤儿 GC 回收。
+        // 不能当成功返回，也不能直接报错——继续走下面的真实上传流程自愈。
+        if (rc != ErrorCode::NotFound) {
             return rc;
         }
-
-        out->result = 1;
-        out->fileId = fileId;
-        out->ufId = ufId;
-        out->fileName = finalName;
-        out->chunkSize = kChunkSize;
-        out->totalChunks = totalChunks;
-        out->expireAtMs = 0;
-        return ErrorCode::Ok;
     }
 
     // 3) 未命中：建上传任务（status=0，expire=now+24h，由 DAO 在 SQL 内计算）。

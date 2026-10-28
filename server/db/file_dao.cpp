@@ -576,6 +576,12 @@ ErrorCode FileDao::materializeInstantUpload(std::uint64_t uid,
     if (wrote != ErrorCode::Ok) {
         return wrote;
     }
+    // 秒传不写盘：kind==Inserted 说明候选 blob 行在「命中判定」到「落库」之间
+    // 被孤儿 GC 物理回收了。此刻新建的行指向一个不存在的文件，必须回滚，
+    // 让上层回退到真实上传；否则用户看到「秒传成功」却下到一个 404。
+    if (kind == BlobWriteKind::Inserted) {
+        return ErrorCode::NotFound;
+    }
 
     // 3) 插入用户节点（同名自动改名）。
     const ErrorCode inserted =

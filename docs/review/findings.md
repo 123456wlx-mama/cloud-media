@@ -175,3 +175,67 @@ void EventLoop::runInLoop(Functor cb) {
 
 Ubuntu 22.04 容器内 `cmake -DBUILD_SERVER=ON -DBUILD_TESTS=ON` 构建成功，`ctest` **41/41 通过**，含新加的 `Acceptor` 改动。
 
+## 靶点 C：引用计数与事务（file_dao / cache_store / auth）
+
+审查文件：`server/db/file_dao.cpp`(1095) · `server/cache/cache_store.cpp`(530) · `server/logic/jobs/orphan_gc_job.cpp`(133) · `server/logic/auth_service.cpp`(158)
+
+### C-1 【P1】秒传与孤儿 GC 的竞争窗口：会把用户引到一个不存在的文件
+
+链路：`upload_service` 先 `findBlobByMd5`（普通 SELECT，**不加锁**）判定 `state==1` 命中 → 再进 `materializeInstantUpload` 事务 `INSERT ... ON DUPLICATE KEY UPDATE` 加计数。GC 侧 `purgeOne` 先 `SELECT ... FOR UPDATE` 锁行，再 unlink 物理文件，最后 `DELETE FROM t_file` 提交。
+
+**竞态**：秒传在"命中判定"与"落库"之间，GC 恰好完成 unlink + DELETE。此时秒传的 `INSERT` 不再命中唯一键，于是**新建一行** `f_state=1`（就绪）指向一个刚被删掉的物理文件，事务正常提交。
+**后果**：用户看到"秒传成功"，文件列表里有条目，下载 `3001`；且不会自愈（见 C-3，缺失态从未被写入）。
+**已修复**：
+- `file_dao.cpp::materializeInstantUpload` —— 秒传不写盘，因此 `kind == BlobWriteKind::Inserted` 只可能意味着"原行已消失"，直接返回 `NotFound`，事务析构回滚。
+- `upload_service.cpp` —— 收到 `NotFound` 不再当失败，而是**继续走真实上传流程**，用户无感知自愈。
+
+### C-2 【P1】密码仍是加盐 MD5，且明文过网
+
+```107:119:server/logic/auth_service.cpp
+    const std::string hash = cm::md5Hex(salt + rq.password);
+    ...
+    dao.insert(rq.tel, hash, salt, kPwdAlgoMd5, rq.name, &uid);
+```
+
+- 注册与登录都只走 MD5 分支，`kPwdAlgoMd5` 硬编码写入；而 `t_user.u_pwd_algo` 的 schema 注释与默认值是 `2=SHA-256`。也就是说**迁移路径只有定义没有实现**，新用户一律落 MD5。
+- 登录时服务端用 `md5Hex(row.salt + rq.password)` 计算，说明客户端提交的是**明文口令**，协议层没有 TLS 或挑战应答。
+
+**最小改法**（不引入新依赖即可）：注册改用 `sha256(salt + pwd)` 并写 `u_pwd_algo=2`；登录按 `u_pwd_algo` 分支校验，成功后顺手把 MD5 行升级为 SHA-256。传输侧至少在文档里明确"明文口令是内网 demo 的已知限制"。
+
+### C-3 【P2】`f_state` 四态只实现了两态，"缺失"永远不会被标记
+
+schema 定义 `0上传中 1就绪 2孤儿 3缺失`，但全项目：
+- `0` 从未被写入（插入语句直接给 `1`）
+- `3` 从未被写入（下载遇到文件不存在只回 3001，不更新状态）
+
+**后果**：磁盘上的 blob 被外部删除 / GC 误判后，`t_file` 仍是 `state=1`，秒传会一直"命中"一个不存在的文件。C-1 修的是竞态窗口，但真正的兜底应该是"下载读不到就置 3，秒传拒绝 3"。
+**最小改法**：`block_sender` 读失败（ENOENT）时异步把 `f_state` 置 3；秒传判定条件从 `state==1` 收紧为 `state==1`（3 已排除在外）。
+
+### C-4 【P2】`decrementBlobRef` 不校验受影响行数，重复减计数会被静默吞掉
+
+```99:101:server/db/file_dao.cpp
+    std::unique_ptr<PreparedStatement> drop = conn.prepare(
+        "UPDATE t_file SET f_ref_count = f_ref_count - 1 "
+        "WHERE f_id = ? AND f_ref_count > 0");
+```
+
+`f_ref_count > 0` 守卫保证不会减成负数，但 `affectedRows()==0` 时函数仍返回 `Ok`。一旦某条删除路径漏判"已软删过"而重复调用，计数会被静默少减一次 → blob 提前变孤儿 → 被 GC 回收 → 其他用户文件消失，而日志里什么都没有。
+**最小改法**：`affectedRows()==0` 时返回 `ErrorCode::Conflict`（或记 WARN），让重复减暴露成错误而不是静默。
+
+### C-5 【P3】分布式锁 token 用时间戳+序号，非随机
+
+`makeToken()` = `steady_clock` 纳秒 + 进程内自增序号。它不是 CSPRNG，但只用于 Redis 锁的 `SET NX PX` + Lua 比对释放，外部无输入可用，实际风险低。若将来复用为会话/票据 token，必须换成 `std::random_device` 填充的 128 位随机。
+
+### 已排除的疑点
+
+- 引用计数增减是否配对：`softDelete`(837) / `restore`(949) / `purgeNode`(998) / `purgeNodesInTx`(1198) 全部在 `Transaction` 内，且先 `lockUserFile` 行锁；`purge` 只在 `deletedAt == 活跃哨兵` 时补减，与软删路径互补不重叠。
+- GC 误删回收站文件：`listOrphanBlobs` 与 `purgeOne` 的双重条件都要求 `NOT EXISTS t_user_file`（含回收站节点）且无有效分享，回收站里的文件安全。
+- GC 二次复核：`purgeOne` 用 `SELECT ... FOR UPDATE` 重新确认状态/引用/节点/分享后才 unlink，秒传的 `UPDATE` 会被行锁挡住。
+- Redis 键无 TTL：`CacheStore` 所有写入走 `setPx`，带 jitter，无裸 `SET`。
+- 分布式锁释放误删他人锁：`kReleaseLockScript` 用 `GET == ARGV[1]` 比对后 `DEL`，正确。
+- Redis 被用来存传输状态：没有，仍只存会话/秒传索引/分享票据/下载票据/限流。
+
+### 覆盖缺口
+
+`materializeInstantUpload` 的 C-1 分支**没有测试覆盖**（`DB_INTEGRATION=OFF`，现有 41 个测试都不连库）。建议后续补一条 DB 集成用例：手动 `DELETE FROM t_file` 后再调秒传，断言返回 `NotFound` 且 `t_user_file` 无新行。
+
