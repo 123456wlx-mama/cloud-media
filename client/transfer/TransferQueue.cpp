@@ -728,6 +728,14 @@ void TransferQueue::handleDownloadStat(TransferTask* task, const QByteArray& pay
                       QString::fromStdString(rs.fileMd5) == task->fileMd5;
     if (!same) {
         task->bitmap.clear();
+        // 旧 .part 的长度和内容都属于上一个版本。只清位图不够：新文件的块会被
+        // 逐个覆盖写到正确偏移，但 writePart 从不 resize（怕播放器读到零填充），
+        // 文件长度不会缩小，最终 DownloadDone 的大小校验永远对不上，下载卡死在重试。
+        // 播放中的任务可能删不掉（文件被播放器占用），由 done 阶段的截断兜底。
+        QFile::remove(partPath(*task));
+        QFile::remove(partStatePath(*task));
+        task->bytesDone = 0;
+        task->readableBytes = 0;
         emit notice(QString::fromUtf8("%1 文件已变更，将重新下载").arg(task->remoteName),
                     true);
     }
@@ -910,8 +918,18 @@ void TransferQueue::handleDownloadDone(TransferTask* task, const QByteArray& pay
         fail(task, 0, QString::fromUtf8("本地文件缺失，无法完成下载"));
         return;
     }
-    const qint64 actual = check.size();
+    qint64 actual = check.size();
     check.close();
+    if (static_cast<quint64>(actual) > task->size) {
+        // 位图全 1 表示每个块都写在正确偏移上，多出来的尾部只可能是「文件变更前
+        // 留下的旧内容」。这里截掉即可自愈，不必让用户手动删 .part 重下。
+        QFile trim(part);
+        if (trim.open(QIODevice::ReadWrite) &&
+            trim.resize(static_cast<qint64>(task->size))) {
+            actual = static_cast<qint64>(task->size);
+        }
+        trim.close();
+    }
     if (static_cast<quint64>(actual) != task->size) {
         fail(task, 0, QString::fromUtf8("本地文件大小不符(%1/%2)")
                           .arg(static_cast<qlonglong>(actual))

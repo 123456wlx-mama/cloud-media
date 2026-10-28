@@ -312,3 +312,55 @@ std::uint32_t nextHint(std::uint32_t index, std::uint32_t doneChunks, std::uint3
 - 坏片/整文件 MD5 不符：`mergeChunks` 逐片校验 size + md5、失败即 unlink 半成品，任务回 1 允许重传。
 - sidecar 写入的原子性：`writeBlockCrc` 走 `tmp + fsync + rename`，长度按 `14 + 4n` 严格校验，不完整即 unlink。
 
+## 靶点 E：客户端分块状态机（TransferQueue）
+
+审查文件：`client/transfer/TransferQueue.cpp`(977) · `client/transfer/TransferTask.h`
+
+### E-1 【P1】服务端文件变更后，旧 `.part` 不截断会让下载永久卡死
+
+链路：
+1. 上次下载留下 `.part`（比如 10MB）与 `.part.state`
+2. 服务端同名文件被替换成更小内容（6MB）
+3. 重启客户端续传 → `handleDownloadStat` 发现 `size/md5` 不一致 → **只清位图**，不动文件
+4. 从头重下 6MB，`writePart` 只 `seek + write`（设计如此，见 832-839 行注释，怕播放器读到零填充），**文件长度仍是 10MB**
+5. `handleDownloadDone` 校验 `actual != task->size` → 失败"本地文件大小不符(10485760/6291456)"，每次重试都一样
+
+用户症状：下载卡在 100% 后报错，重试永远失败，只能手动删 `.part`。播放任务更糟——`PlayerPane` 占着文件，连删都删不掉。
+
+**已修复**（两处，互为保险）：
+- `handleDownloadStat` 判定文件变更时，删除 `.part` / `.part.state` 并清零 `bytesDone/readableBytes`
+- `handleDownloadDone` 当 `actual > size` 时用 `QFile::resize(size)` 截掉旧尾部（位图全 1 说明每个块都写在正确偏移，尾部必是旧内容），不必依赖删除成功
+
+### E-2 【P3】`pause` 与 `cancel` 的并发额度扣减条件不一致
+
+```336:346:client/transfer/TransferQueue.cpp
+    TransferTask* task = find(id);
+    if (task == nullptr || !task->isActive()) {
+        return;
+    }
+    if (task->type == TaskType::Upload && m_runningUploads > 0) {
+```
+
+`pause` 用 `isActive()`（`Running || Retrying`），`cancel` 用 `state == Running`。若将来 `Retrying` 变成可跨事件循环观测的稳定态（现在它是 `setState(Retrying)` 后立刻 `setState(Running)` 的瞬态），取消一个重试中的任务就会漏减 `m_runningUploads`，额度永久泄漏，最后表现是"新任务永远停在排队中"。
+**最小改法**：两处统一用同一个判定函数，并在注释里写明"Retrying 也占用并发额度"。
+
+### E-3 【P3】播放缓存命中只比长度，不校验内容
+
+```677:684:client/transfer/TransferQueue.cpp
+    if (task->playback && task->size > 0) {
+        const QFileInfo info(partPath(*task));
+        if (info.exists() && static_cast<quint64>(info.size()) == task->size) {
+            task->readableBytes = task->size;
+```
+
+长度对就判"已完成"，但 `.part` 可能是上次异常退出留下的半截内容（长度恰好等于 `size`，例如短写后又被写入尾部）。播放器会读到中间空洞。
+**代价可接受**（换启动速度），但应在注释里写明这是用"完整性不保证"换"切回不卡"，或补一次首尾块抽查。
+
+### 已排除的疑点
+
+- 跨线程改队列：除 MD5 计算（工作线程 + `QMetaObject::invokeMethod(Qt::QueuedConnection)` 回投）外，全部状态变更都在 UI 线程；`m_pending` 没有跨线程访问。
+- 短写导致位图错标：`writePart` 按 `written == data.size()` 判定，空块直接判失败（840-843 行），失败不置位图并限次重试 3 次。
+- 取消/暂停后在途响应写回已删文件：`handleDownloadData` 开头 `!task->isActive()` 直接丢弃。
+- 断线时在途请求：`onLinkLost` 清 `m_pending`、计数归零、所有活跃任务转 Paused。
+- 重试导致重复分块：上传侧 `nextChunk` 单调递增，失败即整任务 `fail()`，不会并发重复投递同一片。
+
