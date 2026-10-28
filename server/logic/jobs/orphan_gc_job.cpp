@@ -116,6 +116,11 @@ bool OrphanGcJob::purgeOne(cm::db::MysqlConn& conn,
     if (!m_unlinker(blobPath + ".crc")) {
         return false;  // sidecar 失败同样保留行（blob 已删，下轮 ENOENT 通过）
     }
+    // .meta 也要删：上传会写 <blob>.meta，只删 blob/.crc 会让每个被回收的 blob
+    // 留下一个永久孤儿文件。ENOENT 由 unlinker 视为成功，不影响幂等。
+    if (!m_unlinker(blobPath + ".meta")) {
+        return false;
+    }
 
     std::unique_ptr<cm::db::PreparedStatement> remove =
         conn.prepare("DELETE FROM t_file WHERE f_id = ?");

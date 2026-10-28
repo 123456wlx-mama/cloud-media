@@ -120,13 +120,10 @@ bool GrowingFileIO::openFile() {
 }
 
 qint64 GrowingFileIO::availableBytes() {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    // 文件还没被 demux 线程打开时只读元数据：QFile 是线程不安全的，
-    // 不能在 GUI 线程抢着 open 一个随后由 demux 线程独占使用的句柄。
-    if (m_file == nullptr || !m_file->isOpen()) {
-        return QFileInfo(m_path).size();
-    }
-    return m_file->size();
+    // 对外暴露"现在能读到多少"，而不是磁盘上的文件长度。
+    // Windows 上 QFile::write(4MB) 会先把长度撑到目标值、数据再逐页落盘，
+    // 直接返回 size() 会让缓冲进度条超前于真实可读数据。
+    return readableBytes();
 }
 
 qint64 GrowingFileIO::readableLocked() {

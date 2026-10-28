@@ -36,9 +36,10 @@ public:
     void abort();
     bool aborted() const { return m_abort; }
 
+    // 供 UI 显示缓冲进度：等价于 readableBytes()，不是磁盘上的文件长度。
     qint64 availableBytes();
     // 对 demuxer 暴露的可读边界 = min(磁盘长度, 已确认写完的字节数)。
-    // readPacket / sizeHint 都只认这个值。
+    // readPacket / sizeHint / availableBytes 都只认这个值。
     qint64 readableBytes();
     // 对 demuxer 暴露的文件长度（AVSEEK_SIZE / SEEK_END 用）
     qint64 sizeHint();

@@ -238,7 +238,7 @@ schema 定义 `0上传中 1就绪 2孤儿 3缺失`，但全项目：
 ```
 
 `f_ref_count > 0` 守卫保证不会减成负数，但 `affectedRows()==0` 时函数仍返回 `Ok`。一旦某条删除路径漏判"已软删过"而重复调用，计数会被静默少减一次 → blob 提前变孤儿 → 被 GC 回收 → 其他用户文件消失，而日志里什么都没有。
-**最小改法**：`affectedRows()==0` 时返回 `ErrorCode::Conflict`（或记 WARN），让重复减暴露成错误而不是静默。
+**已修复**：`affectedRows()==0` 时记 WARN，明确指出"可能被重复减过"。没有选择返回错误码——守卫已保证不会减成负数，若返回错误会让用户的删除/清空操作直接失败，代价高于收益；目标是**可观测**，不是拦截。
 
 ### C-5 【P3】分布式锁 token 用时间戳+序号，非随机
 
@@ -248,7 +248,7 @@ schema 定义 `0上传中 1就绪 2孤儿 3缺失`，但全项目：
 
 `orphan_gc_job.cpp::purgeOne` 只 unlink `blobPath` 与 `blobPath + ".crc"`，而上传落盘时还会写 `blobPath + ".meta"`。回归时实测验证：手工删除 `t_file` 行与 blob 后，目录里仍剩 `4b2ee48a...meta`。
 同 MD5 内容必然同大小，所以残留 `.meta` 不会导致读到错误的 size，**只是磁盘垃圾**；长期跑下去每个被回收的 blob 都会留下 14 字节级的孤儿文件。
-**最小改法**：在 `purgeOne` 里补一次 `m_unlinker(blobPath + ".meta")`（ENOENT 视为成功，与 `.crc` 同处理）。
+**已修复**：`purgeOne` 补 unlink `<blob>.meta`（unlinker 把 ENOENT 视为成功，幂等）。`GcDeletesBlobAndSidecar` 同步增加 `.meta` 断言，unlink 调用数 2→3。
 
 ### 已排除的疑点
 
@@ -435,7 +435,7 @@ qint64 GrowingFileIO::availableBytes() {
 
 `PlayerCore::availableBytes()` 对外暴露这个值。而 Windows 上 `QFile::write(4MB)` 会先把文件长度撑到目标大小、数据再逐页落盘——也就是说这个数字会**超前于真正可读的数据量**，缓冲进度条会显示得比实际更"满"。
 同一个类里已经有语义正确的 `readableBytes()`（取 `min(磁盘长度, committedBytes, 总大小)`），只是 `availableBytes` 没用它。
-**最小改法**：`availableBytes()` 直接 `return readableBytes();`，或明确改名为 `diskBytes()` 并让调用方改用可读边界。
+**已修复**：`availableBytes()` 改为 `return readableBytes();`，头文件注释同步改成"供 UI 显示缓冲进度，不是磁盘文件长度"。
 
 ### F-4 【P3】`open()` 失败路径把 `closeMedia()` 调了两次
 
@@ -485,23 +485,46 @@ qint64 GrowingFileIO::availableBytes() {
 
 | 靶点 | 范围 | P0 | P1 | P2 | P3 | 已修复 |
 |---|---|---|---|---|---|---|
-| A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 3 |
+| A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 4 |
 | B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 3 |
-| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 1 | 3 |
-| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 1 |
+| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 2 | 5 |
+| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 2 |
 | E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 1 |
-| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 2 |
+| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 3 |
 | G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
-| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **6** | **23** |
+| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **7** | **28** |
 
-P0/P1 已全部修复（8/8）；P2 已修 14/21，P3 已修 1/6。
+P0/P1 全部修复（8/8）；P2 已修 18/21；P3 已修 2/7。**总 36 项，已修 28，剩 8**。
 
-### 仍未处理的项
+### 仍未处理的 8 项
 
-1. **明文口令过网**——需 TLS 或挑战应答，属架构级改动。
-2. **E-1 的自动化覆盖**——`.part` 截断仍只有代码推理，补一条本地用例即可（不需要网络）。
-3. **C-6【P3】** 孤儿 GC 不删 `.meta`，磁盘垃圾。
-4. 其余 P3：`decodeBulk` 硬编码类型、`nextHint` 语义、`availableBytes` 名不副实、锁 token 非随机。
+**P2（3 项）**
+1. `decodeBulk` 的类型白名单硬编码 `10006`，新增 bulk 类型会静默失败
+2. 上传时 `upsertChunkIfAbsent` 失败留下孤儿分片（有 expiry 兜底，但没有日志）
+3. `nextHint` 返回"下一片"而非"下一个缺失片"，客户端易误解
+
+**P3（5 项）**
+4. `frameSeq` 在极窄路径上可能回显下一帧的 SEQ（理论不可达）
+5. 分布式锁 token 用时间戳+序号，非随机（仅 Redis 内部比对）
+6. `pause` 用 `isActive()`、`cancel` 用 `Running` 扣并发额度，语义脆弱
+7. 播放缓存命中只比 `.part` 长度，不校验内容
+8. `open()` 失败路径把 `closeMedia()` 调了两次
+
+**架构级（1 项，单列）**
+- **明文口令过网**——需 TLS 或挑战应答，不在本轮范围
+
+### 收尾轮完成情况（本轮）
+
+| 条目 | 处理 |
+|---|---|
+| E-1 覆盖 | 新增 `TransferQueueDownloadDone.TruncatesStalePartTail`：造 8192 字节旧 `.part` + 4096 字节新文件，走 open/range/done 全链路，断言状态 Done、正式文件恰为 4096、`.part` 已重命名。**已验证用例有效性**：临时禁用截断后该用例失败 |
+| C-4 | `decrementBlobRef` 在 `affectedRows()==0` 时记 WARN（指出可能重复减计数），仍返回 Ok——守卫已保证不会减成负数，改成返回错误会让用户删除直接失败，得不偿失 |
+| C-6 | `purgeOne` 补 unlink `<blob>.meta`；`GcDeletesBlobAndSidecar` 增加 `.meta` 断言并把 unlink 调用数 2→3 |
+| F-3 | `availableBytes()` 改为返回 `readableBytes()`，不再返回会超前的 `QFile::size()` |
+
+### ASan / UBSan / LSan 结果（本轮）
+
+`-DENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=Debug` 独立构建，17 个测试二进制、**305 个用例全部通过，0 条 sanitizer 报告**（`detect_leaks=1:halt_on_error=1`）。这是项目第一次有 ASan 基线。
 
 ### 本轮补完的四项（F-2 / D-2 / B-3 / C-3）
 

@@ -119,6 +119,7 @@ protected:
         EXPECT_TRUE(ensureDir(dir));
         EXPECT_TRUE(writeFile(path, std::string(static_cast<std::size_t>(row.size), 'x')));
         EXPECT_TRUE(writeFile(path + ".crc", "crc"));
+        EXPECT_TRUE(writeFile(path + ".meta", "meta"));
         return path;
     }
 
@@ -271,6 +272,7 @@ TEST_F(GcJobTest, GcDeletesBlobAndSidecar) {
     const std::string path = makeBlobFiles(fid);
     ASSERT_TRUE(exists(path));
     ASSERT_TRUE(exists(path + ".crc"));
+    ASSERT_TRUE(exists(path + ".meta"));
     makeOrphan(fid, 25 * 3600);
 
     std::size_t deleted = 0;
@@ -280,8 +282,10 @@ TEST_F(GcJobTest, GcDeletesBlobAndSidecar) {
     EXPECT_EQ(std::uint64_t(4096), bytes);
     EXPECT_FALSE(exists(path));
     EXPECT_FALSE(exists(path + ".crc"));
+    // .meta 也要一起删，否则每个被回收的 blob 都会留下孤儿文件。
+    EXPECT_FALSE(exists(path + ".meta"));
     EXPECT_FALSE(blobExists(fid));
-    ASSERT_EQ(std::size_t(2), m_unlinkCalls.size());
+    ASSERT_EQ(std::size_t(3), m_unlinkCalls.size());
 }
 
 TEST_F(GcJobTest, GcUnlinkFailureKeepsRow) {

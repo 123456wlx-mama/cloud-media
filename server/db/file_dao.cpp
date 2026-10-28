@@ -2,7 +2,9 @@
 
 #include <cstdio>
 #include <memory>
+#include <string>
 
+#include "cm/log/logger.h"
 #include "mysql_conn.h"
 #include "prepared_statement.h"
 
@@ -107,6 +109,15 @@ ErrorCode decrementBlobRef(MysqlConn& conn, std::uint64_t fid, bool* orphaned) {
     }
     if (!drop->execute()) {
         return drop->lastError();
+    }
+    if (drop->affectedRows() == 0) {
+        // WHERE 里的 f_ref_count > 0 挡住负数，但"没人可减"说明前面某条删除路径
+        // 重复减过计数。不静默：重复减会让 blob 提前变孤儿、被 GC 物理回收，
+        // 别的用户手里的文件会凭空消失，而日志里什么都查不到。
+        Logger::instance().log(
+            LogLevel::Warn, __FILE__, __LINE__,
+            "decrementBlobRef matched no row (fid=" + std::to_string(fid) +
+                ", ref_count already 0), a delete path may have decremented twice");
     }
 
     std::unique_ptr<PreparedStatement> orphan = conn.prepare(
