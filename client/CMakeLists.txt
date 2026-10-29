@@ -118,7 +118,12 @@ if(CM_PLAYER_DLLS)
 endif()
 
 # 客户端配置样例一并放到 exe 旁边，开箱即用（改仓库根的 client.conf 为准）。
+# 同时加入目标源列表（HEADER_FILE_ONLY）让它出现在 Qt Creator 的项目树里，
+# 双击就能改 host/port，不用去资源管理器翻文件。
 if(EXISTS "${CMAKE_SOURCE_DIR}/client.conf")
+    target_sources(cloud-media-client PRIVATE "${CMAKE_SOURCE_DIR}/client.conf")
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/client.conf"
+        PROPERTIES HEADER_FILE_ONLY TRUE)
     add_custom_command(TARGET cloud-media-client POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/client.conf"

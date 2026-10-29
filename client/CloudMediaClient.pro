@@ -83,6 +83,10 @@ HEADERS += \
 
 RESOURCES += ui/resources.qrc
 
+# 服务端地址配置（可选）：在 Qt Creator 的项目树里双击即可改 host/port，
+# 构建后会被拷到 exe 同目录（见文末 QMAKE_POST_LINK）。
+DISTFILES += ../client.conf
+
 # ---------------------------------------------------------------------------
 #  公共层（协议 + 基础设施；纯 C++11，不含 Qt/socket）
 # ---------------------------------------------------------------------------
@@ -125,6 +129,12 @@ DESTDIR = $$PWD/../build-qmake/bin
 #      windeployqt --release --no-compiler-runtime <exe>
 # ---------------------------------------------------------------------------
 win32 {
+    # 配置文件一起拷到 exe 旁，否则运行时找不到 client.conf，会退回内置默认地址
+    CONF_FILE = $$PWD/../client.conf
+    exists($$CONF_FILE) {
+        QMAKE_POST_LINK += $$QMAKE_COPY /Y $$shell_quote($$shell_path($$CONF_FILE)) $$shell_quote($$shell_path($$DESTDIR)) $$escape_expand(\\n\\t)
+    }
+
     PLAYER_DLL_DIR = $$PLAYER_DEPS/dll
     exists($$PLAYER_DLL_DIR) {
         PLAYER_DLLS = $$files($$PLAYER_DLL_DIR/*.dll)
