@@ -15,13 +15,18 @@ const char kReleaseLockScript[] =
     "return redis.call('DEL', KEYS[1]) else return 0 end";
 
 std::string makeToken() {
-    static std::atomic<std::uint64_t> sequence(0);
-    const std::uint64_t now = static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-    const std::uint64_t seq = sequence.fetch_add(1, std::memory_order_relaxed);
-    std::ostringstream out;
-    out << std::hex << now << "-" << seq;
-    return out.str();
+    // 128 位随机：token 会写进 Redis 参与锁归属比对（Lua 里 GET == ARGV[1] 才 DEL），
+    // 可预测的 token 等于把"释放别人锁"的能力交出去。时间戳+序号在这里没有优势。
+    static const char kHex[] = "0123456789abcdef";
+    std::random_device device;
+    std::string token;
+    token.reserve(32);
+    for (int i = 0; i < 16; ++i) {
+        const unsigned int byte = device() & 0xffu;
+        token.push_back(kHex[byte >> 4]);
+        token.push_back(kHex[byte & 0x0fu]);
+    }
+    return token;
 }
 
 }  // namespace

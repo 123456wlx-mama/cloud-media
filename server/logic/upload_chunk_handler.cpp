@@ -13,6 +13,7 @@
 #include <string>
 
 #include "cm/base/hex.h"
+#include "cm/log/logger.h"
 #include "db/mysql_pool.h"
 #include "db/transfer_dao.h"
 
@@ -149,6 +150,9 @@ std::string chunkRelPath(const std::string& taskId, std::uint32_t index) {
     return std::string("tmp/") + taskId + "/" + name;
 }
 
+// 注意语义：返回的是「刚确认的这一片的下一片」，不是「下一个还没传的片」。
+// 并发多连接乱序上传时两者并不相等；客户端若按它顺序补片只会低效，不会出错。
+// 全部完成时返回 kNextHintDone。真正的缺口要由续传位图（10029）回答。
 std::uint32_t nextHint(std::uint32_t index,
                        std::uint32_t doneChunks,
                        std::uint32_t totalChunks) {
@@ -333,6 +337,15 @@ ErrorCode UploadChunkHandler::handle(std::uint64_t uid,
     cm::db::ChunkUpsertResult result;
     rc = dao.upsertChunkIfAbsent(uid, rq.taskId, chunk, &result);
     if (rc != ErrorCode::Ok) {
+        if (!alreadyConfirmed) {
+            // 分片已经落盘但没写进 t_chunk：留下的是无人引用的临时分片，
+            // 只能等 expiry_job 按任务目录清理。不留痕就无法解释磁盘占用从哪来。
+            Logger::instance().log(
+                LogLevel::Warn, __FILE__, __LINE__,
+                "upsertChunkIfAbsent failed after chunk file written (task=" +
+                    rq.taskId + ", index=" + std::to_string(rq.chunkIndex) +
+                    ", err=" + std::to_string(static_cast<int>(rc)) + ")");
+        }
         return fail(out, rc);
     }
 

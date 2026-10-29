@@ -485,33 +485,35 @@ qint64 GrowingFileIO::availableBytes() {
 
 | 靶点 | 范围 | P0 | P1 | P2 | P3 | 已修复 |
 |---|---|---|---|---|---|---|
-| A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 4 |
-| B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 3 |
-| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 2 | 5 |
-| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 2 |
-| E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 1 |
-| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 3 |
+| A 协议边界 | codec/serialize/buffer 450 行 | 1 | 2 | 2 | 0 | 5 |
+| B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 4 |
+| C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 2 | 6 |
+| D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 4 |
+| E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 3 |
+| F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 4 |
 | G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
-| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **7** | **28** |
+| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **7** | **36** |
 
-P0/P1 全部修复（8/8）；P2 已修 18/21；P3 已修 2/7。**总 36 项，已修 28，剩 8**。
+**36 项全部处理完毕**（P0 1/1、P1 7/7、P2 21/21、P3 7/7）。
 
-### 仍未处理的 8 项
+### 唯一遗留：明文口令过网
 
-**P2（3 项）**
-1. `decodeBulk` 的类型白名单硬编码 `10006`，新增 bulk 类型会静默失败
-2. 上传时 `upsertChunkIfAbsent` 失败留下孤儿分片（有 expiry 兜底，但没有日志）
-3. `nextHint` 返回"下一片"而非"下一个缺失片"，客户端易误解
+需要 TLS 或挑战应答（协议级改动 + 证书分发），不属于代码修补范围，单独开一期。
 
-**P3（5 项）**
-4. `frameSeq` 在极窄路径上可能回显下一帧的 SEQ（理论不可达）
-5. 分布式锁 token 用时间戳+序号，非随机（仅 Redis 内部比对）
-6. `pause` 用 `isActive()`、`cancel` 用 `Running` 扣并发额度，语义脆弱
-7. 播放缓存命中只比 `.part` 长度，不校验内容
-8. `open()` 失败路径把 `closeMedia()` 调了两次
+### 收尾第二轮（最后 8 项）
 
-**架构级（1 项，单列）**
-- **明文口令过网**——需 TLS 或挑战应答，不在本轮范围
+| 条目 | 处理方式 |
+|---|---|
+| A-4 | 新增 `isBulkType()` 集中白名单，`decodeBulk` 不再写死 `10006` |
+| B-4 | `onData` 从帧头先取 `headerSeq`，解码失败时用它回显；删除重复读 Buffer 的 `frameSeq` 辅助函数 |
+| C-5 | 锁 token 改 `std::random_device` 128 位随机（原来时间戳+序号可预测） |
+| D-3 | `upsertChunkIfAbsent` 失败且本片已落盘时记 WARN，说明会留下临时分片 |
+| D-5 | `nextHint` 补注释，明确"下一片"不等于"下一个缺失片"，缺口由续传位图回答 |
+| E-2 | `cancel` 与 `pause` 统一用 `isActive()`，避免取消 Retrying 任务时漏减并发额度 |
+| E-3 | 播放缓存命中的"只比长度"标注为**已知取舍**并写明代价（校验内容等于放弃秒开） |
+| F-4 | `open()` 失败路径删掉重复的 `closeMedia()` |
+
+验证：服务端 `cm_logic_tests` 168/168、`test_business_messages` 23/23（真实 MySQL/Redis）；两者在 ASan+UBSan+LSan 下同样全绿、0 报告；客户端 `ctest` 10/10。
 
 ### 收尾轮完成情况（本轮）
 

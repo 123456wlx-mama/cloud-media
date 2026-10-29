@@ -10,18 +10,6 @@
 
 namespace cm {
 namespace logic {
-namespace {
-
-// 失败时 Buffer 尚未消费；足够 19 字节就能取出 SEQ 用于 ERROR_RS 回显。
-std::uint32_t frameSeq(const Buffer& in) {
-    if (in.readableBytes() < protocol::kHeaderSize) {
-        return 0;
-    }
-    return readU32BE(
-        reinterpret_cast<const std::uint8_t*>(in.peek()) + 11);
-}
-
-}  // namespace
 
 ConnectionDecoder::ConnectionDecoder(FrameHandler frameHandler,
                                      BulkHandler bulkHandler,
@@ -57,6 +45,9 @@ ConnectionDecoder::Result ConnectionDecoder::onData(Buffer& in) {
         const std::uint8_t* header =
             reinterpret_cast<const std::uint8_t*>(in.peek());
         const std::uint16_t type = readU16BE(header + 5);
+        // 帧头就在手上，先取 SEQ：解码失败时若回头再读 Buffer，
+        // decodeBulk 已经消费过头的场景会取到下一帧的 SEQ 回显给客户端。
+        const std::uint32_t headerSeq = readU32BE(header + 11);
 
         if (type == static_cast<std::uint16_t>(protocol::MessageType::UploadChunkRq)) {
             protocol::RawFrame raw;
@@ -66,7 +57,7 @@ ConnectionDecoder::Result ConnectionDecoder::onData(Buffer& in) {
                 return Result::NeedMore;
             }
             if (code != ErrorCode::Ok || status != protocol::DecodeStatus::Ok) {
-                fail(frameSeq(in), status);
+                fail(headerSeq, status);
                 return Result::Error;
             }
 
@@ -104,7 +95,7 @@ ConnectionDecoder::Result ConnectionDecoder::onData(Buffer& in) {
             return Result::NeedMore;
         }
         if (code != ErrorCode::Ok || status != protocol::DecodeStatus::Ok) {
-            fail(frameSeq(in), status);
+            fail(headerSeq, status);
             return Result::Error;
         }
         if (frameHandler_) {

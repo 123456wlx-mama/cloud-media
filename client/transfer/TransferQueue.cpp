@@ -369,7 +369,9 @@ void TransferQueue::cancel(int id) {
     if (task == nullptr || task->isTerminal()) {
         return;
     }
-    if (task->state == TaskState::Running) {
+    // 用 isActive()（Running | Retrying）而不是只认 Running：Retrying 同样占着
+    // 并发额度，只判 Running 会在取消重试中的任务时漏减，额度泄漏后新任务永远排队。
+    if (task->isActive()) {
         if (task->type == TaskType::Upload && m_runningUploads > 0) {
             --m_runningUploads;
         }
@@ -674,6 +676,11 @@ void TransferQueue::startDownload(TransferTask* task) {
     // 直接判完成、不触网重下。
     // 少了这条，切回来会走「无 .part.state → 从第 0 块重下」的路径，
     // 20MB 的片子要重新缓冲好几秒，表现就是「切回来很卡」。
+    //
+    // 已知取舍：这里只比长度，不校验内容。长度恰好等于 size 的损坏 .part
+    // （例如异常退出后又被写满尾部）会被当成"已完整"。校验内容需要整文件读一遍，
+    // 那就等于放弃"切回来秒开"，所以选择接受这个风险——代价是播放器可能解码报错，
+    // 由用户重新点播触发真实下载。
     if (task->playback && task->size > 0) {
         const QFileInfo info(partPath(*task));
         if (info.exists() && static_cast<quint64>(info.size()) == task->size) {

@@ -132,7 +132,7 @@ ErrorCode Codec::decodeBulk(Buffer& in, RawFrame* out, DecodeStatus* status) {
         *status = DecodeStatus::BadLength;
         return ErrorCode::ProtocolError;
     }
-    if (type != 10006) {
+    if (!isBulkType(type)) {
         *status = DecodeStatus::UnknownType;
         return ErrorCode::ProtocolError;
     }

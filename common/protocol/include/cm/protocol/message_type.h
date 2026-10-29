@@ -81,5 +81,12 @@ inline bool isKnownType(std::uint16_t type) {
     }
 }
 
+// bulk 帧白名单：payload 最大到 4MB、CRC 交给业务线程校验，走 decodeBulk。
+// 集中在这里维护：codec 里的旧实现把它写死成 10006，新增 bulk 类型时会静默
+// 落到普通 decode 路径（8MB 上限 + IO 线程算 CRC），排查成本很高。
+inline bool isBulkType(std::uint16_t type) {
+    return type == static_cast<std::uint16_t>(MessageType::UploadChunkRq);
+}
+
 }  // namespace protocol
 }  // namespace cm

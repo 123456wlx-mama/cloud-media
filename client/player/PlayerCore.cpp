@@ -1015,7 +1015,6 @@ void PlayerCore::open(const QString& path, bool progressive, qint64 totalBytes) 
         m_impl->closeMedia();
         emit errorChanged(err);
         m_impl->setState(Error);
-        m_impl->closeMedia();
         return;
     }
     m_impl->setState(Buffering);
