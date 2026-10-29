@@ -29,6 +29,9 @@ struct TransferTask {
     QString remoteName;
     quint64 size;
     quint64 parentId;  // 上传目标目录（0 = 根）；下载不使用
+    // 归属账号（u_id）。本地 SQLite 缓存按它隔离：换账号登录不能看到别人的任务，
+    // 那些任务的 taskId/ticket 在服务端属于另一个用户，继续跑必然失败。
+    quint64 uid;
     TaskState state;
     quint64 bytesDone;
     double speedBps;
@@ -67,7 +70,7 @@ struct TransferTask {
     qint64 lastTickMs;
 
     TransferTask()
-        : id(0), type(TaskType::Upload), size(0), parentId(0),
+        : id(0), type(TaskType::Upload), size(0), parentId(0), uid(0),
           state(TaskState::Queued),
           bytesDone(0), speedBps(0.0), errCode(0), instant(false),
           playback(false), chunkSize(0),

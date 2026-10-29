@@ -380,6 +380,27 @@ std::uint32_t nextHint(std::uint32_t index, std::uint32_t doneChunks, std::uint3
 长度对就判"已完成"，但 `.part` 可能是上次异常退出留下的半截内容（长度恰好等于 `size`，例如短写后又被写入尾部）。播放器会读到中间空洞。
 **代价可接受**（换启动速度），但应在注释里写明这是用"完整性不保证"换"切回不卡"，或补一次首尾块抽查。
 
+### E-4 【P1】本地任务缓存没有按账号隔离（使用中发现的）
+
+**现象**：注册并登录一个新账号，右侧「传输」面板仍列出上一个账号的 100 条上传记录（文件名可见），左侧文件列表却是空的。
+
+**根因**：`t_task` 表没有归属账号列，`loadTasks()` 是 `SELECT ... FROM t_task` 无 `WHERE`；而 `main.cpp` 在**启动时、登录之前**就调了 `restoreFromStore()`。于是无论谁登录，恢复的都是同一批本地任务。
+
+**后果**：
+- 跨账号可见：新用户能看到别人上传过哪些文件（隐私）
+- 任务不可用：那些 `taskId` / `ticket` 在服务端属于原账号，点「继续」只会拿到 3004
+
+**已修复**：
+- `t_task` 增加 `u_id`（含老库迁移：`PRAGMA table_info` 检测后 `ALTER TABLE ADD COLUMN`，老行默认 0）
+- `loadTasks(quint64 uid)` 带 `WHERE u_id = ?`；`TransferTask` 增加 `uid` 字段
+- `TransferQueue::touch()` 落库前统一打标 `task->uid = m_uid`（单点，避免某条路径漏写）
+- 新增 `setCurrentUser(uid)`：切换账号时清空内存任务与在途请求，再按 uid 恢复；`uid` 相同为 no-op
+- 恢复时机从"启动时"改到"登录成功后"：`LoginDialog` 暴露 `uid()`，`MainWindow::onLoginSucceeded` 与无自动登录路径都接上
+
+**回归用例**：`TaskStore.TasksAreIsolatedPerUser`（A/B 两账号互不可见、新账号为空）、`TaskStore.MigratesLegacyDatabaseWithoutUserId`（老库无 `u_id` 列时 `open()` 自动补列且能正常写入）。已验证有效性：临时去掉 `WHERE u_id` 后隔离用例立刻失败。
+
+**注意**：老 `cm-tasks.db` 里的历史任务迁移后 `u_id=0`，不会归属任何账号，因此**升级后这些旧记录不再显示**（它们本来就无法确定归属）。如需续传请重新发起。
+
 ### 已排除的疑点
 
 - 跨线程改队列：除 MD5 计算（工作线程 + `QMetaObject::invokeMethod(Qt::QueuedConnection)` 回投）外，全部状态变更都在 UI 线程；`m_pending` 没有跨线程访问。
@@ -489,12 +510,13 @@ qint64 GrowingFileIO::availableBytes() {
 | B 组包接入 | connection_decoder/Acceptor 256 行 | 0 | 1 | 2 | 1 | 4 |
 | C 引用计数事务 | file_dao/cache_store/gc_job/auth 2300 行 | 0 | 2 | 2 | 2 | 6 |
 | D 上传回滚续传 | upload_service/chunk_handler/block_crc 1440 行 | 0 | 0 | 3 | 1 | 4 |
-| E 客户端状态机 | TransferQueue 977 行 | 0 | 1 | 0 | 2 | 3 |
+| E 客户端状态机 | TransferQueue 977 行 | 0 | 2 | 0 | 2 | 4 |
 | F 播放器与 AVIO | PlayerCore/GrowingFileIO 1300 行 | 0 | 1 | 2 | 1 | 4 |
 | G 静默失败 | 5 个文件 10 处 | 0 | 0 | 10 | 0 | 10 |
-| **合计** | 约 6.7k 行精读 | **1** | **7** | **21** | **7** | **36** |
+| **合计** | 约 6.7k 行精读 | **1** | **8** | **21** | **7** | **37** |
 
-**36 项全部处理完毕**（P0 1/1、P1 7/7、P2 21/21、P3 7/7）。
+**37 项全部处理完毕**（P0 1/1、P1 8/8、P2 21/21、P3 7/7）。
+其中 E-4 是使用中发现的（注册新账号后仍显示上一个账号的 100 条上传记录），属于功能测试抓不到、只有换账号才会暴露的问题。
 
 ### 唯一遗留：明文口令过网
 

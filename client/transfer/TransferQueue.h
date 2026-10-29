@@ -59,7 +59,12 @@ public:
     const QVector<TransferTask>& tasks() const { return m_tasks; }
     TransferTask* find(int id);
 
-    // 启动时从 SQLite 恢复未完成任务（Paused/Queued/Failed）。
+    // 登录成功后调用：切换当前账号。会把内存里上一个账号的任务全部丢弃，
+    // 再按 uid 从 SQLite 恢复该账号未完成的任务。uid 相同时是 no-op。
+    void setCurrentUser(quint64 uid);
+
+    // 按当前账号从 SQLite 恢复未完成任务（Paused/Queued/Failed）。
+    // 未设置账号（uid==0，例如登录前）时不做任何事。
     void restoreFromStore();
 
     // 断线：所有运行中任务转 Paused（等重连后用户点继续）。
@@ -134,6 +139,7 @@ private:
 
     netapi::NetClient* m_net;
     sqlapi::TaskStore* m_store;
+    quint64 m_uid;  // 当前登录账号；本地任务缓存按它隔离
     QVector<TransferTask> m_tasks;
     std::map<quint32, Pending> m_pending;
     int m_seq;

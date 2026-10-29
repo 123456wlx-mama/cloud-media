@@ -119,8 +119,8 @@ private:
 
 TransferQueue::TransferQueue(netapi::NetClient* net, sqlapi::TaskStore* store,
                              QObject* parent)
-    : QObject(parent), m_net(net), m_store(store), m_seq(0), m_nextId(1),
-      m_runningUploads(0), m_runningDownloads(0), m_linkUp(false) {
+    : QObject(parent), m_net(net), m_store(store), m_uid(0), m_seq(0),
+      m_nextId(1), m_runningUploads(0), m_runningDownloads(0), m_linkUp(false) {
     m_clock = []() { return QDateTime::currentMSecsSinceEpoch(); };
     if (m_net != nullptr) {
         connect(m_net, SIGNAL(frame(quint16, quint32, QByteArray)), this,
@@ -159,6 +159,8 @@ void TransferQueue::touch(int taskId, bool persist) {
         return;
     }
     if (persist && m_store != nullptr) {
+        // 单点打标：所有落库都经过这里，避免某条路径忘了写归属账号。
+        task->uid = m_uid;
         m_store->saveTask(*task);
         m_store->saveBitmap(task->id, task->bitmap);
     }
@@ -1047,11 +1049,27 @@ void TransferQueue::onAborted(quint32 seq, quint16 type, const QString& reason) 
     pauseForLink(task, reason.isEmpty() ? QString::fromUtf8("连接已断开") : reason);
 }
 
-void TransferQueue::restoreFromStore() {
-    if (m_store == nullptr) {
+void TransferQueue::setCurrentUser(quint64 uid) {
+    if (uid == m_uid) {
         return;
     }
-    const QVector<TransferTask> saved = m_store->loadTasks();
+    m_uid = uid;
+    // 上一个账号的任务必须整体丢弃：它们的 taskId / ticket 在服务端属于别人，
+    // 继续跑只会拿到 3004，UI 上还会显示成"自己的任务"。
+    m_tasks.clear();
+    m_pending.clear();
+    m_runningUploads = 0;
+    m_runningDownloads = 0;
+    m_nextId = 1;
+    restoreFromStore();
+    emit changed();
+}
+
+void TransferQueue::restoreFromStore() {
+    if (m_store == nullptr || m_uid == 0) {
+        return;  // 还没登录，不知道恢复谁的任务
+    }
+    const QVector<TransferTask> saved = m_store->loadTasks(m_uid);
     for (int i = 0; i < saved.size(); ++i) {
         TransferTask task = saved.at(i);
         if (task.state == TaskState::Done || task.state == TaskState::Canceled) {

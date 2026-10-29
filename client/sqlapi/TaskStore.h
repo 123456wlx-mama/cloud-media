@@ -29,13 +29,17 @@ public:
     bool saveBitmap(int taskId, const QByteArray& bitmap);
     bool deleteBitmap(int taskId);
 
-    QVector<transfer::TransferTask> loadTasks();
+    // 只返回该账号的任务：本地缓存必须按 u_id 隔离，
+    // 否则换账号登录会把上一个用户的任务列出来（taskId/ticket 在服务端不属于他）。
+    QVector<transfer::TransferTask> loadTasks(quint64 uid);
     QByteArray loadBitmap(int taskId);
 
     QString lastError() const { return m_lastError; }
 
 private:
     bool ensureSchema();
+    // 老库升级：t_task 早期没有 u_id 列，这里补上（默认 0，旧任务不归属任何账号）。
+    bool ensureUserIdColumn();
 
     QSqlDatabase m_db;
     QString m_connection;

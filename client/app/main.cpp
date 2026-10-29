@@ -579,7 +579,8 @@ int main(int argc, char** argv) {
 
     cm::netapi::NetClient net;
     cm::transfer::TransferQueue queue(&net, &store);
-    queue.restoreFromStore();
+    // 这里不恢复任务：本地缓存按 u_id 隔离，登录拿到 uid 后由
+    // setCurrentUser() 触发恢复，避免把上一个账号的记录列给新用户。
     net.connectTo(opt.host, opt.port);
 
     if (!opt.playUfId.isEmpty() || !opt.playShareCode.isEmpty()) {
@@ -620,6 +621,8 @@ int main(int argc, char** argv) {
         if (login.exec() != QDialog::Accepted) {
             return 0;
         }
+        // 登录后才知道该恢复谁的任务：本地缓存按 u_id 隔离，换账号看不到别人的记录。
+        queue.setCurrentUser(login.uid());
         cm::ui::MainWindow window(&net, &queue, nullptr, opt.painter);
         window.show();
         return app.exec();

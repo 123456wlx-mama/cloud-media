@@ -73,10 +73,14 @@ bool TaskStore::ensureSchema() {
         " ticket TEXT,"
         " block_size INTEGER NOT NULL,"
         " block_count INTEGER NOT NULL,"
-        " next_block INTEGER NOT NULL"
+        " next_block INTEGER NOT NULL,"
+        " u_id INTEGER NOT NULL DEFAULT 0"
         ")";
     if (!query.exec(QString::fromUtf8(taskTable))) {
         m_lastError = query.lastError().text();
+        return false;
+    }
+    if (!ensureUserIdColumn()) {
         return false;
     }
     if (!query.exec(QString::fromUtf8(
@@ -90,14 +94,34 @@ bool TaskStore::ensureSchema() {
     return true;
 }
 
+bool TaskStore::ensureUserIdColumn() {
+    QSqlQuery info(m_db);
+    if (!info.exec(QString::fromUtf8("PRAGMA table_info(t_task)"))) {
+        m_lastError = info.lastError().text();
+        return false;
+    }
+    while (info.next()) {
+        if (info.value(1).toString() == QString::fromUtf8("u_id")) {
+            return true;
+        }
+    }
+    QSqlQuery alter(m_db);
+    if (!alter.exec(QString::fromUtf8(
+            "ALTER TABLE t_task ADD COLUMN u_id INTEGER NOT NULL DEFAULT 0"))) {
+        m_lastError = alter.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 bool TaskStore::saveTask(const transfer::TransferTask& task) {
     QSqlQuery query(m_db);
     query.prepare(QString::fromUtf8(
         "INSERT OR REPLACE INTO t_task (id, type, local_path, remote_name, size,"
         " state, bytes_done, err_code, err_msg, instant, task_id, file_md5,"
         " chunk_size, total_chunks, next_chunk, uf_id, f_id, ticket, block_size,"
-        " block_count, next_block)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
+        " block_count, next_block, u_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     query.addBindValue(task.id);
     query.addBindValue(static_cast<int>(task.type));
     // NOT NULL 列必须绑空串而不是 null QString（null 会绑定成 SQL NULL）。
@@ -120,6 +144,7 @@ bool TaskStore::saveTask(const transfer::TransferTask& task) {
     query.addBindValue(static_cast<uint>(task.blockSize));
     query.addBindValue(static_cast<uint>(task.blockCount));
     query.addBindValue(static_cast<uint>(task.nextBlock));
+    query.addBindValue(static_cast<qint64>(task.uid));
     if (!query.exec()) {
         m_lastError = query.lastError().text();
         return false;
@@ -161,19 +186,22 @@ bool TaskStore::deleteBitmap(int taskId) {
     return query.exec();
 }
 
-QVector<transfer::TransferTask> TaskStore::loadTasks() {
+QVector<transfer::TransferTask> TaskStore::loadTasks(quint64 uid) {
     QVector<transfer::TransferTask> tasks;
     QSqlQuery query(m_db);
-    if (!query.exec(QString::fromUtf8(
-            "SELECT id, type, local_path, remote_name, size, state, bytes_done,"
-            " err_code, err_msg, instant, task_id, file_md5, chunk_size,"
-            " total_chunks, next_chunk, uf_id, f_id, ticket, block_size,"
-            " block_count, next_block FROM t_task ORDER BY id"))) {
+    query.prepare(QString::fromUtf8(
+        "SELECT id, type, local_path, remote_name, size, state, bytes_done,"
+        " err_code, err_msg, instant, task_id, file_md5, chunk_size,"
+        " total_chunks, next_chunk, uf_id, f_id, ticket, block_size,"
+        " block_count, next_block FROM t_task WHERE u_id = ? ORDER BY id"));
+    query.addBindValue(static_cast<qint64>(uid));
+    if (!query.exec()) {
         m_lastError = query.lastError().text();
         return tasks;
     }
     while (query.next()) {
         transfer::TransferTask task;
+        task.uid = uid;
         task.id = query.value(0).toInt();
         task.type = query.value(1).toInt() == 0 ? transfer::TaskType::Upload
                                                 : transfer::TaskType::Download;

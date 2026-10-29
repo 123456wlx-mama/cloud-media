@@ -24,6 +24,8 @@ public:
 
     QString tel() const;
     QString password() const;
+    // 登录成功后的账号 id；未成功时为 0。调用方用它隔离本地传输任务缓存。
+    quint64 uid() const { return m_uid; }
 
 private slots:
     void onLoginClicked();
@@ -40,6 +42,7 @@ private:
     QLineEdit* m_password;
     QLabel* m_error;
     QPushButton* m_loginButton;
+    quint64 m_uid = 0;
 };
 
 }  // namespace ui

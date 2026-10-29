@@ -801,9 +801,12 @@ void MainWindow::dropEvent(QDropEvent* event) {
 
 void MainWindow::onLoginSucceeded(quint32 code, quint64 uid,
                                  const QString& name) {
-    Q_UNUSED(uid);
     if (code != 0) {
         return;
+    }
+    // 传输队列按账号隔离：先切到当前 uid，再让面板显示（内部会按 uid 重载 SQLite）。
+    if (m_queue != nullptr) {
+        m_queue->setCurrentUser(uid);
     }
     statusBar()->showMessage(QString::fromUtf8("已登录 · %1").arg(name));
     refreshList();

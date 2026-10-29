@@ -129,9 +129,9 @@ void LoginDialog::onRegisterClicked() {
 }
 
 void LoginDialog::onLoginFinished(quint32 code, quint64 uid, const QString& name) {
-    Q_UNUSED(uid);
     Q_UNUSED(name);
     if (code == 0) {
+        m_uid = uid;
         accept();
         return;
     }
