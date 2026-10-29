@@ -19,6 +19,20 @@ QByteArray fromStd(const std::string& data) {
     return QByteArray(data.data(), static_cast<int>(data.size()));
 }
 
+// 用例中途 ASSERT_ 失败会提前 return，普通清理语句跑不到——用析构兜底，
+// 免得每跑一次失败的用例就在 %TEMP% 里留一份 .part 垃圾。
+struct TempPartGuard {
+    QString part;
+    QString finalPath;
+    QString statePath;
+
+    ~TempPartGuard() {
+        QFile::remove(part);
+        QFile::remove(finalPath);
+        QFile::remove(statePath);
+    }
+};
+
 class TransferQueueTest : public ::testing::Test {
 protected:
     void SetUp() override { now = 1000; }
@@ -250,6 +264,8 @@ TEST(TransferQueueDownloadDone, TruncatesStalePartTail) {
     QFile::remove(part);
     QFile::remove(finalPath);
     QFile::remove(statePath);
+    const TempPartGuard guard = {part, finalPath, statePath};
+    (void)guard;
 
     // 上一版本留下的 .part：8192 字节；新文件只有 4096 字节
     {
