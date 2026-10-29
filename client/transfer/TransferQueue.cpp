@@ -11,6 +11,7 @@
 #include <QThreadPool>
 #include <QTextStream>
 
+#include <algorithm>
 #include <string>
 
 #include "cm/base/md5.h"
@@ -43,6 +44,15 @@ quint64 contiguousReadable(const TransferTask& task) {
         bytes = task.size;
     }
     return bytes;
+}
+
+// 边下边播的落点：%TEMP%/cloud-media-cache。
+// 单独开一个目录而不是直接丢 %TEMP% 根：清理策略只能碰自己的文件，
+// 否则按 *.part 去扫系统临时目录会误删别的程序的数据。
+QString playbackCacheRootImpl() {
+    const QString dir = QDir::tempPath() + QString::fromUtf8("/cloud-media-cache");
+    QDir().mkpath(dir);
+    return dir;
 }
 
 // 显式下载的落点：用户「下载」文件夹（Windows 为 %USERPROFILE%\Downloads）。
@@ -116,6 +126,50 @@ private:
 };
 
 }  // namespace
+
+QString playbackCacheRoot() { return playbackCacheRootImpl(); }
+
+int prunePlaybackCache(const QString& root, int maxAgeDays, qint64 maxBytes) {
+    QDir dir(root);
+    if (!dir.exists()) {
+        return 0;
+    }
+    QFileInfoList parts =
+        dir.entryInfoList(QStringList() << QString::fromUtf8("*.part"), QDir::Files);
+    // 显式按修改时间升序（最旧在前），不依赖 QDir 的默认排序方向。
+    std::sort(parts.begin(), parts.end(), [](const QFileInfo& a, const QFileInfo& b) {
+        return a.lastModified() < b.lastModified();
+    });
+
+    int removed = 0;
+    qint64 total = 0;
+    // 1) 超过保留天数的缓存整体删掉（.part 与配套的 .part.state 一起）。
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-maxAgeDays);
+    for (int i = 0; i < parts.size(); ++i) {
+        if (parts.at(i).lastModified() >= cutoff) {
+            total += parts.at(i).size();
+            continue;
+        }
+        if (QFile::remove(parts.at(i).absoluteFilePath())) {
+            QFile::remove(parts.at(i).absoluteFilePath() + QString::fromUtf8(".state"));
+            ++removed;
+        }
+    }
+
+    // 2) 总量仍超上限时从最旧的开始删：缓存目录不能无限涨。
+    for (int i = 0; i < parts.size() && total > maxBytes; ++i) {
+        if (!parts.at(i).exists() || parts.at(i).lastModified() < cutoff) {
+            continue;  // 已在第 1 步删掉
+        }
+        const qint64 size = parts.at(i).size();
+        if (QFile::remove(parts.at(i).absoluteFilePath())) {
+            QFile::remove(parts.at(i).absoluteFilePath() + QString::fromUtf8(".state"));
+            total -= size;
+            ++removed;
+        }
+    }
+    return removed;
+}
 
 TransferQueue::TransferQueue(netapi::NetClient* net, sqlapi::TaskStore* store,
                              QObject* parent)
@@ -308,7 +362,7 @@ int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
     task.remoteName = fileName.isEmpty() ? QString::fromUtf8("shared_file.bin")
                                          : fileName;
     task.size = size;
-    task.localPath = (transient ? QDir::tempPath() : downloadRoot()) +
+    task.localPath = (transient ? playbackCacheRootImpl() : downloadRoot()) +
                      QString::fromUtf8("/") + task.remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);
@@ -326,7 +380,7 @@ int TransferQueue::enqueueDownload(quint64 ufId, const QString& remoteName,
     task.remoteName = remoteName;
     task.size = size;
     // 落到用户「下载」文件夹（用户可在资源管理器直接找到）。
-    task.localPath = (transient ? QDir::tempPath() : downloadRoot()) +
+    task.localPath = (transient ? playbackCacheRootImpl() : downloadRoot()) +
                      QString::fromUtf8("/") + remoteName;
     task.state = TaskState::Queued;
     m_tasks.append(task);

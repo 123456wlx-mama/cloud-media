@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QMetaObject>
@@ -189,8 +190,9 @@ TEST(TransferQueueWrite, WriteFailureDoesNotMarkBlockDone) {
     // 用同名目录占住 .part 路径：QFile::open 在任何平台上都会失败
     const QString name =
         QString::fromUtf8("cm_wf_%1.bin").arg(QCoreApplication::applicationPid());
-    const QString partPath =
-        QDir::tempPath() + QString::fromUtf8("/") + name + QString::fromUtf8(".part");
+    // 路径必须跟实现一致：播放下载落在 %TEMP%/cloud-media-cache 里。
+    const QString partPath = cm::transfer::playbackCacheRoot()
+        + QString::fromUtf8("/") + name + QString::fromUtf8(".part");
     QFile::remove(partPath);
     QDir(partPath).removeRecursively();
     ASSERT_TRUE(QDir().mkpath(partPath));
@@ -258,8 +260,9 @@ TEST(TransferQueueDownloadDone, TruncatesStalePartTail) {
     const QString name =
         QString::fromUtf8("cm_e1_part_%1.bin")
             .arg(static_cast<qulonglong>(QCoreApplication::applicationPid()));
-    const QString part = QDir::tempPath() + "/" + name + ".part";
-    const QString finalPath = QDir::tempPath() + "/" + name;
+    const QString cacheRoot = cm::transfer::playbackCacheRoot();
+    const QString part = cacheRoot + "/" + name + ".part";
+    const QString finalPath = cacheRoot + "/" + name;
     const QString statePath = part + ".state";
     QFile::remove(part);
     QFile::remove(finalPath);
@@ -321,6 +324,92 @@ TEST(TransferQueueDownloadDone, TruncatesStalePartTail) {
     out.close();
     EXPECT_FALSE(QFile::exists(part));  // 已重命名为正式文件
     QFile::remove(finalPath);
+}
+
+namespace {
+
+// 建一个指定"年龄"的缓存文件，附带 .part.state。
+// setFileTime 必须在文件打开时调用（Qt 在部分平台上对已关闭的句柄无效），
+// 否则文件时间不会被改写，用例会静默测成"没有过期文件"。
+bool makeCacheFile(const QString& root, const QString& name, int bytes, int ageDays) {
+    const QDateTime stamp = QDateTime::currentDateTime().addDays(-ageDays);
+    const QString path = root + QString::fromUtf8("/") + name;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    file.write(QByteArray(bytes, 'x'));
+    const bool ok =
+        file.setFileTime(stamp, QFileDevice::FileModificationTime);
+    file.close();
+    if (!ok) {
+        return false;
+    }
+
+    QFile state(path + QString::fromUtf8(".state"));
+    if (!state.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    state.write("s");
+    const bool stateOk =
+        state.setFileTime(stamp, QFileDevice::FileModificationTime);
+    state.close();
+    return stateOk;
+}
+
+}  // namespace
+
+// 回归：播放缓存不能无限涨。超过保留天数的 .part 与配套 .part.state 一起删。
+TEST(PlaybackCache, PruneByAge) {
+    const QString root =
+        QDir::tempPath() + QString::fromUtf8("/cm_prune_age_%1")
+                               .arg(static_cast<qulonglong>(QCoreApplication::applicationPid()));
+    QDir(root).removeRecursively();
+    ASSERT_TRUE(QDir().mkpath(root));
+
+    makeCacheFile(root, QString::fromUtf8("old.part"), 1024, 10);
+    makeCacheFile(root, QString::fromUtf8("fresh.part"), 1024, 0);
+
+    const int removed = cm::transfer::prunePlaybackCache(root, 7, 512LL * 1024 * 1024);
+    EXPECT_EQ(1, removed);
+    EXPECT_FALSE(QFile::exists(root + QString::fromUtf8("/old.part")));
+    EXPECT_FALSE(QFile::exists(root + QString::fromUtf8("/old.part.state")));
+    EXPECT_TRUE(QFile::exists(root + QString::fromUtf8("/fresh.part")));
+    EXPECT_TRUE(QFile::exists(root + QString::fromUtf8("/fresh.part.state")));
+
+    QDir(root).removeRecursively();
+}
+
+// 未过期但总量超限：按最旧的先删，直到降到上限以内。
+TEST(PlaybackCache, PruneByTotalSize) {
+    const QString root =
+        QDir::tempPath() + QString::fromUtf8("/cm_prune_size_%1")
+                               .arg(static_cast<qulonglong>(QCoreApplication::applicationPid()));
+    QDir(root).removeRecursively();
+    ASSERT_TRUE(QDir().mkpath(root));
+
+    makeCacheFile(root, QString::fromUtf8("a_oldest.part"), 1024, 3);
+    makeCacheFile(root, QString::fromUtf8("b_middle.part"), 1024, 2);
+    makeCacheFile(root, QString::fromUtf8("c_newest.part"), 1024, 1);
+
+    // 总量 3072 > 2048：删掉最旧的一个就够
+    const int removed = cm::transfer::prunePlaybackCache(root, 7, 2048);
+    EXPECT_EQ(1, removed);
+    EXPECT_FALSE(QFile::exists(root + QString::fromUtf8("/a_oldest.part")));
+    EXPECT_TRUE(QFile::exists(root + QString::fromUtf8("/b_middle.part")));
+    EXPECT_TRUE(QFile::exists(root + QString::fromUtf8("/c_newest.part")));
+
+    QDir(root).removeRecursively();
+}
+
+// 目录不存在时不能报错，返回 0（首次启动、或用户清过 %TEMP%）。
+TEST(PlaybackCache, MissingDirectoryIsNoOp) {
+    const QString root =
+        QDir::tempPath() + QString::fromUtf8("/cm_prune_missing_%1")
+                               .arg(static_cast<qulonglong>(QCoreApplication::applicationPid()));
+    QDir(root).removeRecursively();
+    EXPECT_EQ(0, cm::transfer::prunePlaybackCache(root, 7, 1024));
 }
 
 int main(int argc, char** argv) {

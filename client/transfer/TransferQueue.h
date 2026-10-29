@@ -22,6 +22,14 @@ class TaskStore;
 
 namespace transfer {
 
+// 边下边播的缓存目录：%TEMP%/cloud-media-cache（不存在则创建）。
+// 单独成目录是为了让清理策略只碰自己的文件。
+QString playbackCacheRoot();
+
+// 清理播放缓存：超过 maxAgeDays 天的先删，总量仍超过 maxBytes 时按最旧的继续删。
+// 返回删除的缓存文件数（.part 计一个，配套 .state 跟随删除不计）。
+int prunePlaybackCache(const QString& root, int maxAgeDays, qint64 maxBytes);
+
 // 传输队列：上传/下载的调度与状态机。
 // 只通过 NetClient 发协议帧（不自己开 socket），响应按 seq 关联回任务。
 // 单测：net 可传 nullptr（任务停在队列里），时钟可注入。

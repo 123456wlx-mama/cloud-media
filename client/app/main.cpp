@@ -10,9 +10,11 @@
 //                                --share-open CODE --access 1234 | --delete UF |
 //                                --cd UF | --page-size 50]
 #include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFont>
+#include <QStandardPaths>
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
@@ -37,6 +39,37 @@
 #include "ui/MainWindow.h"
 
 namespace {
+
+// 任务库固定落在 %APPDATA%/cloud-media/cm-tasks.db，不再依赖启动目录。
+// 老版本是按工作目录写 cm-tasks.db 的：首次升级时把找到的那份搬过来，
+// 否则用户会以为任务全丢了（同一个程序从不同目录启动会连到不同的库）。
+QString taskStorePath() {
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::homePath() + QString::fromUtf8("/.cloud-media");
+    }
+    QDir().mkpath(dir);
+
+    const QString target = dir + QString::fromUtf8("/cm-tasks.db");
+    if (QFile::exists(target)) {
+        return target;
+    }
+    // 一次性迁移：先看当前工作目录，再看 exe 所在目录（双击启动的旧位置）。
+    const QString legacyCurrent =
+        QDir::currentPath() + QString::fromUtf8("/cm-tasks.db");
+    const QString legacyExe =
+        QCoreApplication::applicationDirPath() + QString::fromUtf8("/cm-tasks.db");
+    const QString sources[2] = {legacyCurrent, legacyExe};
+    for (int i = 0; i < 2; ++i) {
+        if (sources[i] == target || !QFile::exists(sources[i])) {
+            continue;
+        }
+        if (QFile::copy(sources[i], target)) {
+            break;
+        }
+    }
+    return target;
+}
 
 // 里程碑 A 取证：本地完整文件播放 + 暂停 + seek，无界面输出。
 int runPlayFile(const QString& path) {
@@ -574,8 +607,12 @@ int main(int argc, char** argv) {
         return app.exec();
     }
 
+    // 播放缓存卫生：清掉过期与超量的 .part，否则 %TEMP% 会随观看时长无限增长。
+    cm::transfer::prunePlaybackCache(cm::transfer::playbackCacheRoot(), 7,
+                                     512LL * 1024 * 1024);
+
     cm::sqlapi::TaskStore store;
-    store.open(QString::fromUtf8("cm-tasks.db"));
+    store.open(taskStorePath());
 
     cm::netapi::NetClient net;
     cm::transfer::TransferQueue queue(&net, &store);
