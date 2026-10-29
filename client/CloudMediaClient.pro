@@ -104,7 +104,12 @@ SOURCES += \
     $$COMMON/base/error_code.cpp \
     $$COMMON/base/md5.cpp \
     $$COMMON/base/time_util.cpp \
-    $$COMMON/base/version.cpp
+    $$COMMON/base/version.cpp \
+    $$COMMON/config/ini_config.cpp
+
+# 注意：这里的 SOURCES 是手写清单，与 common/CMakeLists.txt 的 cm_common 不同步。
+# 新增对 common/ 下 .cpp 的调用时，必须同时补到这里，否则 CMake 能过、qmake 会
+# 在链接期报 undefined reference（client/app/main.cpp 用 IniConfig 时踩过）。
 
 # ---------------------------------------------------------------------------
 #  播放器依赖：FFmpeg 4.2.2 + SDL2 2.0.10（32 位）
