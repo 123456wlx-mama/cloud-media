@@ -28,6 +28,7 @@
 
 #include "app/smoke.h"
 #include "player/PlayerCore.h"
+#include "cm/config/ini_config.h"
 #include "cm/protocol/version.h"
 #include "cm/version.h"
 #include "netapi/NetClient.h"
@@ -502,10 +503,68 @@ struct Options {
     QString playSelftest;
     QString shareUfId;
     int shotDelayMs;
+    bool printConfig;
+    // 命令行是否显式给过这些值：是的话配置文件不得覆盖（命令行优先）。
+    bool hostSet;
+    bool portSet;
+    bool telSet;
 
     Options() : host(QString::fromUtf8("127.0.0.1")), port(8004),
-                demo(false), smokeMode(false), painter(false), shotDelayMs(2500) {}
+                demo(false), smokeMode(false), painter(false), shotDelayMs(2500),
+                printConfig(false), hostSet(false), portSet(false), telSet(false) {}
 };
+
+// 客户端配置文件（可选）：先找 exe 同目录的 client.conf，
+// 再找 %APPDATA%/cloud-media/client.conf；--config 可显式指定。
+// 优先级：命令行参数 > 配置文件 > 内置默认（127.0.0.1:8004）。
+QString pickClientConfigPath(int argc, char** argv) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--config") {
+            return QString::fromLocal8Bit(argv[i + 1]);
+        }
+    }
+    const QString besideExe =
+        QCoreApplication::applicationDirPath() + QString::fromUtf8("/client.conf");
+    if (QFile::exists(besideExe)) {
+        return besideExe;
+    }
+    const QString userDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!userDir.isEmpty()) {
+        const QString userCfg = userDir + QString::fromUtf8("/client.conf");
+        if (QFile::exists(userCfg)) {
+            return userCfg;
+        }
+    }
+    return QString();
+}
+
+void loadClientConfig(const QString& path, Options* opt) {
+    if (path.isEmpty() || opt == nullptr) {
+        return;
+    }
+    cm::IniConfig ini;
+    std::string err;
+    if (ini.load(path.toLocal8Bit().constData(), &err) != cm::ErrorCode::Ok) {
+        // 配置写坏了不该拖垮启动：忽略它，退回命令行/默认值。
+        std::fprintf(stderr, "client.conf ignored: %s\n", err.c_str());
+        return;
+    }
+    const std::string host = ini.getString("client", "host", "");
+    if (!opt->hostSet && !host.empty()) {
+        opt->host = QString::fromStdString(host);
+    }
+    int port = 0;
+    if (!opt->portSet &&
+        ini.getInt("client", "port", &port) == cm::ErrorCode::Ok && port > 0 &&
+        port <= 65535) {
+        opt->port = static_cast<quint16>(port);
+    }
+    const std::string tel = ini.getString("client", "tel", "");
+    if (!opt->telSet && !tel.empty()) {
+        opt->tel = QString::fromStdString(tel);
+    }
+}
 
 void applyTheme(QApplication* app) {
     QFont font(QString::fromUtf8("Microsoft YaHei UI"), 11);
@@ -520,19 +579,27 @@ void applyTheme(QApplication* app) {
 
 int main(int argc, char** argv) {
     Options opt;
+
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
-        if (arg == "--version") {
+        if (arg == "--print-config") {
+            opt.printConfig = true;
+        } else if (arg == "--config" && i + 1 < argc) {
+            ++i;  // 配置文件路径已由 pickClientConfigPath 处理，这里只跳过它的值
+        } else if (arg == "--version") {
             std::cout << "cloud-media-client " << cm::version()
                       << " (protocol v" << cm::protocol::version() << ")\n";
             return 0;
         }
         if (arg == "--host" && i + 1 < argc) {
             opt.host = QString::fromStdString(argv[++i]);
+            opt.hostSet = true;
         } else if (arg == "--port" && i + 1 < argc) {
             opt.port = static_cast<quint16>(std::atoi(argv[++i]));
+            opt.portSet = true;
         } else if (arg == "--tel" && i + 1 < argc) {
             opt.tel = QString::fromStdString(argv[++i]);
+            opt.telSet = true;
         } else if (arg == "--password" && i + 1 < argc) {
             opt.password = QString::fromStdString(argv[++i]);
         } else if (arg == "--password-env" && i + 1 < argc) {
@@ -595,6 +662,23 @@ int main(int argc, char** argv) {
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
     QApplication app(argc, argv);
+
+    // 配置文件要等 QApplication 构造后才能定位：applicationDirPath() 与
+    // QStandardPaths 都依赖 QCoreApplication 实例，提前调用只会拿到空路径。
+    // 命令行已解析完，loadClientConfig 只填未显式指定的项，优先级自然成立。
+    const QString configPath = pickClientConfigPath(argc, argv);
+    loadClientConfig(configPath, &opt);
+
+    // --print-config：不开窗口，只打印最终生效的连接参数，用来确认"现在连的是哪台"。
+    if (opt.printConfig) {
+        std::printf("config=%s\n",
+                    configPath.isEmpty() ? "(none)"
+                                         : configPath.toLocal8Bit().constData());
+        std::printf("host=%s\n", opt.host.toLocal8Bit().constData());
+        std::printf("port=%u\n", static_cast<unsigned>(opt.port));
+        std::printf("tel=%s\n", opt.tel.toLocal8Bit().constData());
+        return 0;
+    }
     app.setApplicationName(QString::fromUtf8("cloud-media"));
     applyTheme(&app);
 

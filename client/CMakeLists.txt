@@ -117,6 +117,15 @@ if(CM_PLAYER_DLLS)
     )
 endif()
 
+# 客户端配置样例一并放到 exe 旁边，开箱即用（改仓库根的 client.conf 为准）。
+if(EXISTS "${CMAKE_SOURCE_DIR}/client.conf")
+    add_custom_command(TARGET cloud-media-client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/client.conf"
+                "$<TARGET_FILE_DIR:cloud-media-client>"
+    )
+endif()
+
 if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()

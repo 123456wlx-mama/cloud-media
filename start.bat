@@ -84,6 +84,8 @@ if errorlevel 1 (
 
 echo.
 echo Server is ready at !HOST!:!PORT!
+echo Note: this script passes --host/--port explicitly, so client.conf is ignored here.
+echo       To use client.conf instead, launch cloud-media-client.exe directly.
 if "!SERVE_LOCAL!"=="1" (
     echo Launching client with demo account 13900000000 ...
     echo Server logs: docker compose logs -f server
