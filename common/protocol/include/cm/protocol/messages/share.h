@@ -95,6 +95,32 @@ struct ShareOpenRs {
     bool decode(const std::string& payload);
 };
 
+// 10044 转存：把分享的文件保存到自己网盘（新增用户节点 + blob 引用计数 +1，
+// 不产生任何字节传输；秒传同款落库逻辑）。
+struct ShareSaveRq {
+    std::string shareCode;
+    std::string accessCode;  // 分享带提取码时必须带；没有则空串
+    std::uint64_t parentId;  // 保存到哪个目录（0 = 根）
+    std::uint32_t reqId;     // 幂等键：重复提交只建一个节点
+
+    ShareSaveRq();
+    bool encode(std::string* out) const;
+    bool decode(const std::string& payload);
+};
+
+// 10045。
+struct ShareSaveRs {
+    std::uint32_t code;
+    std::uint64_t ufId;      // 新节点 ID
+    std::string fileName;    // 最终落库名（同名自动加 "(1)"）
+    std::uint64_t size;
+    std::uint8_t reused;     // 1 = 同目录已有同名同内容节点，直接复用
+
+    ShareSaveRs();
+    bool encode(std::string* out) const;
+    bool decode(const std::string& payload);
+};
+
 // 10042 取消分享。
 struct ShareCancelRq {
     std::string shareCode;

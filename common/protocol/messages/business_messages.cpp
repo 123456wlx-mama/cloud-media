@@ -788,6 +788,52 @@ bool ShareOpenRs::decode(const std::string& payload) {
            readU8Max(&reader, &accessCodeRequired, 1);
 }
 
+ShareSaveRq::ShareSaveRq() : parentId(0), reqId(0) {}
+
+bool ShareSaveRq::encode(std::string* out) const {
+    if (out == nullptr || !isValidShareCode(shareCode) ||
+        !isValidAccessCode(accessCode)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeString(shareCode) || !writer.writeString(accessCode) ||
+        !writer.writeU64(parentId) || !writer.writeU32(reqId)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool ShareSaveRq::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readString(&shareCode) && isValidShareCode(shareCode) &&
+           reader.readString(&accessCode) && isValidAccessCode(accessCode) &&
+           reader.readU64(&parentId) && reader.readU32(&reqId);
+}
+
+ShareSaveRs::ShareSaveRs() : code(0), ufId(0), size(0), reused(0) {}
+
+bool ShareSaveRs::encode(std::string* out) const {
+    if (out == nullptr || !isNameOk(fileName, true)) {
+        return false;
+    }
+    Writer writer;
+    if (!writer.writeU32(code) || !writer.writeU64(ufId) ||
+        !writer.writeString(fileName) || !writer.writeU64(size) ||
+        !writeU8Max(&writer, reused, 1)) {
+        return false;
+    }
+    *out = writer.data();
+    return true;
+}
+
+bool ShareSaveRs::decode(const std::string& payload) {
+    Reader reader(payload);
+    return reader.readU32(&code) && reader.readU64(&ufId) &&
+           reader.readString(&fileName) && isNameOk(fileName, true) &&
+           reader.readU64(&size) && readU8Max(&reader, &reused, 1);
+}
+
 ShareCancelRq::ShareCancelRq() {}
 
 bool ShareCancelRq::encode(std::string* out) const {

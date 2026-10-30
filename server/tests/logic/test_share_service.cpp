@@ -118,6 +118,18 @@ protected:
         return rq;
     }
 
+    cm::protocol::ShareSaveRq makeSaveRq(const std::string& code,
+                                         const std::string& accessCode,
+                                         std::uint64_t parentId,
+                                         std::uint32_t reqId) {
+        cm::protocol::ShareSaveRq rq;
+        rq.shareCode = code;
+        rq.accessCode = accessCode;
+        rq.parentId = parentId;
+        rq.reqId = reqId;
+        return rq;
+    }
+
     cm::db::BlobRow loadBlob(std::uint64_t fid) {
         cm::db::BlobRow blob;
         cm::db::FileDao dao(*m_conn);
@@ -383,6 +395,122 @@ TEST_F(ShareServiceTest, ShareAccessDoesNotChangeRefCount) {
 
     const cm::db::BlobRow after = loadBlob(fid);
     EXPECT_EQ(before.refCount, after.refCount);
+}
+
+// 转存：新增节点 + 引用计数 +1，源节点不动，不产生字节传输。
+TEST_F(ShareServiceTest, ShareSaveCreatesNodeAndIncrementsRefCount) {
+    const std::uint64_t owner = createUser();
+    const std::uint64_t fid = createBlob(4096);
+    ASSERT_GT(fid, std::uint64_t(0));
+    const cm::db::BlobRow before = loadBlob(fid);
+    const std::uint64_t srcUf = createNode(owner, "save.bin", fid);
+    ASSERT_GT(srcUf, std::uint64_t(0));
+
+    cm::protocol::ShareCreateRs created;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->create(owner, makeCreateRq(srcUf, 2, 0, 8101), &created));
+    trackShare(created.shareCode);
+    trackCode(created.shareCode);
+
+    const std::uint64_t receiver = createUser();
+    cm::protocol::ShareSaveRs rs;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8102),
+                              kClientKey, &rs));
+    EXPECT_EQ(0u, rs.code);
+    EXPECT_GT(rs.ufId, std::uint64_t(0));
+    EXPECT_EQ(std::string("save.bin"), rs.fileName);
+    EXPECT_EQ(std::uint64_t(4096), rs.size);
+    EXPECT_EQ(0, static_cast<int>(rs.reused));
+    trackNode(rs.ufId);
+
+    const cm::db::BlobRow after = loadBlob(fid);
+    EXPECT_EQ(before.refCount + 1, after.refCount);
+
+    // 源节点仍在（转存是复制一份，不是移动）
+    cm::db::FileDao dao(*m_conn);
+    cm::db::UserFileRow src;
+    EXPECT_EQ(cm::ErrorCode::Ok, dao.findUserFile(owner, srcUf, &src));
+}
+
+// 同一 reqId 重复提交（双击/超时重试）只建一个节点。
+TEST_F(ShareServiceTest, ShareSaveIdempotentByReqId) {
+    const std::uint64_t owner = createUser();
+    const std::uint64_t fid = createBlob(2048);
+    ASSERT_GT(fid, std::uint64_t(0));
+    const cm::db::BlobRow before = loadBlob(fid);
+    const std::uint64_t srcUf = createNode(owner, "idem_save.bin", fid);
+
+    cm::protocol::ShareCreateRs created;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->create(owner, makeCreateRq(srcUf, 2, 0, 8201), &created));
+    trackShare(created.shareCode);
+    trackCode(created.shareCode);
+
+    const std::uint64_t receiver = createUser();
+    const cm::protocol::ShareSaveRq rq =
+        makeSaveRq(created.shareCode, "", 0, 8202);
+
+    cm::protocol::ShareSaveRs first;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, rq, kClientKey, &first));
+    EXPECT_EQ(0u, first.code);
+    trackNode(first.ufId);
+
+    cm::protocol::ShareSaveRs second;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, rq, kClientKey, &second));
+    EXPECT_EQ(0u, second.code);
+    EXPECT_EQ(first.ufId, second.ufId);
+
+    // 只加了一次引用
+    const cm::db::BlobRow after = loadBlob(fid);
+    EXPECT_EQ(before.refCount + 1, after.refCount);
+}
+
+// 同名不同次转存：第二次自动改名，引用计数 +2。
+TEST_F(ShareServiceTest, ShareSaveRenamesOnNameConflict) {
+    const std::uint64_t owner = createUser();
+    const std::uint64_t fid = createBlob(8192);
+    ASSERT_GT(fid, std::uint64_t(0));
+    const cm::db::BlobRow before = loadBlob(fid);
+    const std::uint64_t srcUf = createNode(owner, "dup.bin", fid);
+
+    cm::protocol::ShareCreateRs created;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->create(owner, makeCreateRq(srcUf, 2, 0, 8301), &created));
+    trackShare(created.shareCode);
+    trackCode(created.shareCode);
+
+    const std::uint64_t receiver = createUser();
+    cm::protocol::ShareSaveRs first;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8302),
+                              kClientKey, &first));
+    EXPECT_EQ(0u, first.code);
+    trackNode(first.ufId);
+
+    cm::protocol::ShareSaveRs second;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8303),
+                              kClientKey, &second));
+    EXPECT_EQ(0u, second.code);
+    EXPECT_NE(first.ufId, second.ufId);
+    EXPECT_NE(first.fileName, second.fileName);
+    trackNode(second.ufId);
+
+    const cm::db::BlobRow after = loadBlob(fid);
+    EXPECT_EQ(before.refCount + 2, after.refCount);
+}
+
+// 分享码不存在：直接拒，不落任何节点。
+TEST_F(ShareServiceTest, ShareSaveRejectsMissingShare) {
+    const std::uint64_t receiver = createUser();
+    cm::protocol::ShareSaveRs rs;
+    const cm::ErrorCode rc = m_service->save(
+        receiver, makeSaveRq(nextCode(), "", 0, 8401), kClientKey, &rs);
+    EXPECT_EQ(cm::ErrorCode::NotFound, rc);
+    EXPECT_EQ(static_cast<std::uint32_t>(cm::ErrorCode::NotFound), rs.code);
 }
 
 }  // namespace

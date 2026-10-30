@@ -410,6 +410,37 @@ void handleShareCancel(const ConnectionPtr& conn,
     sendTypedRs(conn, cm::protocol::MessageType::ShareCancelRs, frame.seq, rs);
 }
 
+// 10044：转存（需登录）。clientKey 与 open 一致，只取 IP。
+void handleShareSave(const ConnectionPtr& conn,
+                     const cm::protocol::Frame& frame,
+                     ConnStateTable& states,
+                     cm::logic::ShareService& service) {
+    std::shared_ptr<ConnState> state = states.get(conn->name());
+    const std::uint64_t uid = state ? state->uid.load() : 0;
+    cm::protocol::ShareSaveRs rs;
+    if (uid == 0) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::PermissionDenied);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareSaveRs, frame.seq, rs);
+        return;
+    }
+    cm::protocol::ShareSaveRq rq;
+    if (!rq.decode(frame.payload)) {
+        rs.code = static_cast<std::uint32_t>(cm::ErrorCode::InvalidArgument);
+        sendTypedRs(conn, cm::protocol::MessageType::ShareSaveRs, frame.seq, rs);
+        return;
+    }
+    std::string clientKey = conn->peerAddress();
+    const std::string::size_type pos = clientKey.rfind(':');
+    if (pos != std::string::npos) {
+        clientKey = clientKey.substr(0, pos);
+    }
+    const cm::ErrorCode rc = service.save(uid, rq, clientKey, &rs);
+    if (rc != cm::ErrorCode::Ok && rs.code == 0) {
+        rs.code = cm::to_wire_code(rc);
+    }
+    sendTypedRs(conn, cm::protocol::MessageType::ShareSaveRs, frame.seq, rs);
+}
+
 // 10025 / 10034 / 10036 / 10038：回收站（需登录）。
 void handleDeleteFile(const ConnectionPtr& conn,
                       const cm::protocol::Frame& frame,
@@ -984,6 +1015,17 @@ int runServer(const cm::ServerConfig& cfg) {
                 handleShareCancel(conn, frame, states, shareService);
             }) != cm::ErrorCode::Ok) {
         std::fprintf(stderr, "register ShareCancel failed\n");
+        return 1;
+    }
+
+    if (registry.registerHandler(
+            static_cast<std::uint16_t>(
+                cm::protocol::MessageType::ShareSaveRq),
+            [&states, &shareService](const ConnectionPtr& conn,
+                                     const cm::protocol::Frame& frame) {
+                handleShareSave(conn, frame, states, shareService);
+            }) != cm::ErrorCode::Ok) {
+        std::fprintf(stderr, "register ShareSave failed\n");
         return 1;
     }
 

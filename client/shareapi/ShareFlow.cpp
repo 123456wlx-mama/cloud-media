@@ -89,7 +89,8 @@ QString ShareFlow::expiryText(quint64 expireAtMs) {
 }
 
 bool ShareFlow::busyOp() const {
-    return m_info.phase == SharePhase::Creating || m_info.phase == SharePhase::Opening;
+    return m_info.phase == SharePhase::Creating ||
+           m_info.phase == SharePhase::Opening || m_info.phase == SharePhase::Saving;
 }
 
 bool ShareFlow::busy() const { return busyOp(); }
@@ -139,6 +140,7 @@ void ShareFlow::openShare(const QString& shareCode, const QString& accessCode) {
     }
     m_info = ShareInfo();
     m_info.shareCode = code;
+    m_accessCode = accessCode.trimmed();
 
     protocol::ShareOpenRq rq;
     rq.shareCode = code.toStdString();
@@ -173,6 +175,57 @@ void ShareFlow::cancel(const QString& shareCode) {
     m_op = OpCancel;
     m_seq = m_net->sendRequest(t(protocol::MessageType::ShareCancelRq),
                                toBytes(payload));
+}
+
+void ShareFlow::save(quint64 parentId) {
+    if (busyOp()) {
+        return;
+    }
+    if (m_info.phase != SharePhase::Opened || m_info.shareCode.isEmpty()) {
+        failWith(0, QString::fromUtf8("请先打开分享"));
+        return;
+    }
+    protocol::ShareSaveRq rq;
+    rq.shareCode = m_info.shareCode.toStdString();
+    rq.accessCode = m_accessCode.toStdString();
+    rq.parentId = parentId;
+    // 幂等键：双击/超时重试不能建出两个节点。不能用 ufId（这里还没有），
+    // 用毫秒时间戳保证每次"用户意图"唯一。
+    rq.reqId = static_cast<std::uint32_t>(
+        QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF);
+    std::string payload;
+    if (!rq.encode(&payload)) {
+        failWith(0, QString::fromUtf8("转存参数不合法"));
+        return;
+    }
+    setPhase(SharePhase::Saving, 0, QString::fromUtf8("正在保存…"));
+    m_op = OpSave;
+    m_seq = 0;
+    if (m_net == nullptr) {
+        return;  // 单测：停在 Saving，等 applySaveRs
+    }
+    m_seq = m_net->sendRequest(t(protocol::MessageType::ShareSaveRq),
+                               toBytes(payload));
+}
+
+void ShareFlow::applySaveRs(const QByteArray& payload) {
+    protocol::ShareSaveRs rs;
+    if (!rs.decode(toStd(payload))) {
+        failWith(0, QString::fromUtf8("转存响应解析失败"));
+        return;
+    }
+    m_info.code = rs.code;
+    if (rs.code != 0) {
+        failWith(rs.code, errorText(rs.code));
+        return;
+    }
+    m_info.ufId = rs.ufId;
+    m_info.fileName = QString::fromStdString(rs.fileName);
+    m_info.size = rs.size;
+    m_info.phase = SharePhase::Opened;  // 分享仍然有效，可以继续下载
+    m_info.message = QString::fromUtf8("已保存到我的网盘");
+    emit changed();
+    emit saved(rs.ufId, m_info.fileName, rs.reused != 0);
 }
 
 void ShareFlow::applyCreateRs(const QByteArray& payload) {
@@ -271,6 +324,10 @@ void ShareFlow::onFrame(quint16 type, quint32 seq, const QByteArray& payload) {
     }
     if (type == t(protocol::MessageType::ShareCancelRs) && m_op == OpCancel) {
         applyCancelRs(payload);
+        return;
+    }
+    if (type == t(protocol::MessageType::ShareSaveRs) && m_op == OpSave) {
+        applySaveRs(payload);
         return;
     }
     if (type == t(protocol::MessageType::ErrorRs)) {

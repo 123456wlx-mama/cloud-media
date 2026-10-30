@@ -332,6 +332,104 @@ std::string issueShareTicket(cm::cache::RedisPool& pool,
     return token;
 }
 
+// 分享解析（10022 访问 / 10044 转存共用）：
+//   码归一化 → 缓存(fail-open) → 回源 → 状态/过期 → 提取码(fail-closed)。
+// 成功返回 Ok 且 meta 有效；失败时 *wireCode 为回给客户端的错误码。
+ErrorCode resolveShare(cm::cache::CacheStore& cache,
+                       cm::db::MysqlPool& mysql,
+                       cm::cache::RedisPool& redis,
+                       const std::string& rawCode,
+                       const std::string& accessCode,
+                       const std::string& clientKey,
+                       ShareMeta* meta,
+                       std::uint32_t* wireCode) {
+    if (meta == nullptr || wireCode == nullptr) {
+        return ErrorCode::InvalidArgument;
+    }
+
+    const std::string code = normalizeCode(rawCode);
+    if (!cm::db::ShareDao::isValidCode(code)) {
+        *wireCode = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    // 缓存 → 回源（fail-open）：share/{code} 命中直接用，miss 命中直接 1002。
+    const std::string shareKey = cm::cache::CacheKey::share(code);
+    const std::string missKey = cm::cache::CacheKey::shareMiss(code);
+
+    bool haveMeta = false;
+    std::string cachedValue;
+    const cm::cache::CacheStore::Result cachedResult =
+        cache.get(shareKey, &cachedValue);
+    if (cachedResult == cm::cache::CacheStore::Result::Hit) {
+        haveMeta = parseMeta(cachedValue, meta);
+    }
+    if (!haveMeta) {
+        if (cachedResult == cm::cache::CacheStore::Result::Miss) {
+            std::string missValue;
+            if (cache.get(missKey, &missValue) ==
+                cm::cache::CacheStore::Result::Hit) {
+                *wireCode = static_cast<std::uint32_t>(ErrorCode::NotFound);
+                return ErrorCode::NotFound;
+            }
+        }
+
+        std::unique_ptr<cm::db::MysqlConn> conn = mysql.acquire();
+        if (!conn) {
+            const ErrorCode err = dbPoolError(mysql);
+            *wireCode = static_cast<std::uint32_t>(err);
+            return err;
+        }
+        cm::db::ShareDao shareDao(*conn);
+        cm::db::ShareRow row;
+        const ErrorCode rc = shareDao.findByCode(code, &row);
+        if (rc == ErrorCode::NotFound) {
+            conn.reset();
+            cache.put(missKey, "1", std::chrono::milliseconds(kShareMissTtlMs));
+            *wireCode = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+        if (rc != ErrorCode::Ok) {
+            conn.reset();
+            *wireCode = static_cast<std::uint32_t>(rc);
+            return rc;
+        }
+        conn.reset();
+
+        meta->status = row.status;
+        meta->expireAtMs = expireAtToMs(row.expireAt);
+        meta->userId = row.userId;
+        meta->ufId = row.ufId;
+        meta->fileId = row.fileId;
+        meta->accessRequired = !row.accessCode.empty();
+        meta->accessCode = row.accessCode;
+        haveMeta = true;
+
+        cache.put(shareKey, encodeMeta(*meta),
+                  std::chrono::milliseconds(kShareCacheTtlMs));
+    }
+
+    if (meta->status != 0) {
+        *wireCode = static_cast<std::uint32_t>(ErrorCode::ShareExpired);
+        return ErrorCode::ShareExpired;
+    }
+    if (meta->expireAtMs != 0 && meta->expireAtMs < nowMs()) {
+        *wireCode = static_cast<std::uint32_t>(ErrorCode::ShareExpired);
+        return ErrorCode::ShareExpired;
+    }
+
+    // 提取码（fail-closed）
+    if (meta->accessRequired) {
+        const ErrorCode rc =
+            verifyAccessCode(redis, code, accessCode, meta->accessCode, clientKey);
+        if (rc != ErrorCode::Ok) {
+            *wireCode = static_cast<std::uint32_t>(rc);
+            return rc;
+        }
+    }
+    return ErrorCode::Ok;
+}
+
 }  // namespace
 
 std::string ShareService::generateCode() {
@@ -471,86 +569,14 @@ ErrorCode ShareService::open(const cm::protocol::ShareOpenRq& rq,
     }
     *out = cm::protocol::ShareOpenRs();
 
-    const std::string code = normalizeCode(rq.shareCode);
-    if (!cm::db::ShareDao::isValidCode(code)) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
-        return ErrorCode::InvalidArgument;
-    }
-
-    // 缓存 → 回源（fail-open）：share/{code} 命中直接用，miss 命中直接 1002。
-    const std::string shareKey = cm::cache::CacheKey::share(code);
-    const std::string missKey = cm::cache::CacheKey::shareMiss(code);
-
     ShareMeta meta;
-    bool haveMeta = false;
-    std::string cachedValue;
-    const cm::cache::CacheStore::Result cachedResult =
-        m_cache.get(shareKey, &cachedValue);
-    if (cachedResult == cm::cache::CacheStore::Result::Hit) {
-        haveMeta = parseMeta(cachedValue, &meta);
-    }
-    if (!haveMeta) {
-        if (cachedResult == cm::cache::CacheStore::Result::Miss) {
-            std::string missValue;
-            if (m_cache.get(missKey, &missValue) ==
-                cm::cache::CacheStore::Result::Hit) {
-                out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-                return ErrorCode::NotFound;
-            }
-        }
-
-        std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
-        if (!conn) {
-            const ErrorCode err = dbPoolError(m_mysql);
-            out->code = static_cast<std::uint32_t>(err);
-            return err;
-        }
-        cm::db::ShareDao shareDao(*conn);
-        cm::db::ShareRow row;
-        const ErrorCode rc = shareDao.findByCode(code, &row);
-        if (rc == ErrorCode::NotFound) {
-            conn.reset();
-            m_cache.put(missKey, "1", std::chrono::milliseconds(kShareMissTtlMs));
-            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
-            return ErrorCode::NotFound;
-        }
-        if (rc != ErrorCode::Ok) {
-            conn.reset();
-            out->code = static_cast<std::uint32_t>(rc);
-            return rc;
-        }
-        conn.reset();
-
-        meta.status = row.status;
-        meta.expireAtMs = expireAtToMs(row.expireAt);
-        meta.userId = row.userId;
-        meta.ufId = row.ufId;
-        meta.fileId = row.fileId;
-        meta.accessRequired = !row.accessCode.empty();
-        meta.accessCode = row.accessCode;
-        haveMeta = true;
-
-        m_cache.put(shareKey, encodeMeta(meta),
-                    std::chrono::milliseconds(kShareCacheTtlMs));
-    }
-
-    if (meta.status != 0) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::ShareExpired);
-        return ErrorCode::ShareExpired;
-    }
-    if (meta.expireAtMs != 0 && meta.expireAtMs < nowMs()) {
-        out->code = static_cast<std::uint32_t>(ErrorCode::ShareExpired);
-        return ErrorCode::ShareExpired;
-    }
-
-    // 提取码（fail-closed）
-    if (meta.accessRequired) {
-        const ErrorCode rc = verifyAccessCode(m_redis, code, rq.accessCode,
-                                              meta.accessCode, clientKey);
-        if (rc != ErrorCode::Ok) {
-            out->code = static_cast<std::uint32_t>(rc);
-            return rc;
-        }
+    std::uint32_t wireCode = 0;
+    const ErrorCode resolved =
+        resolveShare(m_cache, m_mysql, m_redis, rq.shareCode, rq.accessCode,
+                     clientKey, &meta, &wireCode);
+    if (resolved != ErrorCode::Ok) {
+        out->code = wireCode;
+        return resolved;
     }
 
     // 节点（fileName/isDir）与 blob（size/md5）信息
@@ -603,7 +629,8 @@ ErrorCode ShareService::open(const cm::protocol::ShareOpenRq& rq,
     out->fileMd5 = md5;
     out->isDir = node.isDir ? 1 : 0;
     out->expireAtMs = meta.expireAtMs;
-    out->shareTicket = issueShareTicket(m_redis, meta.userId, node.fid, code);
+    out->shareTicket = issueShareTicket(m_redis, meta.userId, node.fid,
+                                        normalizeCode(rq.shareCode));
     out->accessCodeRequired = meta.accessRequired ? 1 : 0;
     return ErrorCode::Ok;
 }
@@ -720,6 +747,143 @@ ErrorCode ShareService::cancel(std::uint64_t uid,
     out->code = 0;
     out->cancelled = cancelled ? 1 : 0;
     out->already = already ? 1 : 0;
+    return ErrorCode::Ok;
+}
+
+ErrorCode ShareService::save(std::uint64_t uid,
+                             const cm::protocol::ShareSaveRq& rq,
+                             const std::string& clientKey,
+                             cm::protocol::ShareSaveRs* out) {
+    if (out == nullptr) {
+        return ErrorCode::InvalidArgument;
+    }
+    *out = cm::protocol::ShareSaveRs();
+    if (uid == 0) {
+        out->code = static_cast<std::uint32_t>(ErrorCode::PermissionDenied);
+        return ErrorCode::PermissionDenied;
+    }
+
+    // req 幂等：同一个 reqId 重复提交（双击、超时重试）只建一个节点。
+    const std::string reqKey = cm::cache::CacheKey::shareReq(uid, rq.reqId);
+    if (rq.reqId != 0) {
+        std::string cached;
+        if (m_cache.get(reqKey, &cached) == cm::cache::CacheStore::Result::Hit) {
+            if (out->decode(cached)) {
+                return ErrorCode::Ok;  // 回放上一次的结果，不再建节点
+            }
+            // 缓存是脏数据：按未命中处理，成功后再覆盖
+        }
+    }
+
+    // 分享校验与 open 完全一致（状态/过期/提取码 fail-closed）
+    ShareMeta meta;
+    std::uint32_t wireCode = 0;
+    const ErrorCode resolved =
+        resolveShare(m_cache, m_mysql, m_redis, rq.shareCode, rq.accessCode,
+                     clientKey, &meta, &wireCode);
+    if (resolved != ErrorCode::Ok) {
+        out->code = wireCode;
+        return resolved;
+    }
+
+    std::unique_ptr<cm::db::MysqlConn> conn = m_mysql.acquire();
+    if (!conn) {
+        const ErrorCode err = dbPoolError(m_mysql);
+        out->code = static_cast<std::uint32_t>(err);
+        return err;
+    }
+    cm::db::FileDao fileDao(*conn);
+
+    // 源节点必须仍有效：分享缓存 5min，文件可能在缓存有效期内被删
+    cm::db::UserFileRow node;
+    ErrorCode rc = fileDao.findUserFile(meta.userId, meta.ufId, &node);
+    if (rc == ErrorCode::NotFound ||
+        (rc == ErrorCode::Ok &&
+         node.deletedAt != cm::db::FileDao::activeDeletedAt())) {
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+        return ErrorCode::NotFound;
+    }
+    if (rc != ErrorCode::Ok) {
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(rc);
+        return rc;
+    }
+    if (node.isDir) {
+        // 目录转存要展开整棵子树，本期不做（分享只支持单文件）
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+        return ErrorCode::InvalidArgument;
+    }
+
+    cm::db::BlobRow blob;
+    rc = fileDao.getBlobById(node.fid, &blob);
+    if (rc == ErrorCode::NotFound) {
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+        return ErrorCode::FileGone;
+    }
+    if (rc != ErrorCode::Ok) {
+        conn.reset();
+        out->code = static_cast<std::uint32_t>(rc);
+        return rc;
+    }
+
+    // 目标目录必须是自己的、未删除的目录；0 = 根目录
+    if (rq.parentId != 0) {
+        cm::db::UserFileRow parent;
+        rc = fileDao.findUserFile(uid, rq.parentId, &parent);
+        if (rc == ErrorCode::NotFound) {
+            conn.reset();
+            out->code = static_cast<std::uint32_t>(ErrorCode::NotFound);
+            return ErrorCode::NotFound;
+        }
+        if (rc != ErrorCode::Ok) {
+            conn.reset();
+            out->code = static_cast<std::uint32_t>(rc);
+            return rc;
+        }
+        if (parent.deletedAt != cm::db::FileDao::activeDeletedAt() ||
+            !parent.isDir) {
+            conn.reset();
+            out->code = static_cast<std::uint32_t>(ErrorCode::InvalidArgument);
+            return ErrorCode::InvalidArgument;
+        }
+    }
+
+    // 转存 = 秒传落库：新增节点 + blob 引用计数 +1，不搬字节。
+    // 同名同内容已存在时直接复用（reused=1），引用计数不变。
+    std::uint64_t fileId = 0;
+    std::uint64_t ufId = 0;
+    std::string finalName;
+    bool reused = false;
+    rc = fileDao.materializeInstantUpload(uid, rq.parentId, blob.md5, blob.size,
+                                          node.name, &fileId, &ufId, &finalName,
+                                          &reused);
+    conn.reset();
+    if (rc == ErrorCode::NotFound) {
+        // blob 在「命中判定」与「落库」之间被孤儿 GC 回收
+        out->code = static_cast<std::uint32_t>(ErrorCode::FileGone);
+        return ErrorCode::FileGone;
+    }
+    if (rc != ErrorCode::Ok) {
+        out->code = static_cast<std::uint32_t>(rc);
+        return rc;
+    }
+
+    out->code = 0;
+    out->ufId = ufId;
+    out->fileName = finalName;
+    out->size = blob.size;
+    out->reused = reused ? 1 : 0;
+
+    if (rq.reqId != 0) {
+        std::string payload;
+        if (out->encode(&payload)) {
+            m_cache.put(reqKey, payload,
+                        std::chrono::milliseconds(kReqResultTtlMs));
+        }
+    }
     return ErrorCode::Ok;
 }
 

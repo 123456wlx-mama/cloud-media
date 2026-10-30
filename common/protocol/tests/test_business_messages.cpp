@@ -109,6 +109,56 @@ TEST(BusinessMessagesTest, UploadChunkRoundTrip) {
     EXPECT_EQ(rs.nextHint, rsOut.nextHint);
 }
 
+// 转存（10044/10045）：分享码 + 提取码 + 目标目录 + 幂等键。
+TEST(BusinessMessagesTest, ShareSaveRoundTrip) {
+    cm::protocol::ShareSaveRq rq;
+    rq.shareCode = kShareCode;
+    rq.accessCode = "1234";
+    rq.parentId = 77;
+    rq.reqId = 9001;
+
+    const cm::protocol::ShareSaveRq rqOut = roundTrip(rq);
+    EXPECT_EQ(rq.shareCode, rqOut.shareCode);
+    EXPECT_EQ(rq.accessCode, rqOut.accessCode);
+    EXPECT_EQ(rq.parentId, rqOut.parentId);
+    EXPECT_EQ(rq.reqId, rqOut.reqId);
+
+    cm::protocol::ShareSaveRs rs;
+    rs.code = 0;
+    rs.ufId = 123456;
+    rs.fileName = "save_sample.mkv";
+    rs.size = 4096;
+    rs.reused = 1;
+
+    const cm::protocol::ShareSaveRs rsOut = roundTrip(rs);
+    EXPECT_EQ(rs.code, rsOut.code);
+    EXPECT_EQ(rs.ufId, rsOut.ufId);
+    EXPECT_EQ(rs.fileName, rsOut.fileName);
+    EXPECT_EQ(rs.size, rsOut.size);
+    EXPECT_EQ(1, static_cast<int>(rsOut.reused));
+
+    // 访问码留空也合法（无提取码的分享）
+    cm::protocol::ShareSaveRq noCode;
+    noCode.shareCode = kShareCode;
+    std::string payload;
+    EXPECT_TRUE(noCode.encode(&payload));
+}
+
+// 分享码格式非法时必须组包失败，不能把垃圾发到服务端。
+TEST(BusinessMessagesTest, ShareSaveRqRejectsBadShareCode) {
+    cm::protocol::ShareSaveRq rq;
+    rq.shareCode = "abc";
+    std::string payload;
+    EXPECT_FALSE(rq.encode(&payload));
+}
+
+TEST(BusinessMessagesTest, ShareSaveTypesAreKnown) {
+    EXPECT_TRUE(cm::protocol::isKnownType(
+        static_cast<std::uint16_t>(cm::protocol::MessageType::ShareSaveRq)));
+    EXPECT_TRUE(cm::protocol::isKnownType(
+        static_cast<std::uint16_t>(cm::protocol::MessageType::ShareSaveRs)));
+}
+
 TEST(BusinessMessagesTest, ContinueUploadBitmapRoundTrip) {
     cm::protocol::ContinueUploadRq rq;
     rq.taskId = kTaskId;
@@ -689,10 +739,13 @@ TEST(BusinessMessagesTest, MessageTypeTable) {
     EXPECT_EQ(10041u, static_cast<std::uint32_t>(MessageType::DownloadDoneRs));
     EXPECT_EQ(10042u, static_cast<std::uint32_t>(MessageType::ShareCancelRq));
     EXPECT_EQ(10043u, static_cast<std::uint32_t>(MessageType::ShareCancelRs));
+    EXPECT_EQ(10044u, static_cast<std::uint32_t>(MessageType::ShareSaveRq));
+    EXPECT_EQ(10045u, static_cast<std::uint32_t>(MessageType::ShareSaveRs));
 
     EXPECT_TRUE(cm::protocol::isKnownType(10000));
     EXPECT_TRUE(cm::protocol::isKnownType(10043));
-    EXPECT_FALSE(cm::protocol::isKnownType(10044));
+    EXPECT_TRUE(cm::protocol::isKnownType(10045));
+    EXPECT_FALSE(cm::protocol::isKnownType(10046));
     EXPECT_FALSE(cm::protocol::isKnownType(19999));
 }
 

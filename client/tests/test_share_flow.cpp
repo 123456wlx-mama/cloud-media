@@ -126,6 +126,81 @@ TEST(ShareFlowTest, CancelSuccessMovesToCancelled) {
     EXPECT_EQ(cm::shareapi::SharePhase::Cancelled, flow.info().phase);
 }
 
+// 转存必须先打开分享：没打开就点「保存到我的网盘」不该发请求。
+TEST(ShareFlowTest, SaveRequiresOpenedShare) {
+    cm::shareapi::ShareFlow flow(nullptr);
+    int failed = 0;
+    QObject::connect(&flow, &cm::shareapi::ShareFlow::failed,
+                     [&failed](quint32, const QString&) { ++failed; });
+    flow.save(0);
+    EXPECT_EQ(cm::shareapi::SharePhase::Failed, flow.info().phase);
+    EXPECT_EQ(QString::fromUtf8("请先打开分享"), flow.info().message);
+    EXPECT_EQ(1, failed);
+}
+
+// 转存成功：Saving → Opened（分享仍可下载），并带回新节点 ufId / 最终文件名。
+TEST(ShareFlowTest, SaveSuccessExposesNewNode) {
+    cm::shareapi::ShareFlow flow(nullptr);
+    flow.openShare(QString::fromUtf8("abcdef"), QString::fromUtf8("1234"));
+    flow.applyOpenRs(openRs(0, "movie.mkv", 4096,
+                            "9f8e7d6c5b4a39281706f5e4d3c2b1a0"));
+    ASSERT_EQ(cm::shareapi::SharePhase::Opened, flow.info().phase);
+
+    quint64 savedUfId = 0;
+    QString savedName;
+    bool savedReused = true;
+    QObject::connect(&flow, &cm::shareapi::ShareFlow::saved,
+                     [&savedUfId, &savedName, &savedReused](quint64 ufId,
+                                                            const QString& name,
+                                                            bool reused) {
+                         savedUfId = ufId;
+                         savedName = name;
+                         savedReused = reused;
+                     });
+
+    flow.save(0);
+    EXPECT_EQ(cm::shareapi::SharePhase::Saving, flow.info().phase);
+
+    cm::protocol::ShareSaveRs rs;
+    rs.code = 0;
+    rs.ufId = 4321;
+    rs.fileName = "movie.mkv";
+    rs.size = 4096;
+    rs.reused = 0;
+    std::string payload;
+    ASSERT_TRUE(rs.encode(&payload));
+    flow.applySaveRs(bytesOf(payload));
+
+    EXPECT_EQ(cm::shareapi::SharePhase::Opened, flow.info().phase);
+    EXPECT_EQ(4321ULL, flow.info().ufId);
+    EXPECT_EQ(4321ULL, savedUfId);
+    EXPECT_EQ(QString::fromUtf8("movie.mkv"), savedName);
+    EXPECT_FALSE(savedReused);
+}
+
+// 服务端拒绝转存：走 failed 并把错误码带出来。
+TEST(ShareFlowTest, SaveRejectedReportsCode) {
+    cm::shareapi::ShareFlow flow(nullptr);
+    flow.openShare(QString::fromUtf8("ABCDEF"), QString());
+    flow.applyOpenRs(openRs(0, "gone.bin", 1024,
+                            "9f8e7d6c5b4a39281706f5e4d3c2b1a0"));
+
+    quint32 failedCode = 0;
+    QObject::connect(&flow, &cm::shareapi::ShareFlow::failed,
+                     [&failedCode](quint32 code, const QString&) {
+                         failedCode = code;
+                     });
+    cm::protocol::ShareSaveRs rs;
+    rs.code = 1002;
+    std::string payload;
+    ASSERT_TRUE(rs.encode(&payload));
+    flow.applySaveRs(bytesOf(payload));
+
+    EXPECT_EQ(cm::shareapi::SharePhase::Failed, flow.info().phase);
+    EXPECT_EQ(1002u, failedCode);
+    EXPECT_EQ(QString::fromUtf8("分享不存在或已被取消"), flow.info().message);
+}
+
 TEST(ShareFlowTest, ErrorCodeTextMapping) {
     EXPECT_EQ(QString::fromUtf8("分享已过期"),
               cm::shareapi::ShareFlow::errorText(2003));

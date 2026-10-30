@@ -13,6 +13,23 @@
 
 namespace cm {
 namespace ui {
+namespace {
+
+QString formatSize(quint64 bytes) {
+    const double kb = 1024.0;
+    if (bytes >= static_cast<quint64>(kb * kb * kb)) {
+        return QString::fromUtf8("%1 GB").arg(bytes / (kb * kb * kb), 0, 'f', 2);
+    }
+    if (bytes >= static_cast<quint64>(kb * kb)) {
+        return QString::fromUtf8("%1 MB").arg(bytes / (kb * kb), 0, 'f', 1);
+    }
+    if (bytes >= static_cast<quint64>(kb)) {
+        return QString::fromUtf8("%1 KB").arg(bytes / kb, 0, 'f', 1);
+    }
+    return QString::fromUtf8("%1 B").arg(bytes);
+}
+
+}  // namespace
 
 ShareDialog::ShareDialog(const shareapi::ShareInfo& info, QWidget* parent)
     : QDialog(parent), m_shareCode(info.shareCode) {
@@ -88,6 +105,67 @@ void ShareDialog::copy(const QString& text, const QString& what) {
     QApplication::clipboard()->setText(text);
     QMessageBox::information(this, QString::fromUtf8("已复制"),
                              QString::fromUtf8("%1已复制到剪贴板").arg(what));
+}
+
+ShareReceiveDialog::ShareReceiveDialog(const shareapi::ShareInfo& info,
+                                       QWidget* parent)
+    : QDialog(parent), m_choice(None) {
+    setObjectName(QString::fromUtf8("shareReceiveDialog"));
+    setWindowTitle(QString::fromUtf8("分享内容"));
+    setMinimumWidth(440);
+
+    QVBoxLayout* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(24, 20, 24, 20);
+    layout->setSpacing(14);
+
+    QLabel* title = new QLabel(QString::fromUtf8("对方分享给你一个文件"), this);
+    title->setObjectName(QString::fromUtf8("brandTitle"));
+    layout->addWidget(title);
+
+    QLabel* name = new QLabel(info.fileName, this);
+    name->setObjectName(QString::fromUtf8("shareCode"));
+    name->setWordWrap(true);
+    name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(name);
+
+    QFormLayout* form = new QFormLayout();
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->addRow(QString::fromUtf8("大小"),
+                 new QLabel(formatSize(info.size), this));
+    form->addRow(QString::fromUtf8("有效期"),
+                 new QLabel(shareapi::ShareFlow::expiryText(info.expireAtMs), this));
+    layout->addLayout(form);
+
+    QLabel* hint = new QLabel(
+        QString::fromUtf8("保存到我的网盘：只加一份文件记录，不占下载流量，"
+                          "保存后出现在左侧当前目录。\n"
+                          "下载到本地：把文件取到本机「下载」文件夹。"),
+        this);
+    hint->setObjectName(QString::fromUtf8("hintText"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    QHBoxLayout* bottom = new QHBoxLayout();
+    QPushButton* cancel = new QPushButton(QString::fromUtf8("取消"), this);
+    QPushButton* download = new QPushButton(QString::fromUtf8("下载到本地"), this);
+    download->setObjectName(QString::fromUtf8("rowButton"));
+    QPushButton* save = new QPushButton(QString::fromUtf8("保存到我的网盘"), this);
+    save->setObjectName(QString::fromUtf8("primaryButton"));
+    bottom->addWidget(cancel);
+    bottom->addStretch(1);
+    bottom->addWidget(download);
+    bottom->addWidget(save);
+    layout->addLayout(bottom);
+
+    connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(download, &QPushButton::clicked, this, [this]() {
+        m_choice = Download;
+        accept();
+    });
+    connect(save, &QPushButton::clicked, this, [this]() {
+        m_choice = Save;
+        accept();
+    });
 }
 
 ShareOpenDialog::ShareOpenDialog(shareapi::ShareFlow* flow, QWidget* parent)

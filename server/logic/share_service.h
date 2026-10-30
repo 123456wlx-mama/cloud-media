@@ -62,6 +62,15 @@ public:
                          const cm::protocol::ShareCancelRq& rq,
                          cm::protocol::ShareCancelRs* out);
 
+    // 10044：转存（把分享的文件存一份到自己网盘）。
+    // 只新增 t_user_file 节点 + blob 引用计数 +1，不产生任何字节传输
+    // （与秒传同款落库逻辑，复用 FileDao::materializeInstantUpload）。
+    // clientKey 与 open 相同，是提取码失败计数的作用域。
+    cm::ErrorCode save(std::uint64_t uid,
+                       const cm::protocol::ShareSaveRq& rq,
+                       const std::string& clientKey,
+                       cm::protocol::ShareSaveRs* out);
+
 private:
     std::string nextCode() const;
 

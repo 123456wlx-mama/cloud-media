@@ -53,6 +53,8 @@ enum class MessageType : std::uint16_t {
     DownloadDoneRs = 10041,
     ShareCancelRq = 10042,
     ShareCancelRs = 10043,
+    ShareSaveRq = 10044,  // 转存：把分享的文件存一份到自己网盘（只加引用，不传字节）
+    ShareSaveRs = 10045,
 
     HelloReq = 11000,
     HelloRs = 11001,
@@ -72,7 +74,8 @@ inline bool isKnownType(std::uint16_t type) {
         case 10025: case 10026: case 10027: case 10028: case 10029:
         case 10030: case 10031: case 10032: case 10033: case 10034:
         case 10035: case 10036: case 10037: case 10038: case 10039:
-        case 10040: case 10041: case 10042: case 10043:
+        case 10040: case 10041: case 10042: case 10043: case 10044:
+        case 10045:
         case 11000: case 11001: case 11002: case 11003: case 11004:
         case 11005:
             return true;

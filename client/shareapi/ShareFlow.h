@@ -22,7 +22,8 @@ enum class SharePhase {
     Opening,
     Opened,
     Cancelled,
-    Failed
+    Failed,
+    Saving  // 追加在末尾，避免打乱已有取值
 };
 
 struct ShareInfo {
@@ -51,6 +52,9 @@ public:
     void create(quint64 ufId, quint8 expirePolicy = 2, quint8 accessMode = 1);
     void openShare(const QString& shareCode, const QString& accessCode);
     void cancel(const QString& shareCode);
+    // 转存：把已打开（Opened）的分享保存到自己网盘。
+    // parentId = 保存到哪个目录（0 = 根）。只加引用不传字节，通常几百毫秒返回。
+    void save(quint64 parentId = 0);
     void reset();
 
     const ShareInfo& info() const { return m_info; }
@@ -65,6 +69,7 @@ public:
     void applyCreateRs(const QByteArray& payload);
     void applyOpenRs(const QByteArray& payload);
     void applyCancelRs(const QByteArray& payload);
+    void applySaveRs(const QByteArray& payload);
     void applyErrorRs(quint32 code, const QString& message);
 
 signals:
@@ -72,6 +77,8 @@ signals:
     void created();
     void opened();
     void cancelled(const QString& shareCode);
+    // 转存成功：ufId 是新节点，fileName 是最终落库名（同名会自动加序号）
+    void saved(quint64 ufId, const QString& fileName, bool reused);
     void failed(quint32 code, const QString& text);
 
 private slots:
@@ -80,7 +87,7 @@ private slots:
     void onAborted(quint32 seq, quint16 type, const QString& reason);
 
 private:
-    enum Op { OpNone = 0, OpCreate, OpOpen, OpCancel };
+    enum Op { OpNone = 0, OpCreate, OpOpen, OpCancel, OpSave };
 
     void setPhase(SharePhase phase, quint32 code, const QString& message);
     void failWith(quint32 code, const QString& text);
@@ -88,6 +95,7 @@ private:
 
     netapi::NetClient* m_net;
     ShareInfo m_info;
+    QString m_accessCode;  // 打开时用户输入的提取码，转存要再带一次
     quint32 m_seq;
     Op m_op;
 };

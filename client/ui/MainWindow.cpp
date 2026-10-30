@@ -177,6 +177,17 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
                 &MainWindow::onShareCreated);
         connect(m_share, &shareapi::ShareFlow::opened, this,
                 &MainWindow::onShareOpened);
+        connect(m_share, &shareapi::ShareFlow::saved, this,
+                [this](quint64, const QString& name, bool reused) {
+                    if (m_toast != nullptr) {
+                        m_toast->showText(
+                            reused ? QString::fromUtf8("「%1」已在网盘中，已复用")
+                                         .arg(name)
+                                   : QString::fromUtf8("已保存「%1」到我的网盘")
+                                         .arg(name));
+                    }
+                    refreshList();  // 转存后节点在当前目录里可见
+                });
         connect(m_share, &shareapi::ShareFlow::cancelled, this,
                 [this](const QString&) {
                     m_toast->showText(QString::fromUtf8("已取消分享"));
@@ -579,6 +590,16 @@ void MainWindow::onShareCreated() {
 void MainWindow::onShareOpened() {
     const shareapi::ShareInfo& info = m_share->info();
     if (m_queue == nullptr || info.shareTicket.isEmpty()) {
+        return;
+    }
+    // 打开分享成功后让用户二选一：转存（只加引用、进目录树）还是下载到本机。
+    // 两者不是一回事——转存不产生字节传输，下载不会在云端留节点。
+    ShareReceiveDialog dialog(info, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;  // 直接关掉：既不保存也不下载
+    }
+    if (dialog.choice() == ShareReceiveDialog::Save) {
+        m_share->save(currentParent());  // 存到当前浏览目录
         return;
     }
     m_queue->enqueueSharedDownload(info.shareTicket, info.fileName, info.size);
