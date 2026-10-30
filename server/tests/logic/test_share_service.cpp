@@ -468,8 +468,9 @@ TEST_F(ShareServiceTest, ShareSaveIdempotentByReqId) {
     EXPECT_EQ(before.refCount + 1, after.refCount);
 }
 
-// 同名不同次转存：第二次自动改名，引用计数 +2。
-TEST_F(ShareServiceTest, ShareSaveRenamesOnNameConflict) {
+// 同一分享转存两次（不同 reqId、同一目录）：内容+名字都相同 → 复用已有节点，
+// 不再造第二个副本，引用计数只加一次。这是 materializeInstantUpload 的去重语义。
+TEST_F(ShareServiceTest, ShareSaveTwiceReusesExistingNode) {
     const std::uint64_t owner = createUser();
     const std::uint64_t fid = createBlob(8192);
     ASSERT_GT(fid, std::uint64_t(0));
@@ -488,6 +489,7 @@ TEST_F(ShareServiceTest, ShareSaveRenamesOnNameConflict) {
               m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8302),
                               kClientKey, &first));
     EXPECT_EQ(0u, first.code);
+    EXPECT_EQ(0, static_cast<int>(first.reused));
     trackNode(first.ufId);
 
     cm::protocol::ShareSaveRs second;
@@ -495,12 +497,46 @@ TEST_F(ShareServiceTest, ShareSaveRenamesOnNameConflict) {
               m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8303),
                               kClientKey, &second));
     EXPECT_EQ(0u, second.code);
-    EXPECT_NE(first.ufId, second.ufId);
-    EXPECT_NE(first.fileName, second.fileName);
-    trackNode(second.ufId);
+    EXPECT_EQ(first.ufId, second.ufId);
+    EXPECT_EQ(first.fileName, second.fileName);
+    EXPECT_EQ(1, static_cast<int>(second.reused));
 
     const cm::db::BlobRow after = loadBlob(fid);
-    EXPECT_EQ(before.refCount + 2, after.refCount);
+    EXPECT_EQ(before.refCount + 1, after.refCount);
+}
+
+// 目标目录里已有同名但**不同内容**的文件：转存自动改名，引用计数 +1。
+TEST_F(ShareServiceTest, ShareSaveRenamesOnNameConflict) {
+    const std::uint64_t owner = createUser();
+    const std::uint64_t srcFid = createBlob(4096);
+    ASSERT_GT(srcFid, std::uint64_t(0));
+    const cm::db::BlobRow before = loadBlob(srcFid);
+    const std::uint64_t srcUf = createNode(owner, "dup.bin", srcFid);
+
+    cm::protocol::ShareCreateRs created;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->create(owner, makeCreateRq(srcUf, 2, 0, 8311), &created));
+    trackShare(created.shareCode);
+    trackCode(created.shareCode);
+
+    // 接收方根目录已经有一个同名文件（内容不同，f_id 不同）
+    const std::uint64_t receiver = createUser();
+    const std::uint64_t otherFid = createBlob(8192);
+    ASSERT_GT(otherFid, std::uint64_t(0));
+    const std::uint64_t mine = createNode(receiver, "dup.bin", otherFid);
+    ASSERT_GT(mine, std::uint64_t(0));
+
+    cm::protocol::ShareSaveRs rs;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->save(receiver, makeSaveRq(created.shareCode, "", 0, 8312),
+                              kClientKey, &rs));
+    EXPECT_EQ(0u, rs.code);
+    EXPECT_NE(mine, rs.ufId);
+    EXPECT_NE(std::string("dup.bin"), rs.fileName);
+    trackNode(rs.ufId);
+
+    const cm::db::BlobRow after = loadBlob(srcFid);
+    EXPECT_EQ(before.refCount + 1, after.refCount);
 }
 
 // 分享码不存在：直接拒，不落任何节点。

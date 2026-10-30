@@ -167,15 +167,15 @@ TEST(HandlerRegistryTest, AppliesAdmissionBeforeHandler) {
     EXPECT_EQ(1, releaseCalls);
 }
 
-// 类型表必须与 U-1 的 message_type.h 一致：10000~10043 与 11000~11005。
+// 类型表必须与 U-1 的 message_type.h 一致：10000~10045 与 11000~11005。
 TEST(HandlerRegistryTest, TypeTableMatchesU1) {
-    for (std::uint16_t type = 10000; type <= 10043; ++type) {
+    for (std::uint16_t type = 10000; type <= 10045; ++type) {
         EXPECT_TRUE(cm::protocol::isKnownType(type)) << "type=" << type;
     }
     for (std::uint16_t type = 11000; type <= 11005; ++type) {
         EXPECT_TRUE(cm::protocol::isKnownType(type)) << "type=" << type;
     }
-    EXPECT_FALSE(cm::protocol::isKnownType(10044));
+    EXPECT_FALSE(cm::protocol::isKnownType(10046));
     EXPECT_FALSE(cm::protocol::isKnownType(10999));
 
     EXPECT_EQ(10004, static_cast<int>(MessageType::UploadInitRq));
@@ -185,6 +185,8 @@ TEST(HandlerRegistryTest, TypeTableMatchesU1) {
     EXPECT_EQ(10024, static_cast<int>(MessageType::QuickUploadRs));
     EXPECT_EQ(10030, static_cast<int>(MessageType::UploadCompleteRq));
     EXPECT_EQ(10043, static_cast<int>(MessageType::ShareCancelRs));
+    EXPECT_EQ(10044, static_cast<int>(MessageType::ShareSaveRq));
+    EXPECT_EQ(10045, static_cast<int>(MessageType::ShareSaveRs));
 }
 
 // 统一错误映射表（U-3b）。
