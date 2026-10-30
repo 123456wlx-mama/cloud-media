@@ -190,6 +190,64 @@ TEST_F(RecycleServiceTest, RestoreIncrementsOnce) {
     EXPECT_EQ(std::uint32_t(1), loadBlob(fid).refCount);
 }
 
+// 删文件夹：只软删这一个目录节点，子节点保持可用（不级联、不动引用计数）。
+// 用户视角与真网盘一致：回收站里只有一条"文件夹"，恢复后里面的内容都在。
+TEST_F(RecycleServiceTest, DeleteDirectoryKeepsChildren) {
+    const std::uint64_t fid = createBlob(1024);
+    ASSERT_GT(fid, std::uint64_t(0));
+    ASSERT_EQ(std::uint32_t(1), loadBlob(fid).refCount);
+
+    const std::uint64_t dirId = createChild(0, "dir_del", 0, true);
+    ASSERT_GT(dirId, std::uint64_t(0));
+    const std::uint64_t childId = createChild(dirId, "inside.bin", fid, false);
+    ASSERT_GT(childId, std::uint64_t(0));
+
+    cm::protocol::DeleteFileRs rs;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->deleteFile(m_uid, makeDeleteRq(dirId), &rs));
+    EXPECT_EQ(0u, rs.code);
+    EXPECT_EQ(1, static_cast<int>(rs.deleted));
+
+    // 目录已软删；子节点仍是 active（不级联）
+    cm::db::FileDao dao(*m_conn);
+    cm::db::UserFileRow node;
+    ASSERT_EQ(cm::ErrorCode::Ok, dao.findUserFile(m_uid, dirId, &node));
+    EXPECT_NE(cm::db::FileDao::activeDeletedAt(), node.deletedAt);
+    ASSERT_EQ(cm::ErrorCode::Ok, dao.findUserFile(m_uid, childId, &node));
+    EXPECT_EQ(cm::db::FileDao::activeDeletedAt(), node.deletedAt);
+
+    // 目录没有 f_id，减不了计数；子节点还在引用，所以计数不变
+    EXPECT_EQ(std::uint32_t(1), loadBlob(fid).refCount);
+
+    // 回收站里只出现目录这一条，子节点不单独出现
+    cm::protocol::RecycleListRs listRs;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->listRecycle(m_uid, makeListRq(50, 0, 0), &listRs));
+    bool hasDir = false;
+    bool hasChild = false;
+    for (std::size_t i = 0; i < listRs.items.size(); ++i) {
+        if (listRs.items[i].ufId == dirId) {
+            hasDir = true;
+            EXPECT_EQ(1, static_cast<int>(listRs.items[i].isDir));
+        }
+        if (listRs.items[i].ufId == childId) {
+            hasChild = true;
+        }
+    }
+    EXPECT_TRUE(hasDir);
+    EXPECT_FALSE(hasChild);
+
+    // 恢复目录后子树回来（子节点一直是 active，只是父目录不可达）
+    cm::protocol::RestoreRs restoreRs;
+    ASSERT_EQ(cm::ErrorCode::Ok,
+              m_service->restore(m_uid, makeRestoreRq(dirId, ""), &restoreRs));
+    EXPECT_EQ(0u, restoreRs.code);
+    EXPECT_EQ(dirId, restoreRs.ufId);
+    ASSERT_EQ(cm::ErrorCode::Ok, dao.findUserFile(m_uid, childId, &node));
+    EXPECT_EQ(cm::db::FileDao::activeDeletedAt(), node.deletedAt);
+    EXPECT_EQ(std::uint32_t(1), loadBlob(fid).refCount);
+}
+
 TEST_F(RecycleServiceTest, PurgeFileNoDoubleDecrement) {
     const std::uint64_t fid = createBlob(1024);
     const std::uint64_t ufId = createNode(m_uid, "purge.bin", fid);

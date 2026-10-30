@@ -127,6 +127,9 @@ void RecycleDialog::rebuild() {
         layout->addWidget(meta);
 
         const quint64 ufId = entry.ufId;
+        // C++11 没有 init-capture，lambda 里要用到的字段先取成局部变量
+        const bool isDir = entry.isDir;
+        const QString entryName = entry.name;
         QPushButton* restore = new QPushButton(QString::fromUtf8("恢复"), row);
         restore->setObjectName(QString::fromUtf8("rowButton"));
         connect(restore, &QPushButton::clicked, this, [this, ufId]() {
@@ -138,13 +141,19 @@ void RecycleDialog::rebuild() {
 
         QPushButton* purge = new QPushButton(QString::fromUtf8("彻底删除"), row);
         purge->setObjectName(QString::fromUtf8("dangerButton"));
-        connect(purge, &QPushButton::clicked, this, [this, ufId]() {
+        connect(purge, &QPushButton::clicked, this, [this, ufId, isDir, entryName]() {
             if (m_flow == nullptr) {
                 return;
             }
-            if (QMessageBox::question(this, QString::fromUtf8("彻底删除"),
-                                      QString::fromUtf8("彻底删除后无法恢复，继续？"))
-                == QMessageBox::Yes) {
+            // 文件夹的彻底删除会级联删掉整棵子树（服务端 purge 递归收集子节点），
+            // 提示必须写清楚，否则用户以为只删了一个空目录。
+            const QString text =
+                isDir ? QString::fromUtf8("「%1」及其内部所有内容都会被彻底删除，"
+                                          "无法恢复。继续？")
+                            .arg(entryName)
+                      : QString::fromUtf8("彻底删除后无法恢复，继续？");
+            if (QMessageBox::question(this, QString::fromUtf8("彻底删除"), text) ==
+                QMessageBox::Yes) {
                 m_flow->purge(ufId);
             }
         });

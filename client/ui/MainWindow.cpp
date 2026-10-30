@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPushButton>
 #include <QSplitter>
@@ -617,7 +618,15 @@ void MainWindow::onDeleteSelected() {
     }
     const QString name = m_model->nameAt(row);
     if (m_model->isDirAt(row)) {
-        m_toast->showText(QString::fromUtf8("文件夹删除暂未开放"));
+        // 文件夹：只软删这一个目录节点（不级联子节点），回收站里恢复即可整树回来。
+        // 用户可感知的语义与真网盘一致：回收站只看到一条"文件夹"，恢复后内容都在。
+        if (QMessageBox::question(
+                this, QString::fromUtf8("删除文件夹"),
+                QString::fromUtf8("「%1」及其内容会移入回收站，可从回收站恢复。继续？")
+                    .arg(name)) != QMessageBox::Yes) {
+            return;
+        }
+        m_recycle->deleteFile(m_model->ufIdAt(row), name);
         return;
     }
     if (hasActiveTransferFor(name)) {
