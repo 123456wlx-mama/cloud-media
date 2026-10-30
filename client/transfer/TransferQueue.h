@@ -98,6 +98,7 @@ private slots:
 private:
     enum RequestKind {
         ReqUploadInit = 1,
+        ReqContinueUpload,
         ReqUploadChunk,
         ReqUploadComplete,
         ReqDownloadStat,
@@ -112,6 +113,12 @@ private:
 
     int nextTaskId();
     void pump();
+    // 摘掉队列里第 index 条任务（连同 SQLite 残留），只用于播放任务的去重
+    void dropTask(int index);
+    // 下载任务的唯一构造入口：playback 必须在启动前定好（startDownload 靠它走缓存快判）
+    int addDownloadTask(quint64 ufId, const QString& shareTicket,
+                        const QString& remoteName, quint64 size, bool transient,
+                        bool playback);
     void touch(int taskId, bool persist);
     void setState(TransferTask* task, TaskState state);
     void markSpeed(TransferTask* task);
@@ -123,6 +130,9 @@ private:
     void startUpload(TransferTask* task);
     // MD5 就绪后组 UploadInitRq 并发出
     void sendUploadInit(TransferTask* task);
+    // 暂停后继续：先问服务端「已经收到哪些分片」（10028/10029），再补缺口。
+    // 不能重新 UploadInit —— 服务端每次 init 都会新建任务，等于从第 0 片重来。
+    void sendContinueUpload(TransferTask* task);
     void sendNextChunk(TransferTask* task);
     void startDownload(TransferTask* task);
     void requestDownloadOpen(TransferTask* task);
@@ -133,6 +143,7 @@ private:
 
     void* taskPtr(int taskId);
     void handleUploadInit(TransferTask* task, const QByteArray& payload);
+    void handleContinueUpload(TransferTask* task, const QByteArray& payload);
     void handleUploadChunk(TransferTask* task, const QByteArray& payload);
     void handleUploadComplete(TransferTask* task, const QByteArray& payload);
     void handleDownloadStat(TransferTask* task, const QByteArray& payload);

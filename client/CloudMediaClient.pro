@@ -18,6 +18,13 @@ CONFIG += object_parallel_to_source
 TEMPLATE = app
 TARGET = cloud-media-client
 
+# 32 位进程默认只有 2GB 用户态地址空间：1080p 解码每帧数 MB，加上大窗口的
+# 光栅后备存储，很容易撞墙（CreateDIBSection / malloc 失败 → 进程异常退出）。
+# LARGE_ADDRESS_AWARE 让 64 位 Windows 上的 32 位 exe 用满 4GB。
+win32-g++:contains(QT_ARCH, i386) {
+    QMAKE_LFLAGS += -Wl,--large-address-aware
+}
+
 # 客户端源码根（用 "ui/MainWindow.h" 这种写法）
 INCLUDEPATH += $$PWD
 

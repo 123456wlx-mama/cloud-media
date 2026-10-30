@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QMetaObject>
 #include <QString>
+#include <QStringList>
 
 #include <string>
 
@@ -80,6 +81,35 @@ TEST_F(TransferQueueTest, PauseFreesSlotAndResumeRequeues) {
     queue.pause(c);
     EXPECT_EQ(cm::transfer::TaskState::Running, queue.find(a)->state);
     EXPECT_EQ(cm::transfer::TaskState::Running, queue.find(b)->state);
+}
+
+// 回归：暂停后点「继续」不能把上传进度清零。
+// 修复前 startUpload() 无条件 nextChunk=0 / bytesDone=0，然后重新 UploadInit，
+// 服务端每次都新建任务 → 从第 0 片重传，界面上进度条直接从 0 开始。
+TEST(TransferQueueUploadResume, ResumeKeepsProgressInsteadOfRestarting) {
+    cm::transfer::TransferQueue queue(nullptr, nullptr);  // 无网络：只走调度，不发请求
+    const int id = queue.enqueueUpload(
+        QString::fromUtf8("C:/tmp/cm_resume_progress.bin"), "cm_resume_progress.bin");
+    cm::transfer::TransferTask* task = queue.find(id);
+    ASSERT_NE(nullptr, task);
+
+    // 造一个"已传 3 片"的任务状态（等价于从 SQLite 恢复出来的暂停任务）
+    task->taskId = QString::fromStdString(std::string(32, 'a'));
+    task->chunkSize = 4194304;
+    task->totalChunks = 8;
+    task->nextChunk = 3;
+    task->bytesDone = static_cast<quint64>(3) * 4194304;
+    queue.pause(id);
+    ASSERT_EQ(cm::transfer::TaskState::Paused, queue.find(id)->state);
+
+    queue.resume(id);
+    task = queue.find(id);
+    ASSERT_NE(nullptr, task);
+    EXPECT_EQ(cm::transfer::TaskState::Running, task->state);
+    EXPECT_EQ(static_cast<quint64>(3) * 4194304, task->bytesDone)
+        << "继续上传把 bytesDone 清零了，进度条会从 0 重新走";
+    EXPECT_EQ(static_cast<quint32>(3), task->nextChunk)
+        << "继续上传把 nextChunk 归零了，会从第 0 片重传";
 }
 
 TEST_F(TransferQueueTest, CancelIsTerminal) {
@@ -222,6 +252,79 @@ TEST(TransferQueueWrite, WriteFailureDoesNotMarkBlockDone) {
     EXPECT_EQ(cm::transfer::TaskState::Failed, queue.find(id)->state);
 
     QDir(partPath).removeRecursively();
+}
+
+// 回归：同一部片子重复双击只能有一条播放任务。
+// 修复前每次 enqueuePlaybackDownload 都新建任务，缓存命中后立刻变「已完成」，
+// 传输中心里同一部片子会堆出 N 条同名记录（切走时还多一条「已取消」）。
+TEST(TransferQueuePlaybackReuse, SecondPlayReusesTaskAndAddsNoRecord) {
+    const QString name = QString::fromUtf8("cm_reuse_%1.mkv")
+                             .arg(QCoreApplication::applicationPid());
+    const QString part = cm::transfer::playbackCacheRoot() +
+                         QString::fromUtf8("/") + name +
+                         QString::fromUtf8(".part");
+    QFile::remove(part);
+    {
+        QFile file(part);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(1024, file.write(QByteArray(1024, 'x')));
+    }
+
+    cm::transfer::TransferQueue queue(nullptr, nullptr);  // 无网络：只走缓存命中分支
+    const int first = queue.enqueuePlaybackDownload(77, name, 1024);
+    ASSERT_NE(0, first);
+    ASSERT_NE(nullptr, queue.find(first));
+    ASSERT_EQ(cm::transfer::TaskState::Done, queue.find(first)->state)
+        << "缓存完整时应直接判定完成（秒开），不该重新下载";
+    EXPECT_EQ(static_cast<quint64>(1024), queue.find(first)->readableBytes);
+    const int sizeBefore = queue.tasks().size();
+
+    const int second = queue.enqueuePlaybackDownload(77, name, 1024);
+    EXPECT_EQ(first, second) << "同一文件重复点播应复用已有任务";
+    EXPECT_EQ(sizeBefore, queue.tasks().size()) << "不该再多出一条下载记录";
+
+    QFile::remove(part);
+}
+
+// 换片后旧记录要保留（不许"凭空消失"），但同一部片子只能有一条。
+TEST(TransferQueuePlaybackReuse, SwitchingFilmKeepsOneRecordPerFile) {
+    const QString suffix = QString::number(QCoreApplication::applicationPid());
+    const QString nameA = QString::fromUtf8("cm_switch_a_%1.mkv").arg(suffix);
+    const QString nameB = QString::fromUtf8("cm_switch_b_%1.mkv").arg(suffix);
+    const QString root = cm::transfer::playbackCacheRoot();
+    QStringList parts;
+    parts << root + QString::fromUtf8("/") + nameA + QString::fromUtf8(".part")
+          << root + QString::fromUtf8("/") + nameB + QString::fromUtf8(".part");
+    for (int i = 0; i < parts.size(); ++i) {
+        QFile::remove(parts.at(i));
+        QFile file(parts.at(i));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(1024, file.write(QByteArray(1024, 'x')));
+    }
+
+    cm::transfer::TransferQueue queue(nullptr, nullptr);
+    const int idA = queue.enqueuePlaybackDownload(101, nameA, 1024);
+    ASSERT_NE(0, idA);
+    const int idB = queue.enqueuePlaybackDownload(102, nameB, 1024);
+    ASSERT_NE(0, idB);
+    EXPECT_NE(idA, idB);
+    EXPECT_NE(nullptr, queue.find(idA)) << "换片后旧的播放记录不该消失";
+
+    // 再点回 A：复用原来的记录，不新增
+    const int again = queue.enqueuePlaybackDownload(101, nameA, 1024);
+    EXPECT_EQ(idA, again);
+
+    int playbackCount = 0;
+    const QVector<cm::transfer::TransferTask>& tasks = queue.tasks();
+    for (int i = 0; i < tasks.size(); ++i) {
+        if (tasks.at(i).playback) {
+            ++playbackCount;
+        }
+    }
+    EXPECT_EQ(2, playbackCount) << "两部片子两条记录，重复点播不新增";
+
+    QFile::remove(parts.at(0));
+    QFile::remove(parts.at(1));
 }
 
 TEST(TransferBitmap, SetTestCountAndFirstMissing) {

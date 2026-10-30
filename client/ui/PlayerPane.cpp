@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -72,7 +73,8 @@ protected:
 PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
                        bool forcePainter)
     : QWidget(parent), m_queue(queue), m_player(nullptr), m_surface(nullptr),
-      m_playButton(nullptr), m_slider(nullptr), m_timeLabel(nullptr),
+      m_layout(nullptr), m_fullWindow(nullptr), m_playButton(nullptr),
+      m_slider(nullptr), m_timeLabel(nullptr),
       m_volume(nullptr), m_fullButton(nullptr), m_emptyHint(nullptr),
       m_overlay(nullptr), m_overlayLabel(nullptr), m_errorPanel(nullptr),
       m_errorLabel(nullptr), m_fallbackButton(nullptr), m_bufferTimer(nullptr),
@@ -81,6 +83,7 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
     setObjectName(QString::fromUtf8("playerPane"));
 
     QVBoxLayout* layout = new QVBoxLayout(this);
+    m_layout = layout;  // 全屏退出时要把渲染控件插回原位（header=0, 画布=1, 控制条=2）
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
@@ -100,6 +103,8 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
     m_surface = createVideoSurface(this, forcePainter);
     qInfo("player surface: %s", qPrintable(m_surface->backendName()));
     layout->addWidget(m_surface->widget(), 1);
+    // 画布尺寸一变就告诉播放器按显示像素出帧（窗口缩放、进出全屏都会走这里）
+    m_surface->widget()->installEventFilter(this);
 
     // 空态做成画布上方的浮层（不进布局）：否则它和渲染控件各占 1 份 stretch，
     // 播放时视频只拿到半屏、缩在一角。
@@ -212,6 +217,9 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
             [this](const QImage& image) {
                 m_surface->setImage(image);
                 m_emptyHint->hide();
+                // 回执：播放线程靠它做背压，GUI 跟不上的帧会被直接丢掉，
+                // 而不是排队堆成几十份大图把 32 位进程撑爆。
+                m_player->notifyFrameConsumed();
             });
     connect(m_player, &player::PlayerCore::opened, this,
             [this](qint64 durationMs, int, int) {
@@ -236,6 +244,8 @@ PlayerPane::PlayerPane(transfer::TransferQueue* queue, QWidget* parent,
 }
 
 void PlayerPane::shutdown() {
+    // 全屏窗口里的画布是本控件的子对象，得先收回来再退
+    exitFullscreen();
     if (m_queue != nullptr && m_taskId != 0) {
         transfer::TransferTask* task = m_queue->find(m_taskId);
         if (task != nullptr && !task->isTerminal()) {
@@ -251,6 +261,7 @@ void PlayerPane::shutdown() {
 }
 
 PlayerPane::~PlayerPane() {
+    exitFullscreen();  // 画布必须先回到自己名下，否则会跟着全屏窗口一起泄漏
     // 控件析构阶段绝不能再碰 TransferQueue：emit changed 会进到正在销毁的
     // TransferPane，Qt 直接崩在 reparentFocusWidgets。
     if (m_queue != nullptr) {
@@ -282,12 +293,24 @@ void PlayerPane::playRemoteFile(quint64 ufId, const QString& name, quint64 size)
     m_buffering = true;
     m_emptyHint->hide();
     m_bufferTimer->start();
-    emit notice(QString::fromUtf8("正在缓冲「%1」").arg(name));
+    // 缓存命中时任务在 enqueue 里就已经是「已完成」，不会再发 changed 给我们，
+    // 这里主动同步一次，否则要等下一次队列变化才开播（表现为"点了没反应"）。
+    onQueueChanged();
+    const transfer::TransferTask* task = m_queue->find(m_taskId);
+    if (task == nullptr || task->state != transfer::TaskState::Done) {
+        emit notice(QString::fromUtf8("正在缓冲「%1」").arg(name));
+    } else {
+        // 缓存命中：这次没有真实下载，传输中心显示的是「已缓存 · 秒开」，
+        // 不说清楚用户会以为"边下边播没生效"。
+        emit notice(QString::fromUtf8("「%1」已缓存，秒开").arg(name));
+    }
 }
 
 void PlayerPane::openPath(const QString& path, bool progressive,
                           qint64 totalBytes) {
     m_localPath = path;
+    // 先同步画布尺寸：首帧就按显示像素出，不会先来一帧全尺寸大图
+    syncDisplaySize();
     m_player->open(path, progressive, totalBytes);
     if (!m_player->isOpen()) {
         // 数据还不够（典型：moov 在尾部、刚下到第一块）：保持缓冲态，
@@ -327,7 +350,13 @@ void PlayerPane::cleanupSource(bool keepCache) {
     transfer::TransferTask* task = m_queue->find(m_taskId);
     if (task != nullptr) {
         if (!task->isTerminal()) {
-            m_queue->cancel(m_taskId);
+            // keepCache=true 是「切换影片」：断点要留着，语义上是暂停而不是取消。
+            // 取消会在传输中心留下一条「已取消」，而这条记录其实是可恢复的。
+            if (keepCache) {
+                m_queue->pause(m_taskId);
+            } else {
+                m_queue->cancel(m_taskId);
+            }
             task = m_queue->find(m_taskId);
         }
         // keepCache：切换影片时保留 .part / .part.state。
@@ -335,7 +364,8 @@ void PlayerPane::cleanupSource(bool keepCache) {
         // 表现就是「切回来很卡」；保留后走断点续传，已下完的直接秒开。
         if (!keepCache && task != nullptr && task->playback &&
             (task->state == transfer::TaskState::Done ||
-             task->state == transfer::TaskState::Canceled)) {
+             task->state == transfer::TaskState::Canceled ||
+             task->state == transfer::TaskState::Paused)) {
             QFile::remove(task->localPath + QString::fromUtf8(".part"));
             QFile::remove(task->localPath + QString::fromUtf8(".part.state"));
         }
@@ -407,8 +437,8 @@ void PlayerPane::onBufferingChanged(bool buffering) {
 }
 
 void PlayerPane::onBufferTick() {
-    if (!m_buffering) {
-        return;
+    if (!m_buffering || m_fullWindow != nullptr) {
+        return;  // 全屏时浮层落在主窗口坐标里，画面之外，直接不显示
     }
     m_overlay->show();
     m_overlay->raise();
@@ -424,6 +454,10 @@ void PlayerPane::showError(const QString& text) {
     m_bufferTimer->stop();
     m_spinTimer->stop();
     m_overlay->hide();
+    if (m_fullWindow != nullptr) {
+        // 全屏里没有错误浮层的位置：退回窗口态，让用户看到失败出口
+        exitFullscreen();
+    }
     m_errorLabel->setText(
         QString::fromUtf8("无法播放该文件\n%1").arg(text));
     m_errorPanel->show();
@@ -489,12 +523,91 @@ void PlayerPane::onVolumeChanged(int value) {
 }
 
 void PlayerPane::toggleFullscreen() {
-    QWidget* top = window();
-    if (top->isFullScreen()) {
-        top->showNormal();
+    if (m_fullWindow != nullptr) {
+        exitFullscreen();
     } else {
-        top->showFullScreen();
+        enterFullscreen();
     }
+}
+
+void PlayerPane::enterFullscreen() {
+    if (m_fullWindow != nullptr || m_surface == nullptr) {
+        return;
+    }
+    QWidget* canvas = m_surface->widget();
+    // 关键：全屏窗口只装渲染控件。
+    // 直接对 MainWindow showFullScreen() 会让 Qt 给"文件列表 + 传输 + 播放"
+    // 这一整块建全屏尺寸的光栅后备存储（1464x830 逻辑 @dpr2 = 2928x1660
+    // 设备像素，ARGB 约 19MB），32 位进程里 CreateDIBSection 会失败 →
+    // 空后备存储 → 一绘制就异常退出。这里的窗口里只有 QOpenGLWidget，
+    // 它是 native 窗口，不需要任何光栅后备存储。
+    m_fullWindow = new QWidget(nullptr, Qt::Window);
+    m_fullWindow->setObjectName(QString::fromUtf8("fullscreenPlayer"));
+    m_fullWindow->setAttribute(Qt::WA_DeleteOnClose, false);
+    m_fullWindow->setStyleSheet(QString::fromUtf8("background:#000;"));
+
+    QVBoxLayout* layout = new QVBoxLayout(m_fullWindow);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    hideOverlays();
+    m_emptyHint->hide();
+
+    canvas->setParent(m_fullWindow);
+    layout->addWidget(canvas, 1);
+    // setParent 会把控件置为"显式隐藏"，光靠父窗口 showFullScreen 不会让它出现
+    canvas->show();
+    // Esc/F11/Alt+F4 都从这里收口（全屏下控制条不可见，键盘是唯一退出口）
+    m_fullWindow->installEventFilter(this);
+
+    QLabel* tip = new QLabel(QString::fromUtf8("按 Esc 退出全屏"), m_fullWindow);
+    tip->setAttribute(Qt::WA_TransparentForMouseEvents);
+    tip->setStyleSheet(QString::fromUtf8(
+        "color:rgba(255,255,255,160); background:rgba(0,0,0,120);"
+        "padding:4px 10px; border-radius:4px; font-size:13px;"));
+    tip->adjustSize();
+    tip->move(24, 20);
+    tip->show();
+    QTimer::singleShot(3000, tip, &QLabel::hide);
+
+    m_fullWindow->showFullScreen();
+    canvas->setFocus();
+    syncDisplaySize();
+}
+
+void PlayerPane::exitFullscreen() {
+    if (m_fullWindow == nullptr) {
+        return;
+    }
+    QWidget* canvas = m_surface != nullptr ? m_surface->widget() : nullptr;
+    m_fullWindow->removeEventFilter(this);
+    if (canvas != nullptr) {
+        canvas->setParent(this);
+        if (m_layout != nullptr) {
+            m_layout->insertWidget(1, canvas, 1);  // 回到 header 与控制条之间
+        }
+        canvas->show();
+    }
+    m_fullWindow->hide();
+    m_fullWindow->deleteLater();
+    m_fullWindow = nullptr;
+    layoutOverlays();
+    syncDisplaySize();
+}
+
+void PlayerPane::syncDisplaySize() {
+    if (m_player == nullptr || m_surface == nullptr) {
+        return;
+    }
+    QWidget* canvas = m_surface->widget();
+    if (canvas == nullptr || canvas->width() <= 0 || canvas->height() <= 0) {
+        return;
+    }
+    // 按设备像素出帧，否则高 DPI 下会先按逻辑尺寸解码再被放大，画面发虚
+    const qreal dpr = canvas->devicePixelRatioF();
+    const int w = static_cast<int>(canvas->width() * dpr + 0.5);
+    const int h = static_cast<int>(canvas->height() * dpr + 0.5);
+    m_player->setDisplaySize(w, h);
 }
 
 void PlayerPane::updateTimeLabel() {
@@ -504,8 +617,8 @@ void PlayerPane::updateTimeLabel() {
 }
 
 void PlayerPane::layoutOverlays() {
-    if (m_surface == nullptr) {
-        return;
+    if (m_surface == nullptr || m_fullWindow != nullptr) {
+        return;  // 全屏时画布已不在本控件坐标系里，浮层不参与布局
     }
     const QRect area = m_surface->widget()->geometry();
     m_emptyHint->setGeometry(area);
@@ -521,6 +634,29 @@ void PlayerPane::layoutOverlays() {
 void PlayerPane::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     layoutOverlays();
+    syncDisplaySize();
+}
+
+bool PlayerPane::eventFilter(QObject* obj, QEvent* event) {
+    if (m_fullWindow != nullptr && obj == m_fullWindow) {
+        if (event->type() == QEvent::KeyPress) {
+            QKeyEvent* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Escape || key->key() == Qt::Key_F11) {
+                exitFullscreen();
+                return true;
+            }
+        } else if (event->type() == QEvent::Close) {
+            // Alt+F4 / 关闭按钮：只退全屏，不要把整个客户端关掉
+            exitFullscreen();
+            return true;
+        }
+        return QWidget::eventFilter(obj, event);
+    }
+    if (m_surface != nullptr && obj == m_surface->widget() &&
+        event->type() == QEvent::Resize) {
+        syncDisplaySize();
+    }
+    return QWidget::eventFilter(obj, event);
 }
 
 }  // namespace ui

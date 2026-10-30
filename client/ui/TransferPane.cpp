@@ -116,10 +116,25 @@ QWidget* TransferPane::buildRow(const transfer::TransferTask& task, bool upload)
     top->addWidget(name, 1);
     // 契约 §3：秒传命中 → 绿色勾 + "已秒传 · 0 字节"，不显示进度条
     const bool instant = task.instant && task.state == transfer::TaskState::Done;
-    QLabel* state = new QLabel(
-        instant ? QString::fromUtf8("✓ 已秒传 · 0 字节") : task.stateText(), row);
-    state->setObjectName(instant ? QString::fromUtf8("taskStateInstant")
-                                 : QString::fromUtf8("taskState"));
+    // 边下边播的缓存命中：状态写「已缓存」比「已完成」更准确（这次没有真实下载）
+    const bool cached =
+        task.playback && task.state == transfer::TaskState::Done && !task.instant;
+    QString stateText = task.stateText();
+    if (instant) {
+        stateText = QString::fromUtf8("✓ 已秒传 · 0 字节");
+    } else if (cached) {
+        stateText = QString::fromUtf8("✓ 已缓存 · 秒开");
+    } else if (task.playback && (task.isActive() || task.state == transfer::TaskState::Paused)) {
+        // 边下边播：带上百分比，和普通下载区分开（正在缓冲 / 缓冲暂停）
+        stateText = QString::fromUtf8("%1 %2%")
+                        .arg(task.state == transfer::TaskState::Paused
+                                 ? QString::fromUtf8("缓冲暂停")
+                                 : QString::fromUtf8("缓冲中"))
+                        .arg(static_cast<int>(task.progress() * 100.0));
+    }
+    QLabel* state = new QLabel(stateText, row);
+    state->setObjectName((instant || cached) ? QString::fromUtf8("taskStateInstant")
+                                             : QString::fromUtf8("taskState"));
     top->addWidget(state);
     QLabel* speed = new QLabel(
         task.isActive() ? formatSpeed(task.speedBps) : QString::fromUtf8("—"), row);
@@ -140,7 +155,7 @@ QWidget* TransferPane::buildRow(const transfer::TransferTask& task, bool upload)
     bar->setRange(0, 1000);
     bar->setValue(static_cast<int>(task.progress() * 1000.0));
     bar->setTextVisible(false);
-    bar->setVisible(!instant);
+    bar->setVisible(!instant && !cached);
     bottom->addWidget(bar, 1);
 
     if (task.state == transfer::TaskState::Failed) {

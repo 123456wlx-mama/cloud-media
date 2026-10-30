@@ -83,6 +83,15 @@ target_link_libraries(cloud-media-client PRIVATE
     Qt5::Network
     Qt5::Sql
 )
+if(MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    # 32 位进程默认只有 2GB 用户态地址空间：1080p 解码每帧数 MB，加上大窗口的
+    # 光栅后备存储（全屏 2928x1660 ARGB ≈ 19MB）很容易撞墙，表现为
+    # "CreateDIBSection failed … 程序异常结束"。开 LARGE_ADDRESS_AWARE 后
+    # 64 位 Windows 上 32 位 exe 可用 4GB（与 qmake 工程同一开关）。
+    set_property(TARGET cloud-media-client APPEND_STRING
+        PROPERTY LINK_FLAGS " -Wl,--large-address-aware")
+endif()
+
 set_target_properties(cloud-media-client PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

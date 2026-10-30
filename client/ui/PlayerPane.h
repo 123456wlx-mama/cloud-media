@@ -7,6 +7,7 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QTimer;
+class QVBoxLayout;
 
 namespace cm {
 
@@ -51,6 +52,8 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    // 画布尺寸变化 → 通知播放器按显示像素出帧；全屏窗口 → Esc/F11/Alt+F4 退出
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onTogglePlay();
@@ -72,10 +75,20 @@ private:
     void updateTimeLabel();
     void layoutOverlays();
     void cleanupSource(bool keepCache);
+    // 全屏：只把渲染控件搬进一个独立的全屏窗口。
+    // 整个 QMainWindow showFullScreen() 会让 Qt 为三栏界面申请一张全屏尺寸的
+    // 光栅后备存储（1464x830 逻辑 @dpr2 → 2928x1660 DIB ≈ 19MB），32 位进程
+    // 上 CreateDIBSection 直接失败 → 空后备存储 → 进程崩溃。
+    void enterFullscreen();
+    void exitFullscreen();
+    // 把画布当前尺寸（设备像素）告诉播放器，解码线程据此缩小出帧
+    void syncDisplaySize();
 
     transfer::TransferQueue* m_queue;
     player::PlayerCore* m_player;
     VideoSurface* m_surface;
+    QVBoxLayout* m_layout;
+    QWidget* m_fullWindow;  // 非空表示正处于全屏（渲染控件此刻是它的子控件）
     QPushButton* m_playButton;
     QSlider* m_slider;
     QLabel* m_timeLabel;

@@ -44,6 +44,14 @@ public:
     // 下载完成（或已确定不会再有新数据）：让 demuxer 在文件末尾正常结束
     void setSourceComplete(bool complete);
 
+    // 渲染画布的实际像素尺寸（设备像素 = 控件尺寸 × devicePixelRatio）。
+    // 解码线程按它缩放输出（只缩不放，另有像素上限），避免「大源 + 小画布」时
+    // 每帧生成十几 MB 的 ARGB 帧。传 0 表示按源尺寸输出。
+    void setDisplaySize(int pixelWidth, int pixelHeight);
+    // 界面消费掉一帧后必须回执：解码线程据此做背压（上一帧没消费完就丢掉新帧）。
+    // 不回执的话 GUI 一慢，事件队列里会堆几十份大图，32 位进程直接被吃穿。
+    void notifyFrameConsumed();
+
     State state() const;
     qint64 position() const;
     qint64 duration() const;

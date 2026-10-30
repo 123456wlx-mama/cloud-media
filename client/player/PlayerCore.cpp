@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -67,7 +68,8 @@ struct PlayerCore::Impl {
           fmt(nullptr),
           videoIndex(-1), audioIndex(-1), vctx(nullptr), actx(nullptr),
           vstream(nullptr), astream(nullptr), sws(nullptr), swr(nullptr),
-          swsW(0), swsH(0), swsFmt(AV_PIX_FMT_NONE),
+          swsW(0), swsH(0), swsTW(0), swsTH(0), swsFmt(AV_PIX_FMT_NONE), dispW(0),
+          dispH(0), frameInFlight(false),
           quit(false), paused(false), seekReq(false), seekTargetMs(0),
           positionMs(0), durationMs(0), audioClockMs(0.0), audioClockValid(false),
           audioFramePts(0.0), audioFrameConsumed(0), seekDropMs(0), seekGen(0),
@@ -95,7 +97,18 @@ struct PlayerCore::Impl {
     SwrContext* swr;
     int swsW;
     int swsH;
+    int swsTW;  // sws 当前输出的目标宽度（已按画布缩放；等于 swsW 表示不缩）
+    int swsTH;
     AVPixelFormat swsFmt;  // sws 当前适配的源格式（可能按帧变化）
+
+    // 画布设备像素尺寸（0,0 = 不知道，按源尺寸出帧）
+    std::atomic<int> dispW;
+    std::atomic<int> dispH;
+    // 已交付但 GUI 还没消费的帧。置位期间不再交付新帧（丢帧背压）：
+    // QImage 跨线程是队列连接 + 深拷贝，GUI 一慢（全屏软件重绘、拖窗口、
+    // 弹模态框）事件队列里就会堆几十份 ARGB 大图，32 位进程地址空间撑不住，
+    // 最终表现为 CreateDIBSection / malloc 失败然后整个进程异常退出。
+    std::atomic<bool> frameInFlight;
 
     PacketQueue videoQ;
     PacketQueue audioQ;
@@ -152,8 +165,14 @@ struct PlayerCore::Impl {
     // ---------------------------------------------------------------- 线程体
     void demuxLoop();
     void videoLoop();
+    // 线程入口包一层：std::thread 里逃出的异常会直接 std::terminate，
+    // 界面上只能看到"程序异常结束"，连一条 Qt 日志都没有。
+    void demuxLoopGuarded();
+    void videoLoopGuarded();
     void doSeek();
     void fail(const QString& text);
+    // 出帧尺寸：按画布设备像素等比缩（只缩不放），再套一个像素上限
+    void computeFrameSize(int srcW, int srcH, int* outW, int* outH) const;
 
     int decodeAudio(std::uint8_t* out, int maxBytes);
     void fillAudio(std::uint8_t* stream, int len);
@@ -385,8 +404,8 @@ int PlayerCore::Impl::openCodec(int streamIndex, AVCodecContext** ctxOut, bool v
 }
 
 void PlayerCore::Impl::startThreads() {
-    demuxThread = std::thread(&Impl::demuxLoop, this);
-    videoThread = std::thread(&Impl::videoLoop, this);
+    demuxThread = std::thread(&Impl::demuxLoopGuarded, this);
+    videoThread = std::thread(&Impl::videoLoopGuarded, this);
 }
 
 void PlayerCore::Impl::joinThreads() {
@@ -395,6 +414,34 @@ void PlayerCore::Impl::joinThreads() {
     }
     if (videoThread.joinable()) {
         videoThread.join();
+    }
+}
+
+void PlayerCore::Impl::demuxLoopGuarded() {
+    try {
+        demuxLoop();
+    } catch (const std::exception& e) {
+        qWarning("player: demux thread threw: %s", e.what());
+        readFinished = true;
+        q->errorChanged(QString::fromUtf8("读取失败：%1").arg(QString::fromUtf8(e.what())));
+    } catch (...) {
+        qWarning("player: demux thread threw unknown exception");
+        readFinished = true;
+    }
+}
+
+void PlayerCore::Impl::videoLoopGuarded() {
+    try {
+        videoLoop();
+    } catch (const std::exception& e) {
+        qWarning("player: video thread threw: %s", e.what());
+        videoDone = true;
+        frameInFlight = false;
+        q->errorChanged(QString::fromUtf8("解码失败：%1").arg(QString::fromUtf8(e.what())));
+    } catch (...) {
+        qWarning("player: video thread threw unknown exception");
+        videoDone = true;
+        frameInFlight = false;
     }
 }
 
@@ -437,6 +484,11 @@ void PlayerCore::Impl::closeMedia() {
     swsFmt = AV_PIX_FMT_NONE;
     swsW = 0;
     swsH = 0;
+    swsTW = 0;
+    swsTH = 0;
+    // 上一部片子的最后一帧可能压在事件队列里没人消费；不复位的话
+    // 下一部片子会被背压永久挡死（表现：有声音、一帧不出）。
+    frameInFlight = false;
     pktLogs = 0;
     if (vctx != nullptr) {
         avcodec_free_context(&vctx);
@@ -631,8 +683,50 @@ void PlayerCore::Impl::syncToClock(double ptsMs) {
     }
 }
 
+void PlayerCore::Impl::computeFrameSize(int srcW, int srcH, int* outW,
+                                        int* outH) const {
+    // 出帧像素上限：再大只是白烧内存带宽（1080p ≈ 207 万像素，够 2K 屏 100% 显示）
+    const double kMaxFramePixels = 1920.0 * 1200.0;
+    int tw = srcW;
+    int th = srcH;
+    const int dw = dispW.load();
+    const int dh = dispH.load();
+    if (dw > 0 && dh > 0) {
+        // 等比适配画布（黑边由渲染层补），只缩不放
+        const double sx = static_cast<double>(dw) / static_cast<double>(srcW);
+        const double sy = static_cast<double>(dh) / static_cast<double>(srcH);
+        const double scale = sx < sy ? sx : sy;
+        if (scale < 0.95) {  // 轻微缩放不值得付重采样代价
+            tw = static_cast<int>(static_cast<double>(srcW) * scale);
+            th = static_cast<int>(static_cast<double>(srcH) * scale);
+        }
+    }
+    const double pixels = static_cast<double>(tw) * static_cast<double>(th);
+    if (pixels > kMaxFramePixels) {
+        const double k = std::sqrt(kMaxFramePixels / pixels);
+        tw = static_cast<int>(static_cast<double>(tw) * k);
+        th = static_cast<int>(static_cast<double>(th) * k);
+    }
+    if (tw < 2) {
+        tw = 2;
+    }
+    if (th < 2) {
+        th = 2;
+    }
+    tw &= ~1;  // 偶数宽高：纹理/swscale 都更省
+    th &= ~1;
+    *outW = tw;
+    *outH = th;
+}
+
 bool PlayerCore::Impl::deliverFrame(AVFrame* frame) {
     if (vctx == nullptr || frame->width <= 0 || frame->height <= 0) {
+        return false;
+    }
+    // 背压：上一帧交付后 GUI 还没消费（还压在事件队列里），这一帧直接丢。
+    // 宁可掉帧也不能让队列无限堆积大图——那是 32 位客户端被 OOM 带走的主因。
+    if (frameInFlight.load()) {
+        ++droppedFrames;
         return false;
     }
     const int w = frame->width;
@@ -645,33 +739,48 @@ bool PlayerCore::Impl::deliverFrame(AVFrame* frame) {
         qWarning("player: frame has no pixel format, skip");
         return false;
     }
-    if (sws == nullptr || swsW != w || swsH != h || swsFmt != srcFmt) {
+    int tw = w;
+    int th = h;
+    computeFrameSize(w, h, &tw, &th);
+    if (sws == nullptr || swsW != w || swsH != h || swsFmt != srcFmt ||
+        swsTW != tw || swsTH != th) {
         if (sws != nullptr) {
             sws_freeContext(sws);
         }
-        sws = sws_getContext(w, h, srcFmt, w, h, AV_PIX_FMT_RGBA,
-                             SWS_BILINEAR, nullptr, nullptr, nullptr);
+        // 源 w/h → 目标 tw/th：直接把缩放并进 sws，省掉一次全尺寸中转
+        sws = sws_getContext(w, h, srcFmt, tw, th, AV_PIX_FMT_RGBA, SWS_BILINEAR,
+                             nullptr, nullptr, nullptr);
         swsW = w;
         swsH = h;
+        swsTW = tw;
+        swsTH = th;
         swsFmt = srcFmt;
         if (sws == nullptr) {
-            qWarning("player: sws_getContext failed(%dx%d fmt=%d)", w, h,
-                     static_cast<int>(srcFmt));
+            qWarning("player: sws_getContext failed(%dx%d->%dx%d fmt=%d)", w, h, tw,
+                     th, static_cast<int>(srcFmt));
             return false;
         }
     }
-    const int bytes = av_image_get_buffer_size(AV_PIX_FMT_RGBA, w, h, 1);
+    const int bytes = av_image_get_buffer_size(AV_PIX_FMT_RGBA, tw, th, 1);
     if (bytes <= 0) {
         return false;
     }
     rgbBuf.resize(static_cast<std::size_t>(bytes));
     std::uint8_t* dst[4] = {nullptr, nullptr, nullptr, nullptr};
     int dstLines[4] = {0, 0, 0, 0};
-    av_image_fill_arrays(dst, dstLines, rgbBuf.data(), AV_PIX_FMT_RGBA, w, h, 1);
+    av_image_fill_arrays(dst, dstLines, rgbBuf.data(), AV_PIX_FMT_RGBA, tw, th, 1);
     sws_scale(sws, frame->data, frame->linesize, 0, h, dst, dstLines);
 
-    const QImage image(dst[0], w, h, dstLines[0], QImage::Format_RGBA8888);
-    q->frameReady(image.copy());
+    const QImage image(dst[0], tw, th, dstLines[0], QImage::Format_RGBA8888);
+    // 跨线程投递必须自己持有一份像素（rgbBuf 下一帧就被覆盖）
+    const QImage owned = image.copy();
+    if (owned.isNull()) {
+        // 内存真的不够：丢这一帧，绝不让异常/空图往下走
+        ++droppedFrames;
+        return false;
+    }
+    frameInFlight = true;
+    q->frameReady(owned);
     return true;
 }
 
@@ -1099,6 +1208,13 @@ void PlayerCore::setSourceComplete(bool complete) {
         m_impl->io->setSourceComplete(complete);
     }
 }
+
+void PlayerCore::setDisplaySize(int pixelWidth, int pixelHeight) {
+    m_impl->dispW = pixelWidth > 0 ? pixelWidth : 0;
+    m_impl->dispH = pixelHeight > 0 ? pixelHeight : 0;
+}
+
+void PlayerCore::notifyFrameConsumed() { m_impl->frameInFlight = false; }
 
 PlayerCore::State PlayerCore::state() const {
     return static_cast<State>(m_impl->lastState);

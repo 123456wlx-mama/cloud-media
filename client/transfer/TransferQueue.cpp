@@ -212,7 +212,10 @@ void TransferQueue::touch(int taskId, bool persist) {
     if (task == nullptr) {
         return;
     }
-    if (persist && m_store != nullptr) {
+    // 播放任务（边下边播）不落库：它是会话级缓存任务，重启后靠
+    // .part / .part.state 自愈。落库只会让 t_task 里堆一批「已完成」垃圾行，
+    // 重启后还会被恢复成莫名的「已暂停 · 下载」。
+    if (persist && m_store != nullptr && !task->playback) {
         // 单点打标：所有落库都经过这里，避免某条路径忘了写归属账号。
         task->uid = m_uid;
         m_store->saveTask(*task);
@@ -298,7 +301,10 @@ void TransferQueue::finish(TransferTask* task, bool notify) {
         --m_runningDownloads;
     }
     if (m_store != nullptr) {
-        m_store->saveTask(*task);
+        // 与 touch() 一致：播放任务（边下边播）不进 SQLite
+        if (!task->playback) {
+            m_store->saveTask(*task);
+        }
         m_store->deleteBitmap(task->id);
     }
     if (notify) {
@@ -332,56 +338,91 @@ int TransferQueue::enqueueUpload(const QString& localPath, const QString& remote
 
 int TransferQueue::enqueuePlaybackDownload(quint64 ufId, const QString& remoteName,
                                            quint64 size) {
-    // 播放是临时的：落系统临时目录，播完由 PlayerPane 清理，不污染用户「下载」文件夹。
-    const int id = enqueueDownload(ufId, remoteName, size, true);
-    TransferTask* task = find(id);
-    if (task != nullptr) {
-        task->playback = true;
+    // 同一个文件重复点播要复用已有播放任务。
+    // 以前每次双击都新建一条下载任务，缓存命中后立刻变成「已完成」，
+    // 于是传输中心里同一部片子会堆出 N 条同名记录（换片时还多一条「已取消」）。
+    const QString localPath =
+        playbackCacheRootImpl() + QString::fromUtf8("/") + remoteName;
+    for (int i = m_tasks.size() - 1; i >= 0; --i) {
+        const TransferTask& t = m_tasks.at(i);
+        if (t.type != TaskType::Download || !t.playback || t.ufId != ufId ||
+            t.localPath != localPath) {
+            continue;
+        }
+        if (t.state == TaskState::Done) {
+            const QFileInfo info(partPath(t));
+            if (info.exists() && static_cast<quint64>(info.size()) == t.size) {
+                // 缓存完整：复用这条记录直接秒开（不会再多出一条同名的）
+                emit changed();
+                return t.id;
+            }
+            dropTask(i);  // 缓存被清理过：丢掉旧记录重建（.part 不完整会重新下）
+            break;
+        }
+        if (t.state == TaskState::Running || t.state == TaskState::Queued ||
+            t.state == TaskState::Retrying) {
+            return t.id;  // 正在缓冲（重复双击同一部片子）
+        }
+        if (t.state == TaskState::Paused) {
+            resume(t.id);  // 上次暂停/断线的：接着断点继续缓冲
+            return t.id;
+        }
+        dropTask(i);  // 已取消/失败：丢掉旧记录重建（.part.state 保证续传）
+        break;
     }
-    return id;
+    // 播放是临时的：落系统临时目录，播完由 PlayerPane 清理，不污染用户「下载」文件夹。
+    // 每条播放记录按文件去重后保留在列表里（换片不清空，重启后自然消失）。
+    return addDownloadTask(ufId, QString(), remoteName, size, true, true);
+}
+
+// 从队列里摘掉一条（并清掉它在 SQLite 里的残留记录）。
+// 只用于播放任务：它们不进 SQLite，也不该在库里留垃圾。
+void TransferQueue::dropTask(int index) {
+    if (index < 0 || index >= m_tasks.size()) {
+        return;
+    }
+    const int id = m_tasks.at(index).id;
+    m_tasks.removeAt(index);
+    if (m_store != nullptr) {
+        m_store->deleteTask(id);
+        m_store->deleteBitmap(id);
+    }
 }
 
 int TransferQueue::enqueueSharedPlayback(const QString& shareTicket,
                                          const QString& fileName, quint64 size) {
-    const int id = enqueueSharedDownload(shareTicket, fileName, size, true);
-    TransferTask* task = find(id);
-    if (task != nullptr) {
-        task->playback = true;
-    }
-    return id;
+    return addDownloadTask(0, shareTicket, fileName, size, true, true);
 }
 
 int TransferQueue::enqueueSharedDownload(const QString& shareTicket,
                                          const QString& fileName, quint64 size,
                                          bool transient) {
-    TransferTask task;
-    task.id = nextTaskId();
-    task.type = TaskType::Download;
-    task.ufId = 0;
-    task.shareTicket = shareTicket;
-    task.remoteName = fileName.isEmpty() ? QString::fromUtf8("shared_file.bin")
-                                         : fileName;
-    task.size = size;
-    task.localPath = (transient ? playbackCacheRootImpl() : downloadRoot()) +
-                     QString::fromUtf8("/") + task.remoteName;
-    task.state = TaskState::Queued;
-    m_tasks.append(task);
-    touch(task.id, true);
-    pump();
-    return task.id;
+    return addDownloadTask(0, shareTicket, fileName, size, transient, false);
 }
 
 int TransferQueue::enqueueDownload(quint64 ufId, const QString& remoteName,
                                    quint64 size, bool transient) {
+    return addDownloadTask(ufId, QString(), remoteName, size, transient, false);
+}
+
+// 下载任务的唯一构造入口：playback 必须在 touch/pump 之前定好。
+// startDownload() 的「缓存已完整 → 直接完成」快判就依赖这个标志，晚设一步
+// 就会走完整的 DownloadStat 往返，还会在传输中心留下一条多余的记录。
+int TransferQueue::addDownloadTask(quint64 ufId, const QString& shareTicket,
+                                   const QString& remoteName, quint64 size,
+                                   bool transient, bool playback) {
     TransferTask task;
     task.id = nextTaskId();
     task.type = TaskType::Download;
     task.ufId = ufId;
-    task.remoteName = remoteName;
+    task.shareTicket = shareTicket;
+    task.remoteName = remoteName.isEmpty() ? QString::fromUtf8("shared_file.bin")
+                                           : remoteName;
     task.size = size;
-    // 落到用户「下载」文件夹（用户可在资源管理器直接找到）。
+    // 显式下载落用户「下载」文件夹；播放/临时任务落 %TEMP%/cloud-media-cache
     task.localPath = (transient ? playbackCacheRootImpl() : downloadRoot()) +
-                     QString::fromUtf8("/") + remoteName;
+                     QString::fromUtf8("/") + task.remoteName;
+    task.playback = playback;
     task.state = TaskState::Queued;
     m_tasks.append(task);
     touch(task.id, true);
@@ -492,8 +533,20 @@ void TransferQueue::pump() {
 void TransferQueue::startUpload(TransferTask* task) {
     // 先占住调度位（单测无网络时任务停在 Running，用于验证并发上限）。
     setState(task, TaskState::Running);
+    // taskId 非空说明服务端已经有这个上传任务（暂停/断线/重启进程后继续）：
+    // 必须走续传查询拿回服务端位图，不能重新 UploadInit。服务端每次 init 都会
+    // 新建任务（新 taskId + 空位图），从第 0 片重传——用户看到的就是"进度条归零"。
+    if (!task->taskId.isEmpty()) {
+        if (m_net == nullptr) {
+            touch(task->id, false);
+            return;
+        }
+        sendContinueUpload(task);
+        return;
+    }
     task->nextChunk = 0;
     task->bytesDone = 0;
+    task->bitmap.clear();
     if (m_net == nullptr) {
         touch(task->id, false);
         return;
@@ -549,6 +602,28 @@ void TransferQueue::sendUploadInit(TransferTask* task) {
     pending.kind = ReqUploadInit;
     m_pending[seq] = pending;
     touch(task->id, true);
+}
+
+// 续传查询（10028/10029）：服务端回位图，客户端只补缺口。
+// 这是「暂停 → 继续」不归零的唯一正确姿势——UploadInit 每次都会新建任务。
+void TransferQueue::sendContinueUpload(TransferTask* task) {
+    if (m_net == nullptr || task->state != TaskState::Running) {
+        return;
+    }
+    protocol::ContinueUploadRq rq;
+    rq.taskId = task->taskId.toStdString();
+    const QByteArray payload = encodePayload(rq);
+    if (payload.isEmpty()) {
+        fail(task, 0, QString::fromUtf8("组包失败"));
+        return;
+    }
+    const quint32 seq =
+        m_net->sendRequest(t(protocol::MessageType::ContinueUploadRq), payload);
+    Pending pending;
+    pending.taskId = task->id;
+    pending.kind = ReqContinueUpload;
+    m_pending[seq] = pending;
+    touch(task->id, false);
 }
 
 void TransferQueue::sendNextChunk(TransferTask* task) {
@@ -618,6 +693,57 @@ void TransferQueue::handleUploadInit(TransferTask* task, const QByteArray& paylo
     task->chunkSize = rs.chunkSize;
     task->totalChunks = rs.totalChunks;
     task->nextChunk = 0;
+    task->bytesDone = 0;
+    task->bitmap.clear();
+    sendNextChunk(task);
+}
+
+void TransferQueue::handleContinueUpload(TransferTask* task, const QByteArray& payload) {
+    protocol::ContinueUploadRs rs;
+    if (!rs.decode(toStd(payload))) {
+        fail(task, 0, QString::fromUtf8("续传查询解析失败"));
+        return;
+    }
+    if (rs.code != 0) {
+        // 任务不存在 / 过期（24h TTL）/ 状态不可写：退化成全新上传，
+        // 不能把任务判死——用户点"继续"的目的是把文件传完。
+        emit notice(QString::fromUtf8("%1 的服务端任务已失效，重新上传")
+                        .arg(task->remoteName),
+                    true);
+        task->taskId.clear();
+        task->nextChunk = 0;
+        task->bytesDone = 0;
+        task->bitmap.clear();
+        if (task->fileMd5.isEmpty()) {
+            // 理论上不会发生（taskId 存在说明 init 过了），兜底走一次哈希
+            QThreadPool::globalInstance()->start(
+                new HashJob(task->id, task->localPath, this));
+            touch(task->id, true);
+            return;
+        }
+        sendUploadInit(task);  // fileMd5 在首次上传时已算好，不必重算
+        return;
+    }
+    task->chunkSize = rs.chunkSize;
+    task->totalChunks = rs.totalChunks;
+    task->bitmap = QByteArray(rs.bitmap.data(), static_cast<int>(rs.bitmap.size()));
+    bitmapResize(&task->bitmap, task->totalChunks);
+    // 进度以服务端为准：本地位图在暂停期间可能是旧的
+    task->bytesDone = rs.doneBytes > task->size ? task->size : rs.doneBytes;
+    task->nextChunk = firstMissing(task->bitmap, task->totalChunks);
+    // 续传后速度从当前量重新起算，否则第一帧速度会算成"整段时间的增量"
+    task->lastBytes = task->bytesDone;
+    task->lastTickMs = m_clock();
+    if (rs.doneChunks > 0 && task->nextChunk < task->totalChunks) {
+        emit notice(QString::fromUtf8("%1 续传：服务端已收 %2/%3 片")
+                        .arg(task->remoteName)
+                        .arg(rs.doneChunks)
+                        .arg(task->totalChunks),
+                    false);
+    }
+    touch(task->id, true);
+    // nextChunk 已经到末尾时 sendNextChunk 会直接发 UploadComplete（补齐"最后一片
+    // 已传、只差合并"的场景），不会空转。
     sendNextChunk(task);
 }
 
@@ -631,10 +757,21 @@ void TransferQueue::handleUploadChunk(TransferTask* task, const QByteArray& payl
         fail(task, rs.code, QString::fromUtf8("分片被拒(code=%1)").arg(rs.code));
         return;
     }
-    const quint64 offset = static_cast<quint64>(task->nextChunk) * kBlockSize;
-    const quint64 remain = task->size - offset;
-    task->bytesDone += (remain < kBlockSize ? remain : kBlockSize);
-    ++task->nextChunk;
+    const quint32 acked = task->nextChunk;
+    const quint64 offset = static_cast<quint64>(acked) * kBlockSize;
+    const quint64 remain = task->size > offset ? task->size - offset : 0;
+    const quint64 chunkLen = remain < kBlockSize ? remain : kBlockSize;
+    // 位图跟着服务端确认走：续传后可能存在空洞，靠它算"下一片"才不会
+    // 顺序重传已经收过的分片（服务端 duplicate 分支虽然不落盘，但白费带宽）。
+    bitmapResize(&task->bitmap, task->totalChunks);
+    bitmapSet(&task->bitmap, acked);
+    if (rs.doneBytes > 0) {
+        // 服务端累计值为准：重复片/乱序重传时本地自增会漂移
+        task->bytesDone = rs.doneBytes > task->size ? task->size : rs.doneBytes;
+    } else {
+        task->bytesDone += chunkLen;
+    }
+    task->nextChunk = firstMissing(task->bitmap, task->totalChunks);
     markSpeed(task);
     touch(task->id, true);
     sendNextChunk(task);
@@ -651,7 +788,11 @@ void TransferQueue::handleUploadComplete(TransferTask* task, const QByteArray& p
         return;
     }
     if (!rs.badIndexes.empty()) {
-        // 只重传坏片：把 nextChunk 拉回第一个坏片，其余保持已确认。
+        // 只重传坏片：先把它们从位图里清掉，再把 nextChunk 拉回第一个坏片。
+        bitmapResize(&task->bitmap, task->totalChunks);
+        for (std::size_t i = 0; i < rs.badIndexes.size(); ++i) {
+            bitmapClear(&task->bitmap, rs.badIndexes[i]);
+        }
         task->nextChunk = rs.badIndexes[0];
         setState(task, TaskState::Retrying);
         emit notice(QString::fromUtf8("%1 有 %2 个坏片，重传中")
@@ -1038,6 +1179,9 @@ void TransferQueue::onFrame(quint16 type, quint32 seq, const QByteArray& payload
     switch (mt) {
         case protocol::MessageType::UploadInitRs:
             handleUploadInit(task, payload);
+            break;
+        case protocol::MessageType::ContinueUploadRs:
+            handleContinueUpload(task, payload);
             break;
         case protocol::MessageType::UploadChunkRs:
             handleUploadChunk(task, payload);

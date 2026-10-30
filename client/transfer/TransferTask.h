@@ -136,6 +136,19 @@ inline void bitmapSet(QByteArray* bitmap, quint32 index) {
         static_cast<unsigned char>(1u << (index % 8)));
 }
 
+inline void bitmapClear(QByteArray* bitmap, quint32 index) {
+    if (bitmap == nullptr) {
+        return;
+    }
+    const int byte = static_cast<int>(index / 8);
+    if (byte < 0 || byte >= bitmap->size()) {
+        return;
+    }
+    (*bitmap)[byte] = static_cast<char>(
+        static_cast<unsigned char>(bitmap->at(byte)) &
+        static_cast<unsigned char>(~(1u << (index % 8))));
+}
+
 inline void bitmapResize(QByteArray* bitmap, quint32 total) {
     if (bitmap == nullptr) {
         return;
