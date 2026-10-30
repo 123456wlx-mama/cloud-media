@@ -112,6 +112,26 @@ TEST(TransferQueueUploadResume, ResumeKeepsProgressInsteadOfRestarting) {
         << "继续上传把 nextChunk 归零了，会从第 0 片重传";
 }
 
+// 删文件夹前的检查：统计「该目录下尚未结束的上传任务」。
+// 暂停也算未结束（用户随时可能点继续），只有完成/取消才不计入。
+TEST_F(TransferQueueTest, ActiveUploadsInFolderCountsNonTerminal) {
+    const int a = queue.enqueueUpload(QString::fromUtf8("C:/tmp/a1.bin"), "a1.bin", 42);
+    const int b = queue.enqueueUpload(QString::fromUtf8("C:/tmp/a2.bin"), "a2.bin", 42);
+    const int root = queue.enqueueUpload(QString::fromUtf8("C:/tmp/root.bin"),
+                                         "root.bin", 0);
+    EXPECT_EQ(2, queue.activeUploadsIn(42));
+    EXPECT_EQ(1, queue.activeUploadsIn(0));  // 根目录的不算进子目录
+
+    queue.pause(a);  // 暂停：仍未结束
+    EXPECT_EQ(2, queue.activeUploadsIn(42));
+
+    queue.cancel(a);
+    EXPECT_EQ(1, queue.activeUploadsIn(42));
+    queue.cancel(b);
+    EXPECT_EQ(0, queue.activeUploadsIn(42));
+    queue.cancel(root);
+}
+
 TEST_F(TransferQueueTest, CancelIsTerminal) {
     const int a = queue.enqueueUpload(QString::fromUtf8("C:/tmp/a.bin"), "a.bin");
     queue.cancel(a);

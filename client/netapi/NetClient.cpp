@@ -59,6 +59,14 @@ void NetClient::connectTo(const QString& host, quint16 port) {
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
 }
 
+void NetClient::reconnect() {
+    if (m_host.isEmpty() || m_port == 0) {
+        return;  // 还没 connectTo 过，没东西可重连
+    }
+    // connectTo 会重设 endpoint 并触发 worker 的 start()：attempt 归零、立即连一次
+    connectTo(m_host, m_port);
+}
+
 quint32 NetClient::nextSeq() {
     ++m_seq;
     if (m_seq == 0) {

@@ -66,6 +66,9 @@ public:
 
     const QVector<TransferTask>& tasks() const { return m_tasks; }
     TransferTask* find(int id);
+    // 该目录下还没结束（排队/传输/暂停/重试）的上传任务数。
+    // 删文件夹前用它提示「里面还有 N 个文件正在上传」，避免用户误删导致任务失败。
+    int activeUploadsIn(quint64 parentId) const;
 
     // 登录成功后调用：切换当前账号。会把内存里上一个账号的任务全部丢弃，
     // 再按 uid 从 SQLite 恢复该账号未完成的任务。uid 相同时是 no-op。

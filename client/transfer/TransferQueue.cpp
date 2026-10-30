@@ -207,6 +207,20 @@ TransferTask* TransferQueue::find(int id) {
 
 void* TransferQueue::taskPtr(int taskId) { return find(taskId); }
 
+int TransferQueue::activeUploadsIn(quint64 parentId) const {
+    int count = 0;
+    for (int i = 0; i < m_tasks.size(); ++i) {
+        const TransferTask& task = m_tasks.at(i);
+        if (task.type != TaskType::Upload || task.isTerminal()) {
+            continue;
+        }
+        if (task.parentId == parentId) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 void TransferQueue::touch(int taskId, bool persist) {
     TransferTask* task = find(taskId);
     if (task == nullptr) {

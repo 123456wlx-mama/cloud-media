@@ -21,7 +21,10 @@ namespace {
 
 const int kRequestTimeoutMs = 5000;
 const int kTickMs = 500;
-const int kMaxReconnect = 5;
+// 退避上限（秒）：1/2/4/8/8/8…，**不设总次数上限**。
+// 以前的实现 5 次（约 23 秒）后就放弃并把 wantConnected 置 false，
+// 服务端重启后客户端再也不会自己恢复，只能重启进程——断线演练必踩。
+const int kMaxReconnectDelaySec = 8;
 const int kTimeoutBeforeReconnect = 2;
 
 qint64 nowMs() {
@@ -109,19 +112,12 @@ void NetWorker::scheduleReconnect() {
     if (!m_wantConnected) {
         return;
     }
-    if (m_attempt >= kMaxReconnect) {
-        emit linkState(3, QString::fromUtf8("连接失败，请检查网络后重试"));
-        m_wantConnected = false;
-        return;
-    }
+    // 退避：1/2/4/8/8/8…（封顶 8 秒），一直重试到连上为止。
     ++m_attempt;
-    int delaySec = 1 << (m_attempt - 1);
-    if (delaySec > 8) {
-        delaySec = 8;
-    }
-    emit linkState(2, QString::fromUtf8("重连中(%1/%2) %3")
+    const int delaySec =
+        m_attempt >= 4 ? kMaxReconnectDelaySec : (1 << (m_attempt - 1));
+    emit linkState(2, QString::fromUtf8("重连中(第%1次) %2")
                           .arg(m_attempt)
-                          .arg(kMaxReconnect)
                           .arg(m_socket->errorString()));
     QTimer::singleShot(delaySec * 1000, this, SLOT(reconnectNow()));
 }

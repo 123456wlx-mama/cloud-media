@@ -2,6 +2,7 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QDialog>
 #include <QDir>
@@ -148,6 +149,10 @@ MainWindow::MainWindow(netapi::NetClient* net, transfer::TransferQueue* queue,
     statusBar()->setObjectName(QString::fromUtf8("mainStatusBar"));
     m_linkBadge = new QLabel(QString::fromUtf8("● 连接中…"), this);
     m_linkBadge->setObjectName(QString::fromUtf8("linkBadge"));
+    // 断线时客户端会一直退避重连；但用户可能不想等，点徽标就立即重连一次。
+    m_linkBadge->installEventFilter(this);
+    m_linkBadge->setCursor(Qt::PointingHandCursor);
+    m_linkBadge->setToolTip(QString::fromUtf8("点击可立即重新连接"));
     statusBar()->addPermanentWidget(m_linkBadge);
     statusBar()->showMessage(QString::fromUtf8("未登录"));
     // 链路可能在本窗口创建前就连上了（connectTo 早于 MainWindow），
@@ -620,13 +625,22 @@ void MainWindow::onDeleteSelected() {
     if (m_model->isDirAt(row)) {
         // 文件夹：只软删这一个目录节点（不级联子节点），回收站里恢复即可整树回来。
         // 用户可感知的语义与真网盘一致：回收站只看到一条"文件夹"，恢复后内容都在。
-        if (QMessageBox::question(
-                this, QString::fromUtf8("删除文件夹"),
-                QString::fromUtf8("「%1」及其内容会移入回收站，可从回收站恢复。继续？")
-                    .arg(name)) != QMessageBox::Yes) {
+        // 例外：里面还有未结束的上传任务时必须明确提示——删了目录，这些任务会失败。
+        const quint64 dirUfId = m_model->ufIdAt(row);
+        const int running = m_queue != nullptr ? m_queue->activeUploadsIn(dirUfId) : 0;
+        const QString text =
+            running > 0
+                ? QString::fromUtf8("「%1」内还有 %2 个文件正在上传，删除后这些任务会失败。\n"
+                                    "删除后可从回收站恢复文件夹，但传输任务需要重新上传。继续？")
+                      .arg(name)
+                      .arg(running)
+                : QString::fromUtf8("「%1」及其内容会移入回收站，可从回收站恢复。继续？")
+                      .arg(name);
+        if (QMessageBox::question(this, QString::fromUtf8("删除文件夹"), text) !=
+            QMessageBox::Yes) {
             return;
         }
-        m_recycle->deleteFile(m_model->ufIdAt(row), name);
+        m_recycle->deleteFile(dirUfId, name);
         return;
     }
     if (hasActiveTransferFor(name)) {
@@ -840,6 +854,21 @@ void MainWindow::onLoginSucceeded(quint32 code, quint64 uid,
     }
     statusBar()->showMessage(QString::fromUtf8("已登录 · %1").arg(name));
     refreshList();
+}
+
+void MainWindow::onLinkBadgeClicked() {
+    if (m_net == nullptr || m_net->linkStateValue() == 1) {
+        return;  // 已经连着，点了不打扰
+    }
+    m_net->reconnect();
+}
+
+bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
+    if (obj == m_linkBadge && event->type() == QEvent::MouseButtonRelease) {
+        onLinkBadgeClicked();
+        return true;
+    }
+    return QMainWindow::eventFilter(obj, event);
 }
 
 void MainWindow::onLinkState(int state, const QString& detail) {

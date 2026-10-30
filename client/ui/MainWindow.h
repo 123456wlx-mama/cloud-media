@@ -76,10 +76,14 @@ private slots:
     void onShareOpened();
     void onDeleted(quint64 ufId, const QString& name);
     void startPlayback(int row);
+    // 点状态栏的链路徽标：立即重连（不等退避）
+    void onLinkBadgeClicked();
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    // 链路徽标是 QLabel，用事件过滤器接管点击
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
     QWidget* buildPane(const QString& title, const QString& hint,

@@ -21,6 +21,9 @@ public:
     ~NetClient() override;
 
     void connectTo(const QString& host, quint16 port);
+    // 手动重连：沿用上次的 host/port 重新建立连接（登录凭据会由 NetClient 自动重放）。
+    // 界面上点状态栏的链路徽标走这里。
+    void reconnect();
     void shutdown();
 
     void login(const QString& tel, const QString& password);
