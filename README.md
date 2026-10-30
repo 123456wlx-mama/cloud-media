@@ -6,16 +6,17 @@
 ```text
 服务端  C++11 · epoll(ET + ONESHOT) · 自研线程池 · MySQL 8 · Redis 7 · sendfile
 客户端  Qt 5.12(32 位) · QTcpSocket 独立网络线程 · FFmpeg 4.2.2 解码 · SDL2 音频
-交付    CMake(3.5 语法) · Docker 多阶段 · docker compose · windeployqt · ctest 43 项
+交付    CMake(3.5 语法) · Docker 多阶段 · docker compose · windeployqt · ctest 44 项
 ```
 
 ## 功能
 
-- **上传**：4MB 分片、秒传（同 MD5 0 字节）、坏片重传、断点续传
-- **下载**：4 连接分块、`.part.state` 续传、sendfile 零拷贝、连接级/用户级令牌桶限速
-- **文件**：目录分页 + 面包屑、拖拽上传、回收站（软删/恢复/彻底删除）
-- **分享**：分享码 + 提取码 + 过期时间，打开分享直接走下载链路
-- **播放**：双击视频边下边播，首块起播、暂停/seek/音量/全屏，GL 与 QPainter 双渲染后端
+- **上传**：4MB 分片、秒传（同 MD5 0 字节）、坏片重传、断点续传（暂停后继续走服务端位图，只补缺口）
+- **下载**：4 连接分块、断点续传（`.part.state` 位图）、sendfile 零拷贝、连接级/用户级令牌桶限速
+- **文件**：目录分页 + 面包屑、拖拽上传、回收站（软删/恢复/彻底删除）；文件夹删除只软删目录节点，恢复整树回来，彻底删除才级联
+- **分享**：分享码 + 提取码 + 过期时间；接收方可**转存到我的网盘**（10044/10045，只加引用计数不搬字节）或下载到本地
+- **播放**：双击视频边下边播，首块起播、暂停/seek/音量/全屏（独立全屏窗口 + DPI 正确），GL 与 QPainter 双渲染后端
+- **传输**：边下边播任务按文件去重、缓存命中「已缓存 · 秒开」；断线无限退避重连，状态栏一键重连
 - **运维**：Docker 一键起（mysql + redis + server）、CLI 冒烟、异步日志
 
 ## 架构
@@ -82,7 +83,7 @@ build-client/bin/cloud-media-client.exe --host <server-host> --port 8004 \
 
 ## 测试与 CI
 
-- 单元/集成：**ctest 43 项**（Linux，`BUILD_SERVER+BUILD_STORAGE+BUILD_TESTS+ENABLE_DB_INTEGRATION_TESTS=ON`），
+- 单元/集成：**ctest 44 项**（Linux，`BUILD_SERVER+BUILD_STORAGE+BUILD_TESTS+ENABLE_DB_INTEGRATION_TESTS=ON`），
   含 MySQL 池、Redis 池、存储集成、协议编解码、Reactor、业务服务；Windows 客户端另有 5 套（netapi/transfer/sqlapi/flow/ui）。
 - CI：GitHub Actions `.github/workflows/ci.yml`（ubuntu-22.04 + MySQL 服务容器 + Redis），
   跑 C++11 红线检查、构建、ctest 与覆盖率门槛。
