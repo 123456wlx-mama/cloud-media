@@ -70,7 +70,8 @@ struct PlayerCore::Impl {
           vstream(nullptr), astream(nullptr), sws(nullptr), swr(nullptr),
           swsW(0), swsH(0), swsTW(0), swsTH(0), swsFmt(AV_PIX_FMT_NONE), dispW(0),
           dispH(0), frameInFlight(false),
-          quit(false), paused(false), seekReq(false), seekTargetMs(0),
+          quit(false), paused(false), seekReq(false), seekFramePending(false),
+          seekTargetMs(0),
           positionMs(0), durationMs(0), audioClockMs(0.0), audioClockValid(false),
           audioFramePts(0.0), audioFrameConsumed(0), seekDropMs(0), seekGen(0),
           audioFlushedGen(0), pktLogs(0),
@@ -118,6 +119,10 @@ struct PlayerCore::Impl {
     std::atomic<bool> quit;
     std::atomic<bool> paused;
     std::atomic<bool> seekReq;
+    // 暂停态 seek：放行"目标位置的第一帧"后立刻重新挂起。
+    // 主流播放器在暂停时拖动进度条，画面会立刻跳到该位置；如果 paused 时完全不取包
+    // （下面 videoLoop 顶部的挂起逻辑），画面就停在旧帧不动，用户以为"拖不动"。
+    std::atomic<bool> seekFramePending;
     std::atomic<qint64> seekTargetMs;
     std::atomic<qint64> positionMs;
     std::atomic<qint64> durationMs;
@@ -345,6 +350,7 @@ bool PlayerCore::Impl::openMedia(const QString& filePath, bool prog, QString* er
     audioClockValid = false;
     wallStarted = false;
     seekReq = false;
+    seekFramePending = false;
     paused = false;
     quit = false;
     errorText.clear();
@@ -797,16 +803,26 @@ void PlayerCore::Impl::videoLoop() {
     int flushedGen = seekGen.load();
     int sendFailures = 0;
     while (!quit) {
-        if (paused.load()) {
+        // 暂停时挂起不取包；但"暂停态 seek"要放行一次，好把目标位置的帧画出来。
+        // 放行前还要等 GUI 消费掉上一帧（frameInFlight），否则会被背压直接丢光。
+        if (paused.load() && (!seekFramePending.load() || frameInFlight.load())) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
         if (!videoQ.get(packet, true, 30)) {
             if (readFinished.load() && videoQ.empty()) {
-                break;
+                // 片尾只是"待命"，线程绝不能退出：Ended 之后用户拖进度条还要靠这个线程解帧。
+                // 之前这里直接 break 退出线程，结果是播完再 seek 画面完全不动
+                // （demux 仍在读包，但没人消费），且 tick 也被 ended 分支停掉，
+                // 时间轴一起定格。只有 quit 才允许真正退出循环。
+                videoDone = true;
+                seekFramePending = false;  // 到片尾了，暂停态的"补一帧"不会再有帧可画
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
             }
             continue;
         }
+        videoDone = false;  // 取到新包 = 已离开片尾（seek 之后复活）
         // 诊断：前几个视频包的位置/大小/是否关键帧。
         // 与 ffprobe -show_packets 的 pos 对照，能直接判定 demux 拿到的码流对不对。
         if (pktLogs < 3) {
@@ -904,7 +920,10 @@ void PlayerCore::Impl::videoLoop() {
                 av_frame_unref(frame);
                 continue;
             }
-            if (paused.load() || quit.load()) {
+            // 暂停态：只放行 seek 后目标位置的第一帧（画面跟手），其余帧一律丢弃。
+            // 注意 syncToClock 在 paused 时直接返回，不会这里等时钟等成"死等"。
+            const bool pausedDraw = paused.load() && seekFramePending.load();
+            if ((paused.load() && !pausedDraw) || quit.load()) {
                 av_frame_unref(frame);
                 continue;
             }
@@ -927,6 +946,9 @@ void PlayerCore::Impl::videoLoop() {
                 q->frameSync(static_cast<qint64>(ptsMs), clockAtRender);
                 if (!firstFrame.exchange(true)) {
                     q->bufferingChanged(false);
+                }
+                if (pausedDraw) {
+                    seekFramePending = false;  // 暂停态只画这一帧，之后重新挂起
                 }
             }
             av_frame_unref(frame);
@@ -1170,6 +1192,13 @@ void PlayerCore::pause() {
 }
 
 void PlayerCore::togglePlay() {
+    // 播完后按播放键 = 重播（主流播放器行为）。Ended 时 paused 仍是 false，
+    // 直接走下面的分支会变成 pause()，按钮看着有反应、画面却停在片尾。
+    if (m_impl->lastState == PlayerCore::Ended) {
+        seek(0);
+        play();
+        return;
+    }
     if (m_impl->paused.load()) {
         play();
     } else {
@@ -1186,6 +1215,28 @@ void PlayerCore::seek(qint64 ms) {
     }
     if (m_impl->durationMs.load() > 0 && ms > m_impl->durationMs.load()) {
         ms = m_impl->durationMs.load();
+    }
+    // 播完（Ended）后拖动进度条：主流播放器认为这是"我要继续看这里"，直接回到播放态。
+    // ended 分支里 tick 被 stop 了，videoLoop 也停在片尾待命；不在这里复活，
+    // seek 就会被静默吞掉（时间轴定格、画面不动）。
+    const bool wasEnded = (m_impl->lastState == PlayerCore::Ended);
+    if (wasEnded) {
+        m_impl->paused = false;
+        if (m_impl->audioDev != 0) {
+            SDL_PauseAudioDevice(m_impl->audioDev, 0);
+        }
+        m_impl->setState(PlayerCore::Playing);
+    }
+    // 暂停中拖动：放行一帧把目标画面画出来，但仍保持暂停（用户意图是"还在暂停"）。
+    if (m_impl->paused.load()) {
+        m_impl->seekFramePending = true;
+    }
+    // 提前清掉"片尾"标记：readFinished 与 videoDone 同时为真时 tick 会判 Ended，
+    // 而 doSeek 要等 demux 线程调度到才生效，这个空窗期足够 tick 再误判一次。
+    m_impl->readFinished = false;
+    m_impl->videoDone = false;
+    if (!m_impl->tick->isActive()) {
+        m_impl->tick->start();  // Ended 时被 stop 过，不重启时间轴永远不刷新
     }
     m_impl->seekTargetMs = ms;
     m_impl->seekReq = true;

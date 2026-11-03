@@ -31,6 +31,12 @@ protected:
     void paintGL() override;
 
 private:
+    // 释放本 context 名下的 GL 资源（纹理/着色器/VBO）。
+    // 必须挂在 context 的 aboutToBeDestroyed 上：上下文一旦重建，旧句柄属于
+    // 已销毁的 context，继续用会在驱动里访问违例（Intel 集显 igxelpgicd32.dll
+    // 表现为直接崩溃）。
+    void releaseGL();
+
     QOpenGLShaderProgram* m_program;
     QOpenGLBuffer m_vbo;
     GLuint m_texture;

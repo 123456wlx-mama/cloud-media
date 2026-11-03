@@ -660,6 +660,13 @@ int main(int argc, char** argv) {
     // 整个界面（含所有 QSS px 字号）都会显得特别小。必须在 QApplication 之前设置。
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+    // 全屏需要把渲染控件 reparent 到新的顶层窗口。不设这个属性时，Qt 会在
+    // WindowChangeInternal 里销毁并重建 QOpenGLWidget 的 context + FBO
+    // （Intel 集显驱动 igxelpgicd32.dll 在这条路径上访问违例，进全屏直接崩）。
+    // 设了全局共享上下文后 Qt 跳过销毁重建：QOpenGLWidget 本来就渲染到 FBO、
+    // 用的是独立的 QOffscreenSurface，纹理全局可见，换窗口不需要重建。
+    // 必须在 QApplication 构造之前设置才生效。
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
     QApplication app(argc, argv);
 

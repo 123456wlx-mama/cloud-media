@@ -1,5 +1,6 @@
 #include "ui/GlVideoSurface.h"
 
+#include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
 
 #include "ui/Letterbox.h"
@@ -38,12 +39,31 @@ GlVideoSurface::GlVideoSurface(QWidget* parent)
     setMinimumSize(160, 90);
 }
 
-GlVideoSurface::~GlVideoSurface() {
-    if (m_texture != 0) {
-        makeCurrent();
-        glDeleteTextures(1, &m_texture);
-        doneCurrent();
+GlVideoSurface::~GlVideoSurface() { releaseGL(); }
+
+void GlVideoSurface::releaseGL() {
+    if (m_program == nullptr && m_texture == 0 && !m_vbo.isCreated()) {
+        return;
     }
+    // 上下文销毁过程中调用时可能已经不能 make current，此时宁可不释放也不能崩
+    if (!isValid()) {
+        m_program = nullptr;
+        m_texture = 0;
+        return;
+    }
+    makeCurrent();
+    if (m_program != nullptr) {
+        delete m_program;
+        m_program = nullptr;
+    }
+    if (m_texture != 0) {
+        glDeleteTextures(1, &m_texture);
+        m_texture = 0;
+    }
+    if (m_vbo.isCreated()) {
+        m_vbo.destroy();
+    }
+    doneCurrent();
 }
 
 void GlVideoSurface::setImage(const QImage& image) {
@@ -63,6 +83,13 @@ void GlVideoSurface::clear() {
 
 void GlVideoSurface::initializeGL() {
     initializeOpenGLFunctions();
+    // 换屏/换窗口等场景下 Qt 会销毁并重建 context，重建后会再次调用 initializeGL。
+    // 挂上 aboutToBeDestroyed 后，旧 context 销毁前会先 releaseGL() 释放纹理/着色器/
+    // VBO，避免重建后继续引用属于已销毁 context 的句柄（野指针 → 驱动访问违例）。
+    if (context() != nullptr) {
+        connect(context(), &QOpenGLContext::aboutToBeDestroyed, this,
+                &GlVideoSurface::releaseGL, Qt::DirectConnection);
+    }
     glGenTextures(1, &m_texture);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
